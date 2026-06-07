@@ -1,0 +1,19 @@
+---
+description: Core CELLIX backend architecture and delivery guardrails
+alwaysApply: true
+---
+
+# CELLIX Backend Core Rule
+
+- Treat `D:\cellix_backend\docs\cellix_technical_guide.md` and `D:\cellix_backend\docs\cellix_backend.md` as source-of-truth design docs.
+- Keep NestJS strictly modular under `src/` (`config`, `database`, `cache`, `queue`, `auth`, `analyse`, `classifier`, `rules-engine`, `llm`, `audit`, `pdf`, `health`).
+- Keep `app.module.ts` as wiring only; avoid business logic in root module.
+- Prefer deterministic-first flow: `intent-classifier -> rules-engine -> model-selector -> llm` for unresolved cases.
+- Preserve named-process semantics in code/logs (e.g., `PROMPT_CAPTURE`, `RANGE_READER`, `RULES_ENGINE`, `AUDIT_LOGGER`).
+- Enforce DTO validation and typed contracts for every external request/response.
+- Enforce fail-fast configuration validation (`@nestjs/config` + schema) for env keys.
+- Treat audit as append-only and traceable (`request -> decision -> patch -> audit entry`).
+- Prefer secure defaults for all APIs: auth guards, throttling, helmet, structured logging.
+- Optimize for cost/perf: cache reusable prompt layers, avoid unnecessary LLM calls, and track token-sensitive paths.
+- Keep compatibility with current project tooling/scripts in `package.json`; do not change package manager without user approval.
+- When adding features, include tests (unit/integration/e2e where relevant) and update docs for new modules/endpoints.

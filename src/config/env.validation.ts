@@ -1,0 +1,19 @@
+import * as Joi from 'joi';
+
+export const envValidationSchema = Joi.object({
+  NODE_ENV: Joi.string().valid('development', 'test', 'production').default('development'),
+  PORT: Joi.number().port().default(4001),
+  MONGODB_URL: Joi.string().uri({ scheme: [/mongodb(\+srv)?/] }).default('mongodb://127.0.0.1:27017/cellix'),
+  MONGODB_DB_NAME: Joi.string().trim().min(1).default('cellix'),
+  OPENROUTER_API_KEY: Joi.string().allow('').optional(),
+  OPENROUTER_MODEL: Joi.string().optional(),
+  OPENROUTER_MODEL_LOW: Joi.string().default('openai/gpt-5-mini'),
+  OPENROUTER_MODEL_MEDIUM: Joi.string().default('openai/gpt-5-mini'),
+  OPENROUTER_MODEL_HIGH: Joi.string().default('openai/gpt-5'),
+  OPENROUTER_HTTP_REFERER: Joi.string().default('https://cellix.local'),
+  OPENAI_API_KEY: Joi.string().allow('').optional(),
+  OPENAI_MODEL: Joi.string().default('gpt-4o-mini'),
+  OPENAI_MODEL_LOW: Joi.string().optional(),
+  OPENAI_MODEL_MEDIUM: Joi.string().optional(),
+  OPENAI_MODEL_HIGH: Joi.string().optional(),
+});
