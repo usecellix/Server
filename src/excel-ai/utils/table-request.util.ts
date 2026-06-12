@@ -8,16 +8,31 @@ export interface TablePlan {
 
 const STATUS_VALUES = ['Active', 'Pending', 'Closed', 'Review', 'Hold'];
 
+export const DEFAULT_GST_HEADERS = [
+  'S.No',
+  'Invoice Date',
+  'Supplier GSTIN',
+  'Supplier Name',
+  'Invoice Amount',
+  'IGST',
+  'CGST',
+  'SGST',
+  'Narration',
+];
+
 export function parseTableCreateRequest(message: string): TablePlan | null {
   const lower = message.toLowerCase();
   const isCreate =
     /\b(create|generate|add|populate|fill|make|build|give|insert)\b/.test(lower) &&
-    (/\b(row|rows|header|headers|column|columns|table|sheet|dummy|sample)\b/.test(lower) ||
+    (/\b(row|rows|header|headers|column|columns|table|sheet|dummy|sample|data)\b/.test(lower) ||
       /\bs\.?\s*no\b/.test(lower));
 
   if (!isCreate) return null;
 
-  const headers = extractHeaders(message);
+  let headers = extractHeaders(message);
+  if (headers.length < 2 && /\bgst\b/i.test(message)) {
+    headers = [...DEFAULT_GST_HEADERS];
+  }
   if (headers.length < 2) return null;
 
   const rowCount = extractRowCount(message) ?? 5;
@@ -96,7 +111,15 @@ function dummyCellValue(header: string, rowIndex: number): unknown {
   if (/tax\s*%|tax percent|gst\s*%/i.test(h)) {
     return [0, 5, 12, 18, 28][rowIndex % 5];
   }
-  if (/amount|value|price|total|rupee|₹/i.test(h)) {
+  if (/\bigst\b/i.test(h)) {
+    const base = (rowIndex + 1) * 12500 + rowIndex * 3500;
+    return Math.round(base * 0.18);
+  }
+  if (/\bcgst\b|\bsgst\b/i.test(h)) {
+    const base = (rowIndex + 1) * 12500 + rowIndex * 3500;
+    return Math.round(base * 0.09);
+  }
+  if (/amount|value|price|total|rupee|₹|invoice/i.test(h)) {
     return (rowIndex + 1) * 12500 + rowIndex * 3500;
   }
   if (/return\s*rate|rate\s*%|rate/i.test(h)) {

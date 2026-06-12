@@ -1,6 +1,8 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { AppConfigService } from '../../config/app-config.service';
+import { LLMTier } from '../../types/cellix.types';
 import { LlmRequestError } from '../errors/llm-request.error';
+import { ModelRouter } from '../llm/model-router';
 
 export type OpenRouterChatMessage = {
   role: 'system' | 'user' | 'assistant';
@@ -18,16 +20,59 @@ export type LlmCallTelemetry = {
   model?: string;
   modelTier?: string;
   usage?: LlmUsage;
+  complexityScore?: number;
+  routingRationale?: string;
+  fallbackUsed?: boolean;
+  estimatedCostUsd?: number;
 };
 
 @Injectable()
 export class OpenRouterService {
   private readonly logger = new Logger(OpenRouterService.name);
 
-  constructor(private readonly config: AppConfigService) {}
+  constructor(
+    private readonly config: AppConfigService,
+    private readonly modelRouter: ModelRouter,
+  ) {}
 
   isConfigured(): boolean {
     return Boolean(this.config.openRouterApiKey);
+  }
+
+  async quickCall(systemPrompt: string, userMessage: string): Promise<string> {
+    const apiKey = this.config.openRouterApiKey;
+    if (!apiKey) {
+      return '';
+    }
+
+    try {
+      const { OpenRouter } = await import('@openrouter/sdk');
+      const client = new OpenRouter({
+        apiKey,
+        httpReferer: this.config.openRouterHttpReferer,
+        appTitle: 'Cellix',
+      });
+
+      const response = await client.chat.send({
+        chatRequest: {
+          model: this.config.openRouterModelLow,
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: userMessage },
+          ],
+          stream: false,
+          temperature: 0,
+          maxTokens: 256,
+        },
+      });
+
+      const content = response.choices?.[0]?.message?.content;
+      return typeof content === 'string' ? content : '';
+    } catch (error: unknown) {
+      const detail = error instanceof Error ? error.message : 'OpenRouter quickCall failed';
+      this.logger.warn(`OpenRouter quickCall failed: ${detail}`);
+      return '';
+    }
   }
 
   async *streamChat(
@@ -79,6 +124,9 @@ export class OpenRouterService {
     } catch (error: unknown) {
       const status = this.extractStatus(error);
       const detail = error instanceof Error ? error.message : 'OpenRouter request failed';
+      if (status === 429 && telemetry?.modelTier) {
+        this.modelRouter.markRateLimited(telemetry.modelTier as LLMTier);
+      }
       this.logger.warn(`OpenRouter chat failed (${status}): ${detail}`);
       throw new LlmRequestError(status, detail);
     }

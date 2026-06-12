@@ -1,7 +1,13 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
+import { validateCrossSheetActions } from '../../sheets/multi-sheet.service';
 import { AppConfigService } from '../../config/app-config.service';
+import { classifyIntent } from '../llm/ambiguity-detector';
 import { LlmRequestError } from '../errors/llm-request.error';
+import { injectMissingFormats } from '../excel/format-context-reader';
+import { ModelRouter, RoutingDecision } from '../llm/model-router';
+import { buildFormatContextSection } from '../llm/system-prompt-builder';
 import { buildActionPreviewPrompt, buildCellixSystemPrompt } from '../prompt/cellix-system-prompt';
+import { ConversationTurn, WorkbookContext as RichWorkbookContext } from '../../types/cellix.types';
 import { extractJsonFromLlmText, hasActionPayload } from '../utils/parse-llm-response.util';
 import {
   actionsNeedTableFallback,
@@ -32,12 +38,22 @@ export interface WorkbookContextInput {
   sheets?: string[];
 }
 
+export type LlmCallPlan = {
+  messages: OpenRouterChatMessage[];
+  routing: RoutingDecision;
+  thinkingMessage: string;
+  maxTokens: number;
+};
+
 @Injectable()
 export class ConversationEngineService {
+  private readonly logger = new Logger(ConversationEngineService.name);
+
   constructor(
     private readonly sheetAnalyzer: SheetAnalyzerService,
     private readonly config: AppConfigService,
     private readonly openRouter: OpenRouterService,
+    private readonly modelRouter: ModelRouter,
     private readonly intentClassifier: IntentClassifierService,
     private readonly dataQuery: DataQueryService,
   ) {}
@@ -156,6 +172,82 @@ export class ConversationEngineService {
     };
   }
 
+  planLlmCall(
+    message: string,
+    sheetData: unknown[][],
+    analysis: SheetAnalysis,
+    history: ConversationMessageEntry[],
+    workbookMeta?: WorkbookContextInput,
+    richWorkbookContext?: RichWorkbookContext,
+    extraHistory: ConversationTurn[] = [],
+  ): LlmCallPlan {
+    const messages = this.buildLlmMessages(
+      message,
+      sheetData,
+      analysis,
+      history,
+      workbookMeta,
+      richWorkbookContext,
+    );
+    const context = richWorkbookContext ?? this.buildRoutingContext(analysis, workbookMeta);
+    const conversationHistory = [
+      ...this.historyToTurns(history),
+      ...extraHistory,
+    ];
+    const promptTokenEstimate = Math.ceil(
+      messages.reduce((sum, entry) => sum + entry.content.length, 0) / 4,
+    );
+    const routing = this.modelRouter.route(
+      message,
+      context,
+      conversationHistory,
+      promptTokenEstimate,
+    );
+    const intent = classifyIntent(message);
+
+    this.logger.log(
+      `MODEL_ROUTED model=${routing.model} tier=${routing.tier} complexity=${routing.complexityScore.total} rationale="${routing.complexityScore.rationale}" fallback=${routing.fallbackUsed} estimatedCost=${routing.estimatedCostUsd.toFixed(6)} intent=${intent}`,
+    );
+
+    const maxTokens = this.resolveMaxTokens(message, analysis, routing);
+
+    return {
+      messages,
+      routing,
+      thinkingMessage: this.modelRouter.buildThinkingMessage(routing),
+      maxTokens,
+    };
+  }
+
+  applyRoutingTelemetry(plan: LlmCallPlan, telemetry?: LlmCallTelemetry): void {
+    if (!telemetry) return;
+    telemetry.modelTier = plan.routing.tier;
+    telemetry.model = plan.routing.model;
+    telemetry.complexityScore = plan.routing.complexityScore.total;
+    telemetry.routingRationale = plan.routing.complexityScore.rationale;
+    telemetry.fallbackUsed = plan.routing.fallbackUsed;
+    telemetry.estimatedCostUsd = plan.routing.estimatedCostUsd;
+  }
+
+  async *streamPlannedLlm(
+    plan: LlmCallPlan,
+    telemetry?: LlmCallTelemetry,
+  ): AsyncGenerator<string> {
+    this.applyRoutingTelemetry(plan, telemetry);
+
+    if (this.openRouter.isConfigured()) {
+      yield* this.openRouter.streamChat(
+        plan.messages,
+        telemetry,
+        plan.routing.model,
+        plan.maxTokens,
+      );
+      return;
+    }
+
+    yield* this.streamOpenAiDirect(plan.messages, telemetry, plan.routing.tier);
+  }
+
   async *streamOpenAiAnswer(
     message: string,
     sheetData: unknown[][],
@@ -163,23 +255,19 @@ export class ConversationEngineService {
     history: ConversationMessageEntry[],
     telemetry?: LlmCallTelemetry,
     workbookMeta?: WorkbookContextInput,
+    richWorkbookContext?: RichWorkbookContext,
+    extraHistory: ConversationTurn[] = [],
   ): AsyncGenerator<string> {
-    const messages = this.buildLlmMessages(message, sheetData, analysis, history, workbookMeta);
-    const tier = this.selectModelTier(message, analysis, history);
-
-    if (this.openRouter.isConfigured()) {
-      if (telemetry) telemetry.modelTier = tier;
-      const maxTokens = this.selectMaxTokens(message, analysis);
-      yield* this.openRouter.streamChat(
-        messages,
-        telemetry,
-        this.getOpenRouterModelForTier(tier),
-        maxTokens,
-      );
-      return;
-    }
-
-    yield* this.streamOpenAiDirect(messages, telemetry, tier);
+    const plan = this.planLlmCall(
+      message,
+      sheetData,
+      analysis,
+      history,
+      workbookMeta,
+      richWorkbookContext,
+      extraHistory,
+    );
+    yield* this.streamPlannedLlm(plan, telemetry);
   }
 
   private buildLlmMessages(
@@ -188,10 +276,15 @@ export class ConversationEngineService {
     analysis: SheetAnalysis,
     history: ConversationMessageEntry[],
     workbookMeta?: WorkbookContextInput,
+    richWorkbookContext?: RichWorkbookContext,
   ): OpenRouterChatMessage[] {
     const ctx = buildWorkbookContext(sheetData, analysis, workbookMeta);
     const classification = this.intentClassifier.classify(message);
+    const formatSection = richWorkbookContext
+      ? buildFormatContextSection(richWorkbookContext)
+      : '';
     const systemPrompt = `${buildCellixSystemPrompt(ctx, analysis.isEmpty)}
+${formatSection ? `\n\n${formatSection}` : ''}
 
 ${buildActionPreviewPrompt(classification.intent)}
 
@@ -217,6 +310,7 @@ Sheet has ${analysis.rowCount} rows, ${analysis.columnCount} columns. Next appen
     text: string,
     analysis?: SheetAnalysis,
     userMessage?: string,
+    richWorkbookContext?: RichWorkbookContext,
   ): EngineResponse | null {
     const parsed = extractJsonFromLlmText(text);
     if (!parsed && userMessage) {
@@ -237,6 +331,18 @@ Sheet has ${analysis.rowCount} rows, ${analysis.columnCount} columns. Next appen
       if (userMessage && actionsNeedTableFallback(userMessage, actionList)) {
         const fallback = buildTableActionsFromMessage(userMessage);
         if (fallback) finalActions = fallback;
+      }
+      if (richWorkbookContext) {
+        finalActions = injectMissingFormats(finalActions, richWorkbookContext);
+        if (richWorkbookContext.sheets.length > 1) {
+          const validation = validateCrossSheetActions(finalActions, richWorkbookContext);
+          if (validation.errors.length > 0) {
+            this.logger.warn(
+              `Cross-sheet action validation errors: ${validation.errors.join('; ')}`,
+            );
+          }
+          finalActions = validation.valid;
+        }
       }
 
       const sanitized = this.sanitizeActions(finalActions, analysis);
@@ -887,43 +993,33 @@ Sheet has ${analysis.rowCount} rows, ${analysis.columnCount} columns. Next appen
     };
   }
 
-  private selectModelTier(
-    message: string,
+  private buildRoutingContext(
     analysis: SheetAnalysis,
-    history: ConversationMessageEntry[],
-  ): LlmModelTier {
-    const lower = message.toLowerCase();
-    const editIntent =
-      /\b(set|change|update|edit|delete|clear|remove|create|add|insert|formula|highlight|fill|format|merge|sort|filter)\b/.test(
-        lower,
-      );
-    const complexIntent =
-      /\b(reconcile|audit|compare|match|variance|all rows|entire sheet|bulk|every|generate report|analy[sz]e deeply|pivot|vlookup|sumif|countif)\b/.test(
-        lower,
-      );
+    workbookMeta?: WorkbookContextInput,
+  ): RichWorkbookContext {
+    const activeSheet = workbookMeta?.activeSheet ?? 'Sheet1';
+    const sheetNames = workbookMeta?.sheets?.length ? workbookMeta.sheets : [activeSheet];
+    const snapshot = {
+      sheetName: activeSheet,
+      usedRange: 'A1',
+      rowCount: analysis.rowCount,
+      colCount: analysis.columnCount,
+      headers: analysis.headers,
+      sampleData: [] as (string | number | null)[][],
+      columnMeta: [],
+    };
 
-    if (complexIntent || analysis.rowCount > 200 || history.length > 20) {
-      return 'high';
-    }
-
-    if (editIntent || analysis.rowCount > 50 || history.length > 8) {
-      return 'medium';
-    }
-
-    return 'low';
+    return {
+      activeSheet,
+      sheets: sheetNames.map((name) => ({ ...snapshot, sheetName: name })),
+    };
   }
 
-  private getOpenRouterModelForTier(tier: LlmModelTier): string {
-    const model =
-      tier === 'low'
-        ? this.config.openRouterModelLow
-        : tier === 'high'
-          ? this.config.openRouterModelHigh
-          : this.config.openRouterModelMedium;
-    if (model.includes('openrouter/auto')) {
-      return tier === 'high' ? 'openai/gpt-5' : 'openai/gpt-5-mini';
-    }
-    return model;
+  private historyToTurns(history: ConversationMessageEntry[]): ConversationTurn[] {
+    return history.map((entry) => ({
+      role: entry.role,
+      content: entry.content,
+    }));
   }
 
   private getOpenAiModelForTier(tier: LlmModelTier): string {
@@ -932,12 +1028,29 @@ Sheet has ${analysis.rowCount} rows, ${analysis.columnCount} columns. Next appen
     return this.config.openAiModelMedium;
   }
 
-  private selectMaxTokens(message: string, analysis: SheetAnalysis): number {
+  private isGenerativeRequest(message: string, analysis: SheetAnalysis): boolean {
     const lower = message.toLowerCase();
-    const isGenerative =
+    return (
       analysis.isEmpty ||
-      /\b(generate|populate|dummy|sample|random|seed|mock|create.*data|fill.*sheet)\b/.test(lower);
-    return isGenerative ? 8192 : 4096;
+      /\b(generate|populate|dummy|sample|random|seed|mock|create|fill)\b/.test(lower)
+    );
+  }
+
+  private resolveMaxTokens(
+    message: string,
+    analysis: SheetAnalysis,
+    routing: RoutingDecision,
+  ): number {
+    const requested = this.selectMaxTokens(message, analysis);
+    if (this.isGenerativeRequest(message, analysis)) {
+      // WRITE_TABLE JSON for multi-row sheets needs more than the low-tier 2048 cap.
+      return requested;
+    }
+    return Math.min(requested, routing.config.maxTokens);
+  }
+
+  private selectMaxTokens(message: string, analysis: SheetAnalysis): number {
+    return this.isGenerativeRequest(message, analysis) ? 8192 : 4096;
   }
 
   private isPopulateIntent(lower: string): boolean {

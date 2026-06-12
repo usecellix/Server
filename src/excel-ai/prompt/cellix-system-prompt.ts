@@ -87,7 +87,7 @@ Cell & Row:
 - {"type":"SET_CELL","row":2,"col":3,"value":"..."}
 - {"type":"CLEAR_CELL","row":2,"col":3}
 - {"type":"SET_FORMULA","row":2,"col":3,"formula":"=SUM(D2:D848)"}
-- {"type":"ADD_ROW","data":["val1","val2",...]} — appends after last data row
+- {"type":"ADD_ROW","data":["val1","val2",...],"format":{"numberFormat":"..."}} — appends after last data row; include numberFormat for date/currency columns
 - {"type":"DELETE_ROW","row":2}
 - {"type":"INSERT_ROW","row":2,"count":1,"position":"below"}
 - {"type":"INSERT_COLUMN","col":2,"count":1,"position":"right"}

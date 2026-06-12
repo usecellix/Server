@@ -28,6 +28,7 @@ export class ConversationMessageEntry {
     actions?: unknown[];
     questionOptions?: string[];
     pendingIntent?: string;
+    ambiguityScore?: number;
   };
 }
 

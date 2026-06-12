@@ -15,10 +15,18 @@ import {
   ConversationMessageEntry,
 } from '../schemas/conversation.schema';
 import { endSseResponse, initSseResponse, writeSseEvent } from '../utils/sse.util';
+import { AuditService } from '../../audit/audit.service';
+import { classifyIntent, detectAmbiguity } from '../llm/ambiguity-detector';
+import { LLMTier } from '../../types/cellix.types';
 import { ConversationEngineService, EngineResponse, LlmRequestError } from './conversation-engine.service';
-import { LlmCallTelemetry } from './openrouter.service';
+import { LlmCallTelemetry, OpenRouterService } from './openrouter.service';
 import { buildStatusMessage } from '../utils/status-message.util';
 import { buildTableActionsFromMessage, parseTableCreateRequest } from '../utils/table-request.util';
+import {
+  resolveConversationHistory,
+  resolveEngineWorkbookMeta,
+  resolveWorkbookContext,
+} from '../utils/workbook-context-resolver.util';
 import { SheetAnalyzerService } from './sheet-analyzer.service';
 
 const MAX_MESSAGES = 50;
@@ -32,6 +40,8 @@ export class ConversationService {
     private readonly conversationModel: Model<ConversationDocument>,
     private readonly sheetAnalyzer: SheetAnalyzerService,
     private readonly engine: ConversationEngineService,
+    private readonly auditService: AuditService,
+    private readonly openRouter: OpenRouterService,
   ) {}
 
   async handleConversation(
@@ -92,6 +102,22 @@ export class ConversationService {
       }
 
       if (this.engine.hasOpenAi()) {
+        const ambiguityOutcome = await this.checkAmbiguity(request, analysis);
+        if (ambiguityOutcome?.clarification) {
+          await this.emitClarification(
+            conversationId,
+            ambiguityOutcome.clarification,
+            emit,
+            reply,
+          );
+          return;
+        }
+        if (ambiguityOutcome?.lowConfidence) {
+          emit('status', {
+            message: `⚠ Low confidence (${ambiguityOutcome.score}% ambiguous) — proceeding with best guess…`,
+          });
+        }
+
         try {
           await this.streamWithOpenAi(request, reply, conversationId, traceId, history, analysis, emit);
           return;
@@ -113,7 +139,7 @@ export class ConversationService {
         request.sheetData,
         analysis,
         history,
-        request.workbookContext,
+        resolveEngineWorkbookMeta(request),
       );
       this.logger.log(
         `AI skipped trace=${traceId} conversation=${conversationId} provider=local reason=${localReason} result=${decision.kind} durationMs=${Date.now() - startedAt}`,
@@ -126,6 +152,50 @@ export class ConversationService {
       emit('error', { message });
       endSseResponse(reply);
     }
+  }
+
+  private async checkAmbiguity(
+    request: ConversationRequestDto,
+    analysis: ReturnType<SheetAnalyzerService['analyze']>,
+  ) {
+    const workbookContext = resolveWorkbookContext(request, analysis, request.sheetData);
+    const conversationHistory = resolveConversationHistory(request);
+    const quickCall = this.openRouter.isConfigured()
+      ? (system: string, user: string) => this.openRouter.quickCall(system, user)
+      : undefined;
+
+    return detectAmbiguity(request.message, workbookContext, conversationHistory, quickCall);
+  }
+
+  private async emitClarification(
+    conversationId: string,
+    clarification: {
+      question: string;
+      suggestions?: string[];
+      ambiguityScore: number;
+    },
+    emit: (event: string, data: Record<string, unknown>) => void,
+    reply: FastifyReply,
+  ): Promise<void> {
+    await this.saveMessage(conversationId, {
+      id: `msg_${Date.now()}_assistant`,
+      role: 'assistant',
+      content: `[Clarification needed]: ${clarification.question}`,
+      type: 'clarification',
+      timestamp: new Date(),
+      metadata: {
+        questionOptions: clarification.suggestions,
+        ambiguityScore: clarification.ambiguityScore,
+      },
+    });
+
+    emit('clarification', {
+      question: clarification.question,
+      suggestions: clarification.suggestions,
+      ambiguityScore: clarification.ambiguityScore,
+    });
+    emit('done', { message: 'awaiting_clarification' });
+    endSseResponse(reply);
   }
 
   private shouldFallbackFromOpenAi(error: unknown): boolean {
@@ -205,57 +275,93 @@ export class ConversationService {
     let fullText = '';
     const telemetry: LlmCallTelemetry = {};
     const startedAt = Date.now();
+    let success = false;
+    let errorCode: string | undefined;
+    let actionsCount: number | undefined;
+    const intent = classifyIntent(request.message);
+    const richWorkbookContext = resolveWorkbookContext(request, analysis, request.sheetData);
+    const conversationTurns = resolveConversationHistory(request);
+    const llmPlan = this.engine.planLlmCall(
+      request.message,
+      request.sheetData,
+      analysis,
+      history,
+      resolveEngineWorkbookMeta(request),
+      richWorkbookContext,
+      conversationTurns,
+    );
+
+    emit('thinking', { message: `🧠 ${llmPlan.thinkingMessage}` });
 
     try {
-      for await (const token of this.engine.streamOpenAiAnswer(
-        request.message,
-        request.sheetData,
-        analysis,
-        history,
-        telemetry,
-        request.workbookContext,
-      )) {
+      for await (const token of this.engine.streamPlannedLlm(llmPlan, telemetry)) {
         fullText += token;
       }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'AI provider failed';
-      this.logger.warn(
-        `AI failed trace=${traceId} conversation=${conversationId} called=true provider=${telemetry.provider ?? 'unknown'} modelTier=${telemetry.modelTier ?? 'unknown'} model=${telemetry.model ?? 'unknown'} durationMs=${Date.now() - startedAt} error="${this.clipForLog(message, 300)}"`,
+      success = true;
+
+      const structured = this.engine.parseStructuredResponse(
+        fullText,
+        analysis,
+        request.message,
+        richWorkbookContext,
       );
-      throw error;
-    }
+      const fallbackText = fullText.trim() || 'I could not generate a response.';
+      if (structured?.kind === 'actions') {
+        actionsCount = structured.actions.length;
+      }
+      this.logger.log(
+        `AI response trace=${traceId} conversation=${conversationId} called=true provider=${telemetry.provider ?? 'unknown'} modelTier=${telemetry.modelTier ?? 'unknown'} model=${telemetry.model ?? 'unknown'} tokens=${this.formatUsage(telemetry)} durationMs=${Date.now() - startedAt} response="${this.clipForLog(fallbackText)}"`,
+      );
 
-    const structured = this.engine.parseStructuredResponse(
-      fullText,
-      analysis,
-      request.message,
-    );
-    const fallbackText = fullText.trim() || 'I could not generate a response.';
-    this.logger.log(
-      `AI response trace=${traceId} conversation=${conversationId} called=true provider=${telemetry.provider ?? 'unknown'} modelTier=${telemetry.modelTier ?? 'unknown'} model=${telemetry.model ?? 'unknown'} tokens=${this.formatUsage(telemetry)} durationMs=${Date.now() - startedAt} response="${this.clipForLog(fallbackText)}"`,
-    );
+      if (!structured) {
+        const tableFallback = buildTableActionsFromMessage(request.message);
+        if (tableFallback?.length) {
+          const plan = parseTableCreateRequest(request.message);
+          const answer = plan
+            ? `Created **${plan.rowCount}** rows with columns: ${plan.headers.join(', ')}.`
+            : 'Created your table with headers and sample values.';
+          this.logger.log(
+            `Table create (LLM parse fallback) trace=${traceId} conversation=${conversationId}`,
+          );
+          await this.saveMessage(conversationId, {
+            id: `msg_${Date.now()}_assistant`,
+            role: 'assistant',
+            content: answer,
+            type: 'answer',
+            timestamp: new Date(),
+            metadata: { actions: tableFallback },
+          });
+          emit('answer', { answer });
+          emit('actions', {
+            actions: tableFallback,
+            explanation: 'Wrote headers and all data rows to your sheet.',
+          });
+          emit('conversation_end', { summary: 'Changes applied.' });
+          await this.markCompleted(conversationId);
+          endSseResponse(reply);
+          return;
+        }
 
-    if (!structured) {
-      const retryHint =
-        'I understood your request but could not parse the AI response. Please try again — e.g. "Generate 10 rows of sample GST purchase data with headers".';
-      const answer =
-        fallbackText.length > 20 && !fallbackText.startsWith('{')
-          ? `${fallbackText}\n\n${retryHint}`
-          : retryHint;
+        const retryHint =
+          'I understood your request but could not parse the AI response. Please try again — e.g. "Generate 10 rows of sample GST purchase data with headers".';
+        const answer =
+          fallbackText.length > 20 && !fallbackText.startsWith('{')
+            ? `${fallbackText}\n\n${retryHint}`
+            : retryHint;
 
-      await this.saveMessage(conversationId, {
-        id: `msg_${Date.now()}_assistant`,
-        role: 'assistant',
-        content: answer,
-        type: 'answer',
-        timestamp: new Date(),
-      });
-      emit('answer', { answer });
-      emit('conversation_end', { summary: 'Completed.' });
-      await this.markCompleted(conversationId);
-      endSseResponse(reply);
-      return;
-    }
+        await this.saveMessage(conversationId, {
+          id: `msg_${Date.now()}_assistant`,
+          role: 'assistant',
+          content: answer,
+          type: 'answer',
+          timestamp: new Date(),
+        });
+        emit('answer', { answer });
+        emit('conversation_end', { summary: 'Completed.' });
+        await this.markCompleted(conversationId);
+        endSseResponse(reply);
+        return;
+      }
 
     if (structured.kind === 'question') {
       await this.saveMessage(conversationId, {
@@ -305,6 +411,39 @@ export class ConversationService {
     emit('conversation_end', { summary: 'Completed.' });
     await this.markCompleted(conversationId);
     endSseResponse(reply);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'AI provider failed';
+      errorCode =
+        error instanceof LlmRequestError
+          ? String(error.status)
+          : error instanceof Error
+            ? error.name
+            : 'UNKNOWN_ERROR';
+      this.logger.warn(
+        `AI failed trace=${traceId} conversation=${conversationId} called=true provider=${telemetry.provider ?? 'unknown'} modelTier=${telemetry.modelTier ?? 'unknown'} model=${telemetry.model ?? 'unknown'} durationMs=${Date.now() - startedAt} error="${this.clipForLog(message, 300)}"`,
+      );
+      throw error;
+    } finally {
+      await this.auditService.logLLMCall({
+        traceId,
+        model: telemetry.model ?? 'unknown',
+        tier: (telemetry.modelTier ?? 'medium') as LLMTier,
+        intent,
+        promptTokens: telemetry.usage?.promptTokens ?? 0,
+        completionTokens: telemetry.usage?.completionTokens ?? 0,
+        latencyMs: Date.now() - startedAt,
+        success,
+        errorCode,
+        actionsCount,
+        rawUsage: telemetry.usage
+          ? {
+              prompt_tokens: telemetry.usage.promptTokens,
+              completion_tokens: telemetry.usage.completionTokens,
+              total_tokens: telemetry.usage.totalTokens,
+            }
+          : undefined,
+      });
+    }
   }
 
   private validateRequest(request: ConversationRequestDto): void {
