@@ -20,6 +20,34 @@ export const DEFAULT_GST_HEADERS = [
   'Narration',
 ];
 
+export function detectCreateNewSheetIntent(message: string): boolean {
+  return /\b(create|add)\s+(?:an?\s+)?(?:(?:new|empty|blank)\s+)*sheet/i.test(message);
+}
+
+/** Prompts that need LLM planning (data, copy, sort, etc.) — not empty-sheet-only. */
+export function detectSheetDataGenerationIntent(message: string): boolean {
+  const lower = message.toLowerCase();
+  if (/\b(as\s+a\s+copy|copy\s+of|duplicate|clone)\b/i.test(message)) return true;
+  if (
+    /\bsort(?:\s+the\s+values?\s+of|\s+(?:the\s+)?(?:sheet\s+)?(?:based\s+on|by|on)|\s+based\s+on|\s+by|\s+on|\s+column\b)/i.test(
+      message,
+    ) ||
+    /\bin\s+(?:ascending|descending)\s+order\b/i.test(message)
+  ) {
+    return true;
+  }
+
+  const hasDataKeyword =
+    /\b(dummy|sample|data|values?|rows?|headers?|columns?|populate|generate|fill|table|content|gst)\b/i.test(
+      lower,
+    );
+  const hasCreateKeyword = /\b(create|add|generate|populate|fill|make|build|give|insert)\b/i.test(
+    lower,
+  );
+
+  return hasDataKeyword && hasCreateKeyword;
+}
+
 export function parseTableCreateRequest(message: string): TablePlan | null {
   const lower = message.toLowerCase();
   const isCreate =
@@ -57,6 +85,8 @@ export function buildTableActionsFromMessage(message: string): SheetActionPayloa
 
 function extractRowCount(message: string): number | null {
   const patterns = [
+    /\b(\d{1,3})\s+dummy\b/i,
+    /\bwith\s+(\d{1,3})\s+(?:dummy|sample)\b/i,
     /\b(\d{1,3})\s*rows?\b/i,
     /\bcreate\s+(\d{1,3})\b/i,
     /\bgive\s+(\d{1,3})\b/i,
@@ -69,6 +99,58 @@ function extractRowCount(message: string): number | null {
     }
   }
   return null;
+}
+
+/** Extract sheet name from "named Cellix" or `named "Cellix"`. */
+export function extractSheetNameFromPrompt(message: string): string | null {
+  const quoted = /(?:named|called)\s+["']([^"']+)["']/i.exec(message)?.[1];
+  if (quoted?.trim()) return quoted.trim();
+
+  const unquoted = /(?:named|called)\s+([A-Za-z][A-Za-z0-9 _-]*?)(?:\s+with|\s*$)/i.exec(message)?.[1];
+  if (unquoted?.trim()) return unquoted.trim();
+
+  return null;
+}
+
+/**
+ * "Create a new sheet named Cellix with 5 dummy values" → empty sheet + WRITE_TABLE.
+ */
+export function parseNewSheetWithDummyData(message: string): {
+  sheetName: string;
+  headers: string[];
+  rows: unknown[][];
+} | null {
+  const lower = message.toLowerCase();
+  if (!/\b(create|add)\s+(?:an?\s+)?(?:(?:new|empty|blank)\s+)*sheet/i.test(lower)) return null;
+  if (!/\b(dummy|sample|values?|data|row)\b/i.test(lower)) return null;
+
+  const explicitName = extractSheetNameFromPrompt(message);
+  const sheetName = explicitName ?? 'New Sheet';
+
+  let headers = extractHeaders(message);
+  if (headers.length < 2) {
+    headers = ['Item', 'Value', 'Status'];
+  }
+
+  const rowCount = extractRowCount(message) ?? 5;
+  const rows = buildDummyRows(headers, rowCount);
+
+  return { sheetName, headers, rows };
+}
+
+export function buildNewSheetWithDummyDataActions(message: string): SheetActionPayload[] | null {
+  const plan = parseNewSheetWithDummyData(message);
+  if (!plan) return null;
+
+  return [
+    { type: 'ADD_SHEET', name: plan.sheetName },
+    {
+      type: 'WRITE_TABLE',
+      sheetName: plan.sheetName,
+      headers: plan.headers,
+      rows: plan.rows,
+    },
+  ];
 }
 
 function extractHeaders(message: string): string[] {

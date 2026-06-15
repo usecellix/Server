@@ -3,10 +3,36 @@ import { formatIndianCurrency, formatIndianNumber, parseIndianNumber } from '../
 import { SheetAnalysis, SheetAnalyzerService } from './sheet-analyzer.service';
 import { WorkbookContext } from '../types/sheet-actions.types';
 
+export interface SelectCellTarget {
+  sheetName: string;
+  row: number;
+  col: number;
+}
+
+export interface FindMatch {
+  label: string;
+  detail?: string;
+  sheetName: string;
+  /** 0-based row index within the sheet. */
+  row: number;
+  /** 0-based column index within the sheet. */
+  col: number;
+  colLetter: string;
+  /** 1-based Excel row number. */
+  rowNum: number;
+  rawValue: string;
+}
+
 export interface DataQueryResult {
   answer: string;
   computedValue?: number;
   followUp?: string;
+  selectCell?: SelectCellTarget;
+  matches?: FindMatch[];
+}
+
+export interface FindQueryOptions {
+  sheetName?: string;
 }
 
 @Injectable()
@@ -18,12 +44,18 @@ export class DataQueryService {
     message: string,
     sheetData: unknown[][],
     analysis: SheetAnalysis,
-    ctx: WorkbookContext,
+    ctx?: WorkbookContext,
+    options?: FindQueryOptions,
   ): DataQueryResult | null {
-    const columnIndex = this.analyzer.resolveColumnIndexFromMessage(message, analysis);
+    const columnIndex =
+      subIntent === 'find'
+        ? this.analyzer.resolveFindColumnIndex(message, analysis)
+        : this.analyzer.resolveColumnIndexFromMessage(message, analysis);
     const lower = message.toLowerCase();
 
     switch (subIntent) {
+      case 'find':
+        return this.findRows(message, sheetData, analysis, columnIndex, options);
       case 'average':
         return this.average(columnIndex, sheetData, analysis);
       case 'max':
@@ -42,6 +74,315 @@ export class DataQueryService {
       default:
         return this.sum(columnIndex, sheetData, analysis, lower);
     }
+  }
+
+  private extractFindSearchTerm(message: string): string | null {
+    const quoted = /"([^"]+)"/.exec(message);
+    if (quoted?.[1]?.trim()) return quoted[1].trim();
+
+    // Prefer the last number in the message — handles "Find CGST value 1868".
+    const numbers = message.match(/[\d,]+(?:\.\d+)?/g);
+    if (numbers?.length) {
+      return numbers[numbers.length - 1].replace(/,/g, '');
+    }
+
+    const afterFind =
+      /\b(?:find|search|locate|look up|lookup|show me|where is|get me|fetch)\s+(.+)/i.exec(
+        message,
+      );
+    if (!afterFind?.[1]) return null;
+
+    const remainder = afterFind[1]
+      .replace(
+        /\b(cgst|sgst|igst|tds|gstin|value|amount|invoice|row|column|cell|the|a|an|in|for|of)\b/gi,
+        ' ',
+      )
+      .trim();
+    if (!remainder) return null;
+
+    const tokens = remainder.split(/\s+/).filter(Boolean);
+    return tokens[tokens.length - 1] ?? remainder;
+  }
+
+  /**
+   * Numeric find: integer search "148" matches 148, 148.5, 148.00 — not 1487,
+   * 148000, or 21486. Decimal search "148.5" matches that value only.
+   */
+  private numericValueMatchesSearch(absCell: number, absSearch: number, searchText: string): boolean {
+    const hasDecimalInSearch = /\.\d+/.test(searchText.trim());
+
+    if (hasDecimalInSearch) {
+      return Math.abs(absCell - absSearch) < 0.001;
+    }
+
+    const searchInt = Math.floor(absSearch + 1e-9);
+    const cellInt = Math.floor(absCell + 1e-9);
+    return cellInt === searchInt;
+  }
+
+  private cellMatchesSearch(
+    cellStr: string,
+    searchNum: number | null,
+    searchText: string,
+  ): boolean {
+    const cellNum = parseIndianNumber(cellStr);
+
+    if (searchNum !== null && cellNum !== null) {
+      return this.numericValueMatchesSearch(Math.abs(cellNum), Math.abs(searchNum), searchText);
+    }
+
+    const normalizedCell = cellStr.toLowerCase().replace(/[\s,₹]/g, '');
+    const normalizedSearch = searchText.replace(/[\s,₹]/g, '');
+
+    if (searchNum === null) {
+      return normalizedCell.includes(normalizedSearch);
+    }
+
+    // Non-numeric cell while searching a number — exact token match only.
+    const stripped = normalizedCell.replace(/(dr|cr)$/i, '');
+    return stripped === normalizedSearch;
+  }
+
+  private scanForMatches(
+    sheetData: unknown[][],
+    analysis: SheetAnalysis,
+    colsToScan: number[],
+    searchNum: number | null,
+    searchText: string,
+  ): Array<{
+    rowIndex: number;
+    rowNum: number;
+    colIndex: number;
+    colHeader: string;
+    colLetter: string;
+    rawValue: string;
+  }> {
+    const headers = analysis.headers;
+    const matches: Array<{
+      rowIndex: number;
+      rowNum: number;
+      colIndex: number;
+      colHeader: string;
+      colLetter: string;
+      rawValue: string;
+    }> = [];
+
+    for (let row = 1; row < sheetData.length; row += 1) {
+      for (const col of colsToScan) {
+        const cell = sheetData[row]?.[col];
+        if (cell === undefined || cell === null || cell === '') continue;
+
+        const cellStr = String(cell);
+        if (!this.cellMatchesSearch(cellStr, searchNum, searchText)) continue;
+
+        matches.push({
+          rowIndex: row,
+          rowNum: row + 1,
+          colIndex: col,
+          colHeader: headers[col] || analysis.columnLetters[col],
+          colLetter: analysis.columnLetters[col],
+          rawValue: cellStr,
+        });
+      }
+    }
+
+    return matches;
+  }
+
+  private buildRowContext(
+    rowData: unknown[],
+    headers: string[],
+    matchCol: number,
+    matchValue: string,
+    colLetter: string,
+    rowNum: number,
+  ): string {
+    const pick = (patterns: RegExp[]): string | null => {
+      for (let i = 0; i < headers.length; i += 1) {
+        const header = headers[i] ?? '';
+        if (!header || !rowData[i]) continue;
+        if (patterns.some((pattern) => pattern.test(header))) {
+          return `${header}: ${rowData[i]}`;
+        }
+      }
+      return null;
+    };
+
+    const supplier =
+      pick([/supplier|vendor|party|name/i]) ??
+      headers
+        .slice(0, 5)
+        .map((h, i) => (rowData[i] ? String(rowData[i]) : null))
+        .filter(Boolean)
+        .slice(0, 2)
+        .join(', ');
+
+    const date = pick([/date/i]);
+    const gstin = pick([/gstin/i]);
+    const header = headers[matchCol] || 'Value';
+
+    const parts = [
+      supplier ? String(supplier).replace(/^[^:]+:\s*/, '') : null,
+      gstin ? gstin.replace(/^[^:]+:\s*/, '') : null,
+      date ? date.replace(/^[^:]+:\s*/, '') : null,
+    ].filter(Boolean);
+
+    const summary = parts.length ? parts.join(', ') : `Row ${rowNum}`;
+    return `${summary}\n${colLetter}${rowNum} (${header}): ${matchValue}`;
+  }
+
+  /** Public accessor for the search term so callers can build cross-sheet results. */
+  extractSearchTerm(message: string): string | null {
+    return this.extractFindSearchTerm(message);
+  }
+
+  /**
+   * Scan a single sheet and return structured matches (used for both
+   * single-sheet and cross-sheet workbook search).
+   */
+  collectMatches(
+    message: string,
+    sheetData: unknown[][],
+    analysis: SheetAnalysis,
+    sheetName: string,
+    hintColumnIndex: number | null = null,
+  ): FindMatch[] {
+    const rawTerm = this.extractFindSearchTerm(message);
+    if (!rawTerm) return [];
+
+    const searchNum = parseIndianNumber(rawTerm);
+    const searchText = rawTerm.toLowerCase();
+    const headers = analysis.headers;
+    const allCols = Array.from({ length: headers.length }, (_, i) => i);
+
+    let scanned = this.scanForMatches(
+      sheetData,
+      analysis,
+      hintColumnIndex !== null ? [hintColumnIndex] : allCols,
+      searchNum,
+      searchText,
+    );
+
+    if (scanned.length === 0 && hintColumnIndex !== null) {
+      scanned = this.scanForMatches(sheetData, analysis, allCols, searchNum, searchText);
+    }
+
+    const rowMatches = scanned.map((m) => {
+      const rowData = sheetData[m.rowIndex] as unknown[];
+      const context = this.buildRowContext(
+        rowData,
+        headers,
+        m.colIndex,
+        m.rawValue,
+        m.colLetter,
+        m.rowNum,
+      );
+      const [label, ...detailParts] = context.split('\n');
+      return {
+        label: label || `Row ${m.rowNum}`,
+        detail: detailParts.join(' ') || undefined,
+        sheetName,
+        row: m.rowIndex,
+        col: m.colIndex,
+        colLetter: m.colLetter,
+        rowNum: m.rowNum,
+        rawValue: m.rawValue,
+      };
+    });
+
+    return this.deduplicateMatchesByRow(rowMatches);
+  }
+
+  /** One clickable result per row (merge CGST/SGST hits on the same row). */
+  private deduplicateMatchesByRow(matches: FindMatch[]): FindMatch[] {
+    const groups = new Map<string, FindMatch[]>();
+
+    for (const match of matches) {
+      const key = `${match.sheetName}\0${match.row}`;
+      const list = groups.get(key) ?? [];
+      list.push(match);
+      groups.set(key, list);
+    }
+
+    const merged: FindMatch[] = [];
+
+    for (const rowMatches of groups.values()) {
+      rowMatches.sort((a, b) => a.col - b.col);
+      const primary = rowMatches[0];
+      const uniqueValues = [...new Set(rowMatches.map((m) => m.rawValue))];
+      const columnLabels = rowMatches
+        .map((m) => {
+          const headerMatch = m.detail?.match(/\(([A-Za-z@ %^]+)\):/);
+          return headerMatch?.[1] ?? m.colLetter;
+        })
+        .filter(Boolean);
+
+      const valueText = uniqueValues.length === 1 ? uniqueValues[0] : uniqueValues.join(', ');
+      const columnsText =
+        columnLabels.length > 1
+          ? columnLabels.join(', ')
+          : columnLabels.length === 1
+            ? columnLabels[0]
+            : '';
+
+      merged.push({
+        ...primary,
+        label: primary.label,
+        detail: columnsText ? `${valueText} · ${columnsText}` : valueText,
+      });
+    }
+
+    return merged.sort(
+      (a, b) => a.sheetName.localeCompare(b.sheetName) || a.rowNum - b.rowNum,
+    );
+  }
+
+  /** Build a find result (answer text + jump targets) from aggregated matches. */
+  buildFindResult(term: string, matches: FindMatch[]): DataQueryResult {
+    if (matches.length === 0) {
+      return {
+        answer: `No value matching **${term}** found in the workbook. Tally values often appear as "1,868.41 Dr" — try searching with just the number (e.g. 1868).`,
+        matches: [],
+      };
+    }
+
+    const first = matches[0];
+    const sheetCount = new Set(matches.map((m) => m.sheetName)).size;
+    const acrossSheets = sheetCount > 1 ? ` across ${sheetCount} sheets` : '';
+    const rowWord = matches.length === 1 ? 'row' : 'rows';
+
+    return {
+      answer:
+        matches.length === 1
+          ? `Found **${term}** in 1 ${rowWord}. Click the link below to jump to it.`
+          : `Found **${term}** in ${matches.length} ${rowWord}${acrossSheets}. Click a link below to jump to it.`,
+      selectCell: { sheetName: first.sheetName, row: first.row, col: first.col },
+      matches,
+      followUp:
+        matches.length === 1
+          ? undefined
+          : `Selected ${first.sheetName}!${first.colLetter}${first.rowNum} — use the links for other rows.`,
+    };
+  }
+
+  private findRows(
+    message: string,
+    sheetData: unknown[][],
+    analysis: SheetAnalysis,
+    hintColumnIndex: number | null,
+    options?: FindQueryOptions,
+  ): DataQueryResult | null {
+    const rawTerm = this.extractFindSearchTerm(message);
+    if (!rawTerm) {
+      return {
+        answer:
+          'I could not extract a search value from your message. Please try: "Find CGST value 1868".',
+      };
+    }
+
+    const sheetName = options?.sheetName ?? 'Sheet1';
+    const matches = this.collectMatches(message, sheetData, analysis, sheetName, hintColumnIndex);
+    return this.buildFindResult(rawTerm, matches);
   }
 
   private sum(

@@ -18,7 +18,7 @@ import { ConversationMessageEntry } from '../schemas/conversation.schema';
 import { SheetActionPayload } from '../types/sheet-actions.types';
 import { buildWorkbookContext } from '../utils/workbook-context.util';
 import { formatIndianCurrency } from '../utils/indian-format.util';
-import { DataQueryService } from './data-query.service';
+import { DataQueryService, FindMatch } from './data-query.service';
 import { IntentClassifierService, intentIsReadOnly } from './intent-classifier.service';
 import { LlmCallTelemetry, LlmUsage, OpenRouterChatMessage, OpenRouterService } from './openrouter.service';
 import { SheetAnalysis, SheetAnalyzerService } from './sheet-analyzer.service';
@@ -28,7 +28,13 @@ export type { SheetActionPayload };
 
 export type EngineResponse =
   | { kind: 'question'; question: string; options?: string[]; pendingIntent?: string }
-  | { kind: 'answer'; answer: string; followUp?: string }
+  | {
+      kind: 'answer';
+      answer: string;
+      followUp?: string;
+      selectCell?: { sheetName: string; row: number; col: number };
+      matches?: FindMatch[];
+    }
   | { kind: 'actions'; answer: string; actions: SheetActionPayload[]; explanation: string };
 
 type LlmModelTier = 'low' | 'medium' | 'high';
@@ -296,12 +302,16 @@ Sheet has ${analysis.rowCount} rows, ${analysis.columnCount} columns. Next appen
       content: entry.content,
     }));
 
+    const promptContextBlock = richWorkbookContext?.prompt_context?.trim()
+      ? `\n\n${richWorkbookContext.prompt_context.trim()}`
+      : '';
+
     return [
       { role: 'system', content: systemPrompt },
       ...prior,
       {
         role: 'user',
-        content: `User message: ${message}\nSheet preview (first rows): ${JSON.stringify(sheetData.slice(0, 8))}`,
+        content: `User message: ${message}${promptContextBlock || `\nSheet preview (first rows): ${JSON.stringify(sheetData.slice(0, 8))}`}`,
       },
     ];
   }
@@ -400,6 +410,27 @@ Sheet has ${analysis.rowCount} rows, ${analysis.columnCount} columns. Next appen
 
   private static readonly HEADER_ROW = 0;
 
+  finalizeActions(
+    actions: SheetActionPayload[],
+    analysis: SheetAnalysis,
+    richWorkbookContext?: RichWorkbookContext,
+  ): SheetActionPayload[] {
+    let finalActions = actions;
+    if (richWorkbookContext) {
+      finalActions = injectMissingFormats(finalActions, richWorkbookContext);
+      if (richWorkbookContext.sheets.length > 1) {
+        const validation = validateCrossSheetActions(finalActions, richWorkbookContext);
+        if (validation.errors.length > 0) {
+          this.logger.warn(
+            `Cross-sheet action validation errors: ${validation.errors.join('; ')}`,
+          );
+        }
+        finalActions = validation.valid;
+      }
+    }
+    return this.sanitizeActions(finalActions, analysis);
+  }
+
   private sanitizeActions(
     actions: SheetActionPayload[],
     analysis?: SheetAnalysis,
@@ -487,8 +518,9 @@ Sheet has ${analysis.rowCount} rows, ${analysis.columnCount} columns. Next appen
         if (row === undefined || col === undefined || typeof action.formula !== 'string') return null;
         return { ...action, row, col };
       case 'ADD_ROW':
-        if (!Array.isArray(action.data)) return null;
-        return action;
+        if (Array.isArray(action.data)) return action;
+        if (typeof action.afterRow === 'number' && Array.isArray(action.values)) return action;
+        return null;
       case 'DELETE_ROW':
       case 'INSERT_ROW':
       case 'HIDE_ROW':
@@ -532,6 +564,17 @@ Sheet has ${analysis.rowCount} rows, ${analysis.columnCount} columns. Next appen
       case 'HIDE_SHEET':
       case 'SHOW_SHEET':
       case 'SET_SHEET_COLOR':
+      case 'BATCH_SET':
+      case 'CREATE_TABLE':
+      case 'DEFINE_NAMED_RANGE':
+      case 'AUTOFIT_COLUMNS':
+      case 'CLARIFY':
+      case 'CHECKPOINT':
+      case 'ADD_SHEET':
+      case 'SORT_RANGE':
+        if (action.type === 'SORT_RANGE') {
+          if (!action.sheetName || !action.range || action.key === undefined) return null;
+        }
         return action;
       default:
         return null;

@@ -10,6 +10,7 @@ import {
   MaxLength,
   ValidateNested,
 } from 'class-validator';
+import { AssistantMode } from '../types/sheet-actions.types';
 
 export class ConversationHistoryEntryDto {
   @IsIn(['user', 'assistant'])
@@ -18,6 +19,24 @@ export class ConversationHistoryEntryDto {
   @IsString()
   @MaxLength(5000)
   content!: string;
+}
+
+export class SheetCompressionDto {
+  @IsNumber()
+  originalRowCount!: number;
+
+  @IsNumber()
+  compressedRowCount!: number;
+
+  @IsBoolean()
+  truncated!: boolean;
+
+  @IsBoolean()
+  onDemandFetchEnabled!: boolean;
+
+  @IsOptional()
+  @IsArray()
+  includedRowIndices?: number[];
 }
 
 export class SheetSnapshotDto {
@@ -102,6 +121,11 @@ export class ConversationRequestDto {
 
   @IsOptional()
   @ValidateNested()
+  @Type(() => SheetCompressionDto)
+  sheetCompression?: SheetCompressionDto;
+
+  @IsOptional()
+  @ValidateNested()
   @Type(() => ConversationContextDto)
   context?: ConversationContextDto;
 
@@ -119,4 +143,20 @@ export class ConversationRequestDto {
   @IsOptional()
   @IsBoolean()
   previewEnabled?: boolean;
+
+  /** Compressed workbook context string for LLM prompts (from add-in deep reader). */
+  @IsOptional()
+  @IsString()
+  @MaxLength(50000)
+  promptContext?: string;
+
+  /** Quick-edit: refine a prior change set without a full workbook read. */
+  @IsOptional()
+  @IsString()
+  refinementChangeSetId?: string;
+
+  /** Operational mode selected in the add-in: ask (read-only), action, or plan. */
+  @IsOptional()
+  @IsIn(['ask', 'action', 'plan'])
+  mode?: AssistantMode;
 }

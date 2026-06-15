@@ -115,6 +115,61 @@ export class SheetAnalyzerService {
     return null;
   }
 
+  /** For find/search queries — prefer explicit tax columns; ignore prompt noise like "value". */
+  resolveFindColumnIndex(message: string, analysis: SheetAnalysis): number | null {
+    const taxKeywords: Array<{ prompt: RegExp; header: RegExp }> = [
+      { prompt: /\bcgst\b/i, header: /cgst/i },
+      { prompt: /\bsgst\b/i, header: /sgst/i },
+      { prompt: /\bigst\b/i, header: /igst/i },
+      { prompt: /\btds\b/i, header: /tds/i },
+      { prompt: /\bgstin\b/i, header: /gstin/i },
+    ];
+
+    for (const { prompt, header } of taxKeywords) {
+      if (!prompt.test(message)) continue;
+      const idx = analysis.headers.findIndex((h) => header.test(h));
+      if (idx >= 0) return idx;
+    }
+
+    const lower = message.toLowerCase();
+    const skipHeaders = new Set([
+      'value',
+      'amount',
+      'total',
+      'date',
+      'name',
+      'no',
+      'number',
+      'invoice',
+      'row',
+      'column',
+      'cell',
+    ]);
+
+    for (const header of analysis.headers) {
+      const normalized = header.toLowerCase().trim();
+      if (!normalized || skipHeaders.has(normalized)) continue;
+      if (lower.includes(normalized)) {
+        const idx = this.resolveColumnIndex(header, analysis);
+        if (idx !== null) return idx;
+      }
+    }
+
+    const columnMatch = /\bcolumn\s+([A-Za-z0-9 ]+)\b/i.exec(message);
+    if (columnMatch) {
+      return this.resolveColumnIndex(columnMatch[1], analysis);
+    }
+
+    for (const letter of analysis.columnLetters) {
+      const re = new RegExp(`\\b${letter}\\b`, 'i');
+      if (re.test(message)) {
+        return this.resolveColumnIndex(letter, analysis);
+      }
+    }
+
+    return null;
+  }
+
   columnStats(sheetData: unknown[][], columnIndex: number, hasHeader = true): ColumnStats {
     const startRow = hasHeader ? 1 : 0;
     let count = 0;

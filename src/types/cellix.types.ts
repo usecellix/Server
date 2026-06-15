@@ -53,6 +53,16 @@ export interface ConversationTurn {
   content: string;
 }
 
+export type SheetStructure = 'financial_model' | 'data_table' | 'report' | 'unknown';
+
+export interface SheetCompressionMeta {
+  originalRowCount: number;
+  compressedRowCount: number;
+  truncated: boolean;
+  onDemandFetchEnabled: boolean;
+  includedRowIndices?: number[];
+}
+
 export interface SheetSnapshot {
   sheetName: string;
   usedRange: string;
@@ -61,6 +71,23 @@ export interface SheetSnapshot {
   headers: string[];
   sampleData: (string | number | null)[][];
   columnMeta?: ColumnMeta[];
+  structure?: SheetStructure;
+  formulaSummary?: string;
+  compressionMeta?: SheetCompressionMeta;
+}
+
+export interface NamedRangeInfo {
+  name: string;
+  formula: string;
+  type?: string;
+}
+
+export interface TableInfo {
+  name: string;
+  sheetName: string;
+  range?: string;
+  hasHeaders?: boolean;
+  columnNames: string[];
 }
 
 export interface WorkbookContext {
@@ -68,6 +95,9 @@ export interface WorkbookContext {
   activeSheet: string;
   selectedRange?: string;
   selectedValues?: (string | number | null)[][];
+  namedRanges?: NamedRangeInfo[];
+  tables?: TableInfo[];
+  prompt_context?: string;
 }
 
 export interface ClarificationPayload {

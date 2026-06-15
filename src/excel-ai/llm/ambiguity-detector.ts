@@ -93,11 +93,19 @@ function ruleBasedScore(
   return scores;
 }
 
+const FIND_LOOKUP_PATTERN =
+  /\b(find|search|locate|look up|lookup|show me|where is|get me|fetch|pull up|bring up|list rows|list all rows|show rows|show all rows)\b/i;
+
 export function scoreAmbiguity(
   prompt: string,
   context: WorkbookContext,
   hasHistory: boolean,
 ): { score: number; reasons: string[] } {
+  // Find/search/locate queries are self-contained — never ask for clarification.
+  if (FIND_LOOKUP_PATTERN.test(prompt)) {
+    return { score: 0, reasons: [] };
+  }
+
   const rules = ruleBasedScore(prompt, context, hasHistory);
   if (rules.length === 0) return { score: 0, reasons: [] };
   const avg = rules.reduce((sum, rule) => sum + rule.score, 0) / rules.length;

@@ -26,6 +26,7 @@ export class ConversationMessageEntry {
   @Prop({ type: Object })
   metadata?: {
     actions?: unknown[];
+    changeSetId?: string;
     questionOptions?: string[];
     pendingIntent?: string;
     ambiguityScore?: number;

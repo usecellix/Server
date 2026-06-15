@@ -39,6 +39,49 @@ export class OpenRouterService {
     return Boolean(this.config.openRouterApiKey);
   }
 
+  async complete(opts: {
+    systemPrompt: string;
+    userMessage: string;
+    model?: string;
+    temperature?: number;
+    maxTokens?: number;
+  }): Promise<string> {
+    const apiKey = this.config.openRouterApiKey;
+    if (!apiKey) {
+      throw new LlmRequestError(503, 'OpenRouter not configured');
+    }
+
+    try {
+      const { OpenRouter } = await import('@openrouter/sdk');
+      const client = new OpenRouter({
+        apiKey,
+        httpReferer: this.config.openRouterHttpReferer,
+        appTitle: 'Cellix',
+      });
+
+      const response = await client.chat.send({
+        chatRequest: {
+          model: opts.model ?? this.config.openRouterModelMedium,
+          messages: [
+            { role: 'system', content: opts.systemPrompt },
+            { role: 'user', content: opts.userMessage },
+          ],
+          stream: false,
+          temperature: opts.temperature ?? 0.2,
+          maxTokens: opts.maxTokens ?? 1500,
+        },
+      });
+
+      const content = response.choices?.[0]?.message?.content;
+      return typeof content === 'string' ? content : '';
+    } catch (error: unknown) {
+      const status = this.extractStatus(error);
+      const detail = error instanceof Error ? error.message : 'OpenRouter complete failed';
+      this.logger.warn(`OpenRouter complete failed (${status}): ${detail}`);
+      throw new LlmRequestError(status, detail);
+    }
+  }
+
   async quickCall(systemPrompt: string, userMessage: string): Promise<string> {
     const apiKey = this.config.openRouterApiKey;
     if (!apiKey) {

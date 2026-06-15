@@ -12,6 +12,8 @@ export function initSseResponse(reply: FastifyReply): void {
 export function writeSseEvent(reply: FastifyReply, event: string, data: unknown): void {
   reply.raw.write(`event: ${event}\n`);
   reply.raw.write(`data: ${JSON.stringify(data)}\n\n`);
+  const flushable = reply.raw as { flush?: () => void };
+  flushable.flush?.();
 }
 
 export function endSseResponse(reply: FastifyReply): void {

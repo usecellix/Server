@@ -30,7 +30,12 @@ export function resolveWorkbookContext(
   sheetData: unknown[][],
 ): WorkbookContext {
   if (isRichWorkbookContext(request.workbookContext)) {
-    return request.workbookContext;
+    const rich = request.workbookContext;
+    const promptContext = request.promptContext ?? rich.prompt_context;
+    if (promptContext && promptContext !== rich.prompt_context) {
+      return { ...rich, prompt_context: promptContext };
+    }
+    return rich;
   }
 
   const legacy = request.workbookContext as
@@ -81,6 +86,7 @@ export function resolveWorkbookContext(
             sheetName: name,
           },
     ),
+    ...(request.promptContext ? { prompt_context: request.promptContext } : {}),
   };
 }
 
