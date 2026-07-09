@@ -112,6 +112,7 @@ export function buildAgentWorkbookContext(
           rowCount: richSheet.rowCount,
           columnCount: richSheet.colCount,
           headers: richSheet.headers,
+          headerRowIndex: 0,
           isEmpty: richSheet.rowCount === 0,
           columnLetters: Array.from({ length: richSheet.colCount }, (_, i) =>
             String.fromCharCode(65 + (i % 26)),

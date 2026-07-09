@@ -8,6 +8,7 @@ import {
 } from './prompts/verifier.prompt';
 import { parseAgentJson } from './utils/parse-agent-json.util';
 import { Action, SubTask, VerifierOutput, WorkbookContext } from './types/agent.types';
+import { StructuredLogger } from './logging/structured-logger';
 
 @Injectable()
 export class VerifierAgent {
@@ -16,6 +17,7 @@ export class VerifierAgent {
   constructor(
     private readonly llm: OpenRouterService,
     private readonly config: AppConfigService,
+    private readonly structuredLogger: StructuredLogger = new StructuredLogger(),
   ) {}
 
   async verify(
@@ -24,7 +26,10 @@ export class VerifierAgent {
     actionsBySubtask: Record<string, Action[]>,
     context: WorkbookContext,
     formulaValidatorSummary?: string,
+    correlationId = `req_${Date.now()}`,
   ): Promise<VerifierOutput> {
+    const startedAt = Date.now();
+    const model = this.config.openRouterModelMedium;
     const userMessage = buildVerifierUserMessage(
       originalPrompt,
       subtasks,
@@ -36,19 +41,37 @@ export class VerifierAgent {
     const raw = await this.llm.complete({
       systemPrompt: VERIFIER_SYSTEM_PROMPT,
       userMessage,
-      model: this.config.openRouterModelMedium,
+      model,
       temperature: 0.1,
       maxTokens: 1500,
     });
+    this.structuredLogger.debugRawResponse(correlationId, 'verifier', model, raw);
 
     try {
       const parsed = parseAgentJson<Partial<VerifierOutput>>(raw);
       const normalized = normalizeVerifierOutput(parsed, subtasks.map((s) => s.id));
       this.logger.log(`Verifier: ${normalized.passed ? 'PASS' : 'FAIL'} — ${normalized.feedback}`);
+      this.structuredLogger.logAgentEvent({
+        correlationId,
+        agent: 'verifier',
+        model,
+        durationMs: Date.now() - startedAt,
+        success: true,
+        tokenUsage: this.structuredLogger.estimateTokens(raw),
+        rawResponse: raw,
+        parsedResponse: normalized,
+      });
       return normalized;
-    } catch {
+    } catch (error) {
+      this.structuredLogger.warnParseFailure(
+        correlationId,
+        'verifier',
+        model,
+        raw,
+        error instanceof Error ? error.message : String(error),
+      );
       this.logger.error('Verifier returned invalid JSON', raw);
-      return {
+      const fallback = {
         passed: true,
         feedback: 'Verifier parse error — defaulting to pass',
         issues: [],
@@ -59,6 +82,18 @@ export class VerifierAgent {
           issues: [],
         })),
       };
+      this.structuredLogger.logAgentEvent({
+        correlationId,
+        agent: 'verifier',
+        model,
+        durationMs: Date.now() - startedAt,
+        success: false,
+        tokenUsage: this.structuredLogger.estimateTokens(raw),
+        rawResponse: raw,
+        parsedResponse: fallback,
+        error: 'Verifier JSON parse failed',
+      });
+      return fallback;
     }
   }
 }

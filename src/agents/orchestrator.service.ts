@@ -18,8 +18,17 @@ export class OrchestratorService {
    * executing any actions against the workbook.
    */
   async planOnly(opts: AgentRunOptions): Promise<PlannerOutput> {
-    const { prompt, context, conversationHistory = [], promptContext } = opts;
-    return this.planner.plan(prompt, context, conversationHistory, promptContext);
+    const { prompt, context, conversationHistory = [], promptContext, correlationId, routerAssumption } =
+      opts;
+    const resolvedCorrelationId = this.resolveCorrelationId(correlationId);
+    return this.planner.plan(
+      prompt,
+      context,
+      conversationHistory,
+      promptContext,
+      resolvedCorrelationId,
+      routerAssumption,
+    );
   }
 
   async run(opts: AgentRunOptions, emitter: SseEmitter): Promise<Action[]> {
@@ -29,8 +38,11 @@ export class OrchestratorService {
       conversationHistory = [],
       promptContext,
       conversationId,
+      correlationId,
       toolEmit,
+      routerAssumption,
     } = opts;
+    const resolvedCorrelationId = this.resolveCorrelationId(correlationId);
 
     emitter.send({ type: 'THINKING', message: 'Planning your request...' });
     const plan: PlannerOutput = await this.planner.plan(
@@ -38,6 +50,8 @@ export class OrchestratorService {
       context,
       conversationHistory,
       promptContext,
+      resolvedCorrelationId,
+      routerAssumption,
     );
 
     if (plan.clarificationsNeeded.length > 0) {
@@ -60,6 +74,7 @@ export class OrchestratorService {
     const { actions: allActions, iterationsRun, verifierPassed } =
       await this.agenticLoop.run(prompt, plan.subtasks, context, emitter, {
         conversationId,
+        correlationId: resolvedCorrelationId,
         toolEmit,
       });
 
@@ -73,5 +88,11 @@ export class OrchestratorService {
     });
 
     return allActions;
+  }
+
+  private resolveCorrelationId(value?: string): string {
+    const trimmed = value?.trim();
+    if (!trimmed || trimmed === '-') return `req_${Date.now()}`;
+    return trimmed;
   }
 }

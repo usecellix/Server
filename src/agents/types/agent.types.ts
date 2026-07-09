@@ -59,6 +59,8 @@ export interface ExecutorOutput {
   isDone: boolean;
   nextStep?: string;
   toolRequest?: RangeDataToolRequest;
+  /** False when the executor needed a JSON parse retry. */
+  parsedOnFirstAttempt?: boolean;
 }
 
 export interface VerifierIssue {
@@ -92,5 +94,7 @@ export interface AgentRunOptions {
   maxRetries?: number;
   promptContext?: string;
   conversationId?: string;
+  correlationId?: string;
   toolEmit?: (event: string, data: Record<string, unknown>) => void;
+  routerAssumption?: string;
 }

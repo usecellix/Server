@@ -49,7 +49,7 @@ const subtasks: SubTask[] = [
 ];
 
 describe('AgenticLoopService verifier retry', () => {
-  let executor: jest.Mocked<Pick<ExecutorAgent, 'execute'>>;
+  let executor: jest.Mocked<Pick<ExecutorAgent, 'execute' | 'retryStep'>>;
   let verifier: jest.Mocked<Pick<VerifierAgent, 'verify'>>;
   let formulaAnalyzer: jest.Mocked<Pick<FormulaAnalyzer, 'analyzeSheet'>>;
   let formulaValidator: jest.Mocked<
@@ -65,7 +65,13 @@ describe('AgenticLoopService verifier retry', () => {
   let events: string[];
 
   beforeEach(() => {
-    executor = { execute: jest.fn() };
+    executor = {
+      execute: jest.fn(),
+      retryStep: jest.fn(),
+    };
+    executor.retryStep.mockImplementation(async (retryContext, context, previousActions) =>
+      executor.execute(retryContext.originalStep, context, previousActions),
+    );
     verifier = { verify: jest.fn() };
     formulaAnalyzer = { analyzeSheet: jest.fn().mockReturnValue({ llmSummary: '' }) };
     formulaValidator = {
@@ -99,8 +105,18 @@ describe('AgenticLoopService verifier retry', () => {
 
   it('preserves passing subtask actions and only re-runs failing subtasks', async () => {
     const s1Action: Action = { type: 'ADD_ROW', data: ['GST', '', ''] } as Action;
-    const s2ActionBad: Action = { type: 'SET_CELL', row: 99, col: 0, value: 'X' } as Action;
-    const s2ActionFixed: Action = { type: 'SET_CELL', row: 0, col: 0, value: 'Header' } as Action;
+    const s2ActionBad: Action = {
+      type: 'SET_FORMULA',
+      row: 2,
+      col: 2,
+      formula: '=BAD',
+    } as Action;
+    const s2ActionFixed: Action = {
+      type: 'SET_FORMULA',
+      row: 0,
+      col: 0,
+      formula: '=Header',
+    } as Action;
 
     executor.execute
       .mockResolvedValueOnce({ subtaskId: 's1', actions: [s1Action], isDone: true })
@@ -193,8 +209,8 @@ describe('AgenticLoopService verifier retry', () => {
 
     expect(result.actions).toEqual([action]);
     expect(result.verifierPassed).toBe(false);
-    expect(executor.execute).toHaveBeenCalledTimes(2);
-    expect(verifier.verify).toHaveBeenCalledTimes(2);
+    expect(executor.execute).toHaveBeenCalledTimes(3);
+    expect(verifier.verify).toHaveBeenCalledTimes(3);
   });
 
   it('blocks invalid actions and retries executor with formula feedback', async () => {
@@ -370,5 +386,64 @@ describe('AgenticLoopService verifier retry', () => {
     expect(result.actions[1].type).toBe('SORT_RANGE');
     expect(result.actions[1].columnName).toBe('CGST');
     expect(result.verifierPassed).toBe(true);
+  });
+
+  it('retries only failed subtask up to max attempts before failing verification', async () => {
+    const badAction: Action = {
+      type: 'SET_FORMULA',
+      sheetName: 'Sheet1',
+      row: 99,
+      col: 0,
+      formula: '=A1',
+    } as Action;
+    const retryAction1: Action = {
+      type: 'SET_FORMULA',
+      sheetName: 'Sheet1',
+      row: 98,
+      col: 0,
+      formula: '=A2',
+    } as Action;
+    const retryAction2: Action = {
+      type: 'SET_FORMULA',
+      sheetName: 'Sheet1',
+      row: 97,
+      col: 0,
+      formula: '=A3',
+    } as Action;
+
+    executor.execute.mockResolvedValueOnce({
+      subtaskId: 's1',
+      actions: [badAction],
+      isDone: true,
+    });
+    executor.retryStep
+      .mockResolvedValueOnce({ subtaskId: 's1', actions: [retryAction1], isDone: true })
+      .mockResolvedValueOnce({ subtaskId: 's1', actions: [retryAction2], isDone: true });
+
+    verifier.verify
+      .mockResolvedValueOnce({
+        passed: false,
+        feedback: 'Wrong row',
+        issues: [],
+        subtaskResults: [{ subtaskId: 's1', passed: false, feedback: 'Wrong row', issues: [] }],
+      })
+      .mockResolvedValueOnce({
+        passed: false,
+        feedback: 'Still wrong row',
+        issues: [],
+        subtaskResults: [{ subtaskId: 's1', passed: false, feedback: 'Still wrong row', issues: [] }],
+      })
+      .mockResolvedValueOnce({
+        passed: false,
+        feedback: 'Still wrong',
+        issues: [],
+        subtaskResults: [{ subtaskId: 's1', passed: false, feedback: 'Still wrong', issues: [] }],
+      });
+
+    const result = await service.run('Fix header', [subtasks[0]], baseContext, new SseEmitter(emit));
+
+    expect(result.verifierPassed).toBe(false);
+    expect(executor.retryStep).toHaveBeenCalledTimes(2);
+    expect(verifier.verify).toHaveBeenCalledTimes(3);
   });
 });

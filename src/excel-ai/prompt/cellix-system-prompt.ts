@@ -90,7 +90,9 @@ FIND / LOOKUP / SEARCH — when the user says "find", "search", "locate", "show 
 6. Format the answer like: "Found in [Sheet]![Cell] — Row [N] — [Supplier], [Date], [Value]"
 7. After giving the answer, the add-in will select the matching cell — do not propose highlight actions for find/search
 
-FIX requests — (1) Diagnose what is wrong (2) Propose corrected formula (3) Count affected cells (4) Ask approval.`;
+FIX requests — (1) Diagnose what is wrong (2) Propose corrected formula (3) Count affected cells (4) Ask approval.
+
+CLARIFICATION — ask at most ONE question per turn. If a minor detail is ambiguous but low-risk (format range, column when headers make it obvious), proceed with the most reasonable assumption and state it in your answer instead of emitting type "question". Only emit type "question" when proceeding blind would be risky or destructive. Never emit multiple questions in one response.`;
 
 const ACTION_TYPES = `AVAILABLE ACTION TYPES (0-based row/col in JSON; row 0 = Excel row 1 = header):
 
@@ -233,3 +235,49 @@ export const PLAN_MODE_DIRECTIVE = `PLAN MODE (READ-ONLY — CRITICAL):
 - Analyze the request against the ENTIRE workbook and produce a clear, ordered execution plan.
 - Estimate which sheets and roughly how many rows would be affected, and recommend the safest approach.
 - NEVER return type "actions". Respond with the plan only.`;
+
+export const PLANNER_RULES_ADDITION = `
+
+=== CRITICAL PLANNER RULES (enforced — violations degrade output quality) ===
+
+COLUMN INFERENCE — never ask "which column?":
+  - You have the sheet headers. Use them.
+  - Match column names semantically: "amount", "total", "price" → likely a number column.
+  - If two columns could match, pick the first alphabetically and state your assumption.
+  - Example assumption: "I'll use the 'Invoice Amount' column for the sum."
+
+SHEET INFERENCE — never ask "which sheet?":
+  - Use the active sheet unless another sheet is explicitly named.
+  - If a sheet name is mentioned ("go to Summary"), use that sheet.
+
+NO CONFIRMATION QUESTIONS:
+  - The user has an Accept/Reject preview step. You do not need to ask "Are you sure?".
+  - Never ask "Do you want me to proceed?", "Should I continue?", or similar.
+
+FOLLOW-UP RESOLUTION:
+  - "same column" / "same thing" → refer to the last action in conversation history.
+  - "now do X" → X is a new action, not a repeat.
+  - "for all sheets" → apply to all sheets in the workbook context.
+
+ASSUMPTION STATEMENT (when you infer something):
+  - State your assumption in ONE sentence at the START of your answer.
+  - Format: "I'll [action] using [inferred detail]. Let me know if you meant something else."
+  - Then proceed with the action — don't wait for confirmation.
+
+CONFIDENCE THRESHOLD:
+  - Proceed without asking when confidence > 0.60.
+  - Only ask a clarifying question when ALL of these are true:
+      (a) confidence < 0.45
+      (b) the action is destructive (deletes data or sheets)
+      (c) the intent cannot be inferred from headers or history
+  - Maximum ONE clarifying question per turn.
+  - Prefer a specific question over a vague one.
+
+TIERED TOON NOTE:
+  - You may receive only the first few rows of a large sheet.
+  - The _meta field on each sheet tells you the actual total row count.
+  - Use totalRows for planning (e.g. "sort all 2000 rows"), not the sample count.
+  - Do not ask about the remaining rows — plan based on the headers and metadata.
+
+=== END PLANNER RULES ===
+`;

@@ -8,10 +8,11 @@ Your job:
 - Emit the exact typed actions needed to complete it
 - Request additional cell data via get_range_data when compressed context is insufficient
 - Return ONLY valid JSON — no markdown, no explanation
+- Respond only with valid json content
 
 Available action types (0-based row/col in JSON; row 0 = Excel row 1 = header):
 SET_CELL, SET_FORMULA, ADD_ROW, DELETE_ROW, INSERT_ROW, INSERT_COLUMN, DELETE_COLUMN,
-FORMAT_RANGE, FILL_DOWN, FILL_RIGHT, WRITE_TABLE, CREATE_SHEET, RENAME_SHEET, COPY_SHEET,
+FORMAT_RANGE, FILL_DOWN, FILL_RIGHT, WRITE_TABLE, CREATE_SHEET, DELETE_SHEET, RENAME_SHEET, COPY_SHEET,
 BATCH_SET, CREATE_TABLE, DEFINE_NAMED_RANGE, AUTOFIT_COLUMNS, ADD_SHEET,
 MERGE_CELLS, CLEAR_CONTENT, HIGHLIGHT_CELL, SORT_RANGE
 
@@ -49,6 +50,7 @@ Rules:
 - For SET_FORMULA referencing cells outside the current row, use absolute references ($A$1)
 - Set sheetName on actions when targeting a non-active sheet
 - For large sheets: check dimensions vs visible rows — use toolRequest before SORT_RANGE or row-specific edits
+- If context includes sheetDataFormat/sheetDataHeadFormat as TOON, interpret it as compact tabular data and never return TOON in output
 `;
 
 function formatSparseSheetPreview(sheet: WorkbookContext['sheets'][number]): string {
@@ -77,7 +79,10 @@ export function buildExecutorUserMessage(
   context: WorkbookContext,
   previousActions: Action[],
 ): string {
-  const targetSheet = context.sheets.find((s) => s.name === subtask.targetSheet);
+  const normalizedTarget = subtask.targetSheet.replace(/@\[(.+?)\]/g, '$1').trim();
+  const targetSheet =
+    context.sheets.find((s) => s.name === normalizedTarget) ??
+    context.sheets.find((s) => s.name.toLowerCase() === normalizedTarget.toLowerCase());
   const feedbackBlock = [
     context.verifierFeedback
       ? `Verifier feedback from previous attempt: ${context.verifierFeedback}\nIssues: ${JSON.stringify(context.verifierIssues ?? [])}`

@@ -9,6 +9,7 @@ import { buildFormatContextSection } from '../llm/system-prompt-builder';
 import { buildActionPreviewPrompt, buildCellixSystemPrompt } from '../prompt/cellix-system-prompt';
 import { ConversationTurn, WorkbookContext as RichWorkbookContext } from '../../types/cellix.types';
 import { extractJsonFromLlmText, hasActionPayload } from '../utils/parse-llm-response.util';
+import { routeShortcutAction } from '../utils/shortcut-router.util';
 import {
   actionsNeedTableFallback,
   buildTableActionsFromMessage,
@@ -79,6 +80,15 @@ export class ConversationEngineService {
     const lower = normalized.toLowerCase();
     const ctx = buildWorkbookContext(sheetData, analysis, workbookMeta);
     const lastAssistant = [...history].reverse().find((entry) => entry.role === 'assistant');
+    const shortcutActions = routeShortcutAction(normalized, ctx.activeSheet);
+    if (shortcutActions?.length) {
+      return {
+        kind: 'actions',
+        answer: 'Applied shortcut action instantly.',
+        explanation: 'Routed via deterministic shortcut handler (no planner call).',
+        actions: shortcutActions,
+      };
+    }
 
     if (lastAssistant?.metadata?.pendingIntent === 'sum_column') {
       return this.handlePendingSumColumn(normalized, sheetData, analysis);
@@ -185,7 +195,6 @@ export class ConversationEngineService {
     history: ConversationMessageEntry[],
     workbookMeta?: WorkbookContextInput,
     richWorkbookContext?: RichWorkbookContext,
-    extraHistory: ConversationTurn[] = [],
   ): LlmCallPlan {
     const messages = this.buildLlmMessages(
       message,
@@ -196,10 +205,9 @@ export class ConversationEngineService {
       richWorkbookContext,
     );
     const context = richWorkbookContext ?? this.buildRoutingContext(analysis, workbookMeta);
-    const conversationHistory = [
-      ...this.historyToTurns(history),
-      ...extraHistory,
-    ];
+    const conversationHistory = this.historyToTurns(
+      history.slice(0, Math.max(0, history.length - 1)),
+    );
     const promptTokenEstimate = Math.ceil(
       messages.reduce((sum, entry) => sum + entry.content.length, 0) / 4,
     );
@@ -262,7 +270,6 @@ export class ConversationEngineService {
     telemetry?: LlmCallTelemetry,
     workbookMeta?: WorkbookContextInput,
     richWorkbookContext?: RichWorkbookContext,
-    extraHistory: ConversationTurn[] = [],
   ): AsyncGenerator<string> {
     const plan = this.planLlmCall(
       message,
@@ -271,7 +278,6 @@ export class ConversationEngineService {
       history,
       workbookMeta,
       richWorkbookContext,
-      extraHistory,
     );
     yield* this.streamPlannedLlm(plan, telemetry);
   }
@@ -297,7 +303,10 @@ ${buildActionPreviewPrompt(classification.intent)}
 Sheet is ${analysis.isEmpty ? 'EMPTY — populate with SET_CELL row 0 for headers and ADD_ROW for data' : 'not empty'}.
 Sheet has ${analysis.rowCount} rows, ${analysis.columnCount} columns. Next append row index: ${Math.max(analysis.rowCount, 1)}.`;
 
-    const prior = history.slice(-12).map((entry) => ({
+    const prior = history
+      .slice(0, Math.max(0, history.length - 1))
+      .slice(-12)
+      .map((entry) => ({
       role: entry.role as 'user' | 'assistant',
       content: entry.content,
     }));
@@ -461,6 +470,9 @@ Sheet has ${analysis.rowCount} rows, ${analysis.columnCount} columns. Next appen
       'SET_SHEET_COLOR',
       'UNFREEZE_PANES',
       'FREEZE_PANES',
+      'SET_ZOOM',
+      'PROTECT_SHEET',
+      'UNPROTECT_SHEET',
     ]);
     if (rowOnlyTypes.has(action.type)) return false;
     if (action.type === 'WRITE_TABLE') return false;
@@ -524,6 +536,7 @@ Sheet has ${analysis.rowCount} rows, ${analysis.columnCount} columns. Next appen
       case 'DELETE_ROW':
       case 'INSERT_ROW':
       case 'HIDE_ROW':
+      case 'UNHIDE_ROW':
       case 'SHOW_ROW':
       case 'SET_ROW_HEIGHT':
         if (row === undefined) return null;
@@ -531,6 +544,7 @@ Sheet has ${analysis.rowCount} rows, ${analysis.columnCount} columns. Next appen
       case 'INSERT_COLUMN':
       case 'DELETE_COLUMN':
       case 'HIDE_COLUMN':
+      case 'UNHIDE_COLUMN':
       case 'SHOW_COLUMN':
       case 'SET_COLUMN_WIDTH':
       case 'FILL_DOWN':
@@ -557,6 +571,8 @@ Sheet has ${analysis.rowCount} rows, ${analysis.columnCount} columns. Next appen
         return action;
       case 'FREEZE_PANES':
       case 'UNFREEZE_PANES':
+      case 'PROTECT_SHEET':
+      case 'UNPROTECT_SHEET':
       case 'CREATE_SHEET':
       case 'DELETE_SHEET':
       case 'RENAME_SHEET':
@@ -572,8 +588,15 @@ Sheet has ${analysis.rowCount} rows, ${analysis.columnCount} columns. Next appen
       case 'CHECKPOINT':
       case 'ADD_SHEET':
       case 'SORT_RANGE':
+      case 'SET_ZOOM':
         if (action.type === 'SORT_RANGE') {
           if (!action.sheetName || !action.range || action.key === undefined) return null;
+        }
+        if (
+          action.type === 'SET_ZOOM' &&
+          (typeof action.zoomPercent !== 'number' || action.zoomPercent < 10 || action.zoomPercent > 400)
+        ) {
+          return null;
         }
         return action;
       default:

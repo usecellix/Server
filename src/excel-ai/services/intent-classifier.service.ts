@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { isFindLookupMessage } from '../utils/find-query-parser.util';
 import { IntentClassification, IntentType } from '../types/sheet-actions.types';
 
 @Injectable()
@@ -65,9 +66,7 @@ export class IntentClassifierService {
   }
 
   isFindLookupIntent(lower: string): boolean {
-    return /\b(find|search|locate|look up|lookup|show me|where is|get me|fetch|pull up|bring up|list rows|list all rows|show rows|show all rows)\b/.test(
-      lower,
-    );
+    return isFindLookupMessage(lower);
   }
 
   private isDataQuestionIntent(lower: string): boolean {

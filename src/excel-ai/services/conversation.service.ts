@@ -24,10 +24,13 @@ import { SseEmitter } from '../../agents/sse.emitter';
 import { ToolBridgeService } from '../../agents/tool-bridge.service';
 import { buildAgentWorkbookContext } from '../../agents/utils/workbook-context.builder';
 import { ConversationEngineService, EngineResponse, LlmRequestError } from './conversation-engine.service';
-import { DataQueryService, FindMatch } from './data-query.service';
-import { IntentClassifierService, intentIsReadOnly } from './intent-classifier.service';
+import { DataQueryService } from './data-query.service';
+import { FindExportService, FindExportSheetSlice } from './find-export.service';
+import { ContextCacheService } from './context-cache.service';
+import { LlmRouterService } from './llm-router.service';
 import { LlmCallTelemetry, OpenRouterService } from './openrouter.service';
-import { AssistantMode, IntentType } from '../types/sheet-actions.types';
+import { RouterDecision, RouterInput } from '../types/router.types';
+import { buildTieredToon } from '../utils/tiered-toon.util';
 import {
   ASK_MODE_READONLY_DIRECTIVE,
   PLAN_MODE_DIRECTIVE,
@@ -41,6 +44,12 @@ import {
   detectSheetDataGenerationIntent,
   parseTableCreateRequest,
 } from '../utils/table-request.util';
+import { routeShortcutAction, buildShortcutAnswer } from '../utils/shortcut-router.util';
+import {
+  buildDeleteSheetAnswer,
+  tryLocalDeleteSheetActions,
+} from '../utils/local-sheet-actions.util';
+import { stripSheetMentions } from '../utils/sheet-mentions.util';
 import {
   resolveConversationHistory,
   resolveEngineWorkbookMeta,
@@ -49,10 +58,12 @@ import {
 import { buildRefinementContext } from '../utils/refinement-context.util';
 import { buildEnrichedPromptContext } from '../../formula/enrich-context.util';
 import { FormulaAnalyzer } from '../../formula/formula.analyzer';
+import { SmartDataQueryService } from './smart-data-query.service';
 import { SheetAnalyzerService } from './sheet-analyzer.service';
 import { WorkbookContext as AgentWorkbookContext } from '../../agents/types/agent.types';
 
 const MAX_MESSAGES = 50;
+const CONVERSATION_TTL_MS = Number(process.env.CONVERSATION_TTL_HOURS ?? 168) * 60 * 60 * 1000;
 
 @Injectable()
 export class ConversationService {
@@ -67,10 +78,13 @@ export class ConversationService {
     private readonly changeSetService: ChangeSetService,
     private readonly openRouter: OpenRouterService,
     private readonly orchestrator: OrchestratorService,
-    private readonly intentClassifier: IntentClassifierService,
+    private readonly llmRouter: LlmRouterService,
+    private readonly contextCache: ContextCacheService,
     private readonly dataQuery: DataQueryService,
+    private readonly findExport: FindExportService,
     private readonly formulaAnalyzer: FormulaAnalyzer,
     private readonly toolBridge: ToolBridgeService,
+    private readonly smartDataQuery: SmartDataQueryService,
   ) {}
 
   private enrichAgentContext(
@@ -115,6 +129,14 @@ export class ConversationService {
       columnCount: analysis.columnCount,
       headers: analysis.headers,
     };
+    await this.conversationModel.updateOne(
+      { conversationId: conversation.conversationId },
+      {
+        $set: {
+          sheetSnapshot: conversation.sheetSnapshot,
+        },
+      },
+    );
 
     initSseResponse(reply);
 
@@ -164,12 +186,86 @@ export class ConversationService {
         return;
       }
 
-      if (this.engine.hasOpenAi()) {
-        const classification = this.intentClassifier.classify(request.message);
-        const route = this.resolveRoute(activeRequest.mode, classification.intent);
+      const recentHistory = history
+        .filter((entry) => entry.role === 'user')
+        .slice(-2)
+        .map((entry) => entry.content);
 
-        if (route === 'readonly') {
-          const ambiguityOutcome = await this.checkAmbiguity(activeRequest, analysis);
+      const routerDecision = await this.llmRouter.route(
+        this.buildRouterInput(activeRequest, recentHistory, analysis),
+      );
+
+      this.logger.log(
+        `[${traceId}] Router: route=${routerDecision.route} confidence=${routerDecision.confidence} "${routerDecision.reasoning}"`,
+      );
+
+      const routedRequest = this.applyRoutedPromptContext(
+        activeRequest,
+        conversationId,
+        routerDecision,
+        analysis,
+        traceId,
+      );
+
+      if (routerDecision.route === 'shortcut' && writeAllowed) {
+        await this.handleRouterShortcut(
+          routedRequest,
+          routerDecision,
+          conversationId,
+          traceId,
+          reply,
+          history,
+          analysis,
+          emit,
+        );
+        return;
+      }
+
+      if (routerDecision.route === 'data') {
+        await this.handleSmartDataQuery(
+          routedRequest,
+          analysis,
+          conversationId,
+          emit,
+        );
+        endSseResponse(reply);
+        return;
+      }
+
+      if (routerDecision.route === 'export') {
+        if (activeRequest.mode === 'ask') {
+          await this.emitLocalDecision(
+            conversationId,
+            {
+              kind: 'answer',
+              answer:
+                'Copying matching rows to a new sheet requires **Action** mode. Switch to Action and send the same request again.',
+            },
+            emit,
+          );
+          endSseResponse(reply);
+          return;
+        }
+
+        const exportDecision = await this.handleFindExportQuery(
+          routedRequest,
+          analysis,
+          conversationId,
+          emit,
+        );
+        if (exportDecision) {
+          this.logger.log(
+            `Find export (router) trace=${traceId} conversation=${conversationId} mode=${activeRequest.mode ?? 'default'}`,
+          );
+          await this.emitLocalDecision(conversationId, exportDecision, emit);
+          endSseResponse(reply);
+          return;
+        }
+      }
+
+      if (this.engine.hasOpenAi()) {
+        if (routerDecision.route === 'ask') {
+          const ambiguityOutcome = await this.checkAmbiguity(routedRequest, analysis, history);
           if (ambiguityOutcome?.clarification) {
             await this.emitClarification(
               conversationId,
@@ -184,51 +280,56 @@ export class ConversationService {
               message: `⚠ Low confidence (${ambiguityOutcome.score}% ambiguous) — proceeding with best guess…`,
             });
           }
-
-          // For find/search/locate queries run the search locally against the
-          // full workbook (fetching on demand when compressed) before the LLM.
-          const isFind =
-            classification.subIntent === 'find' ||
-            (activeRequest.mode === 'ask' &&
-              this.intentClassifier.isFindLookupIntent(request.message.toLowerCase()));
-          if (isFind) {
-            const findDecision = await this.handleFindQuery(
-              activeRequest,
-              analysis,
-              conversationId,
-              emit,
-            );
-            if (findDecision) {
-              await this.emitLocalDecision(conversationId, findDecision, emit);
-              endSseResponse(reply);
-              return;
-            }
-          }
         }
 
         try {
-          if (route === 'orchestrator') {
+          if (routerDecision.route === 'write' && writeAllowed) {
+            const richWorkbookContext = resolveWorkbookContext(
+              routedRequest,
+              analysis,
+              routedRequest.sheetData,
+            );
+            const deleteActions = tryLocalDeleteSheetActions(
+              routedRequest.message,
+              richWorkbookContext,
+            );
+            if (deleteActions?.length) {
+              const sheetNames = deleteActions
+                .map((action) => action.sheetName)
+                .filter(Boolean) as string[];
+              this.logger.log(
+                `Delete sheet (deterministic) trace=${traceId} conversation=${conversationId} sheets=${sheetNames.join(',')}`,
+              );
+              await this.emitLocalDecision(
+                conversationId,
+                {
+                  kind: 'actions',
+                  answer: buildDeleteSheetAnswer(sheetNames),
+                  explanation: 'Removed the requested worksheet tab(s).',
+                  actions: deleteActions,
+                },
+                emit,
+              );
+              endSseResponse(reply);
+              return;
+            }
+
             await this.streamWithOrchestrator(
-              activeRequest,
+              {
+                ...routedRequest,
+                message: stripSheetMentions(routedRequest.message),
+              },
               reply,
               conversationId,
               traceId,
               history,
               analysis,
               emit,
-            );
-          } else if (route === 'planner') {
-            await this.streamWithPlanner(
-              activeRequest,
-              reply,
-              conversationId,
-              traceId,
-              analysis,
-              emit,
+              routerDecision.assumption,
             );
           } else {
             await this.streamWithOpenAi(
-              activeRequest,
+              routedRequest,
               reply,
               conversationId,
               traceId,
@@ -271,27 +372,13 @@ export class ConversationService {
     }
   }
 
-  /**
-   * Mode-first routing. When the add-in sends an explicit mode we honor it
-   * (ask = read-only, plan = planner, action = orchestrator). Older clients
-   * without a mode keep the previous intent-based behavior.
-   */
-  private resolveRoute(
-    mode: AssistantMode | undefined,
-    intent: IntentType,
-  ): 'orchestrator' | 'readonly' | 'planner' {
-    if (mode === 'action') return 'orchestrator';
-    if (mode === 'plan') return 'planner';
-    if (mode === 'ask') return 'readonly';
-    return intentIsReadOnly(intent) ? 'readonly' : 'orchestrator';
-  }
-
   private async checkAmbiguity(
     request: ConversationRequestDto,
     analysis: ReturnType<SheetAnalyzerService['analyze']>,
+    mongoHistory: ConversationMessageEntry[],
   ) {
     const workbookContext = resolveWorkbookContext(request, analysis, request.sheetData);
-    const conversationHistory = resolveConversationHistory(request);
+    const conversationHistory = resolveConversationHistory(request, mongoHistory);
     const quickCall = this.openRouter.isConfigured()
       ? (system: string, user: string) => this.openRouter.quickCall(system, user)
       : undefined;
@@ -345,28 +432,16 @@ export class ConversationService {
     return resolveEngineWorkbookMeta(request)?.activeSheet ?? 'Sheet1';
   }
 
-  private async handleFindQuery(
+  private async collectWorkbookFindSlices(
     request: ConversationRequestDto,
     analysis: ReturnType<SheetAnalyzerService['analyze']>,
     conversationId: string,
     emit: (event: string, data: Record<string, unknown>) => void,
-  ): Promise<EngineResponse | null> {
-    const term = this.dataQuery.extractSearchTerm(request.message);
-    if (!term) {
-      return {
-        kind: 'answer',
-        answer:
-          'I could not extract a search value from your message. Please try: "Find CGST value 1868".',
-      };
-    }
-
+  ): Promise<FindExportSheetSlice[]> {
     const activeSheetName = this.resolveActiveSheetName(request);
-    emit('status', { message: 'Searching across your workbook…' });
-
     const richContext = resolveWorkbookContext(request, analysis, request.sheetData);
-    const allMatches: FindMatch[] = [];
+    const slices: FindExportSheetSlice[] = [];
 
-    // 1) Active sheet — reuse on-demand fetch for compressed payloads.
     const activeData = await this.resolveActiveSheetData(
       request,
       analysis,
@@ -375,34 +450,118 @@ export class ConversationService {
       emit,
     );
     const activeAnalysis = this.sheetAnalyzer.analyze(activeData);
-    allMatches.push(
-      ...this.dataQuery.collectMatches(request.message, activeData, activeAnalysis, activeSheetName),
+    const activeMatches = this.dataQuery.collectMatches(
+      request.message,
+      activeData,
+      activeAnalysis,
+      activeSheetName,
     );
+    if (activeMatches.length) {
+      slices.push({
+        sheetName: activeSheetName,
+        sheetData: activeData,
+        analysis: activeAnalysis,
+        matches: activeMatches,
+      });
+    }
 
-    // 2) Every other sheet in the workbook (full cross-sheet awareness).
     for (const snapshot of richContext.sheets ?? []) {
       if (!snapshot?.sheetName || snapshot.sheetName === activeSheetName) continue;
       const data = await this.resolveSnapshotData(snapshot, conversationId, emit);
       if (!data.length) continue;
       const sheetAnalysis = this.sheetAnalyzer.analyze(data);
-      allMatches.push(
-        ...this.dataQuery.collectMatches(
-          request.message,
-          data,
-          sheetAnalysis,
-          snapshot.sheetName,
-        ),
+      const matches = this.dataQuery.collectMatches(
+        request.message,
+        data,
+        sheetAnalysis,
+        snapshot.sheetName,
       );
+      if (!matches.length) continue;
+      slices.push({
+        sheetName: snapshot.sheetName,
+        sheetData: data,
+        analysis: sheetAnalysis,
+        matches,
+      });
     }
 
-    const result = this.dataQuery.buildFindResult(term, allMatches);
+    return slices;
+  }
+
+  private async handleFindExportQuery(
+    request: ConversationRequestDto,
+    analysis: ReturnType<SheetAnalyzerService['analyze']>,
+    conversationId: string,
+    emit: (event: string, data: Record<string, unknown>) => void,
+  ): Promise<EngineResponse | null> {
+    const terms = this.dataQuery.extractSearchTerms(request.message);
+    if (!terms.length) {
+      return {
+        kind: 'answer',
+        answer:
+          'I could not extract a search value from your message. Try: Find "Deva steels" and create a new sheet with those rows.',
+      };
+    }
+
+    emit('status', { message: 'Finding matching rows and preparing export…' });
+
+    const slices = await this.collectWorkbookFindSlices(
+      request,
+      analysis,
+      conversationId,
+      emit,
+    );
+    const plan = this.findExport.buildPlan(request.message, slices);
+    if (!plan) return null;
+
+    if (!plan.actions.length) {
+      return {
+        kind: 'answer',
+        answer: plan.answer,
+      };
+    }
+
     return {
-      kind: 'answer',
-      answer: result.answer,
-      followUp: result.followUp,
-      selectCell: result.selectCell,
-      matches: result.matches,
+      kind: 'actions',
+      answer: plan.answer,
+      explanation: plan.explanation,
+      actions: plan.actions,
     };
+  }
+
+  private async handleSmartDataQuery(
+    request: ConversationRequestDto,
+    analysis: ReturnType<SheetAnalyzerService['analyze']>,
+    conversationId: string,
+    emit: (event: string, data: Record<string, unknown>) => void,
+  ): Promise<void> {
+    emit('status', { message: 'Analyzing your sheet data…' });
+
+    const activeSheetName = this.resolveActiveSheetName(request);
+    const sheetData = await this.resolveActiveSheetData(
+      request,
+      analysis,
+      activeSheetName,
+      conversationId,
+      emit,
+    );
+    const workbookContext = resolveWorkbookContext(request, analysis, sheetData);
+    const answer = await this.smartDataQuery.handleQuery(
+      request.message,
+      sheetData,
+      workbookContext,
+      activeSheetName,
+      emit,
+    );
+
+    await this.emitLocalDecision(
+      conversationId,
+      {
+        kind: 'answer',
+        answer,
+      },
+      emit,
+    );
   }
 
   /** Read the active sheet's full data, fetching on demand if the payload was compressed. */
@@ -532,13 +691,10 @@ export class ConversationService {
       timestamp: new Date(),
     });
 
-    emit('answer', { answer: decision.answer });
-    if (decision.kind === 'answer' && decision.matches?.length) {
-      emit('matches', { matches: decision.matches, summary: decision.answer });
-    }
-    if (decision.kind === 'answer' && decision.selectCell) {
-      emit('select_cell', decision.selectCell);
-    }
+    emit('answer', {
+      answer: decision.answer,
+      matches: decision.kind === 'answer' ? decision.matches : undefined,
+    });
     emit('conversation_end', { summary: 'Ready for your next message.' });
     await this.markCompleted(conversationId);
   }
@@ -551,6 +707,7 @@ export class ConversationService {
     history: ConversationMessageEntry[],
     analysis: ReturnType<SheetAnalyzerService['analyze']>,
     emit: (event: string, data: Record<string, unknown>) => void,
+    routerAssumption?: string,
   ): Promise<void> {
     const startedAt = Date.now();
     const intent = classifyIntent(request.message);
@@ -568,7 +725,7 @@ export class ConversationService {
       request.promptContext ?? richWorkbookContext.prompt_context ?? undefined;
     const { enrichedContext, promptContext } = this.enrichAgentContext(agentContext, basePrompt);
 
-    const conversationHistory = resolveConversationHistory(request).map((entry) => ({
+    const conversationHistory = resolveConversationHistory(request, history).map((entry) => ({
       role: entry.role as 'user' | 'assistant',
       content: entry.content,
     }));
@@ -583,7 +740,9 @@ export class ConversationService {
           conversationHistory,
           promptContext,
           conversationId,
+          correlationId: traceId,
           toolEmit: emit,
+          routerAssumption,
         },
         sseEmitter,
       );
@@ -681,6 +840,7 @@ export class ConversationService {
     reply: FastifyReply,
     conversationId: string,
     traceId: string,
+    history: ConversationMessageEntry[],
     analysis: ReturnType<SheetAnalyzerService['analyze']>,
     emit: (event: string, data: Record<string, unknown>) => void,
   ): Promise<void> {
@@ -693,7 +853,7 @@ export class ConversationService {
     const agentContext = buildAgentWorkbookContext(richWorkbookContext, request.sheetData, analysis);
     const basePrompt = request.promptContext ?? richWorkbookContext.prompt_context ?? undefined;
     const { enrichedContext, promptContext } = this.enrichAgentContext(agentContext, basePrompt);
-    const conversationHistory = resolveConversationHistory(request).map((entry) => ({
+    const conversationHistory = resolveConversationHistory(request, history).map((entry) => ({
       role: entry.role as 'user' | 'assistant',
       content: entry.content,
     }));
@@ -707,6 +867,7 @@ export class ConversationService {
         conversationHistory,
         promptContext,
         conversationId,
+        correlationId: traceId,
       });
 
       if (plan.clarificationsNeeded.length > 0) {
@@ -827,7 +988,7 @@ export class ConversationService {
     let actionsCount: number | undefined;
     const intent = classifyIntent(request.message);
     const richWorkbookContext = resolveWorkbookContext(request, analysis, request.sheetData);
-    const conversationTurns = resolveConversationHistory(request);
+    const conversationTurns = resolveConversationHistory(request, history);
     const llmPlan = this.engine.planLlmCall(
       request.message,
       request.sheetData,
@@ -835,7 +996,6 @@ export class ConversationService {
       history,
       resolveEngineWorkbookMeta(request),
       richWorkbookContext,
-      conversationTurns,
     );
 
     const readOnly = modeIsReadOnly(request.mode);
@@ -1169,8 +1329,29 @@ export class ConversationService {
       conversationId: newId,
       messages: [],
       status: 'active',
-      expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+      expiresAt: new Date(Date.now() + CONVERSATION_TTL_MS),
     });
+  }
+
+  async getConversation(conversationId: string) {
+    const doc = await this.conversationModel.findOne({ conversationId }).lean();
+    if (!doc) {
+      throw new NotFoundException('CONVERSATION_NOT_FOUND');
+    }
+    if (doc.expiresAt && doc.expiresAt.getTime() < Date.now()) {
+      throw new GoneException('CONVERSATION_EXPIRED');
+    }
+    return {
+      conversationId: doc.conversationId,
+      messages: doc.messages ?? [],
+      status: doc.status,
+      sheetSnapshot: doc.sheetSnapshot,
+      updatedAt: (doc as { updatedAt?: Date }).updatedAt ?? doc.expiresAt,
+    };
+  }
+
+  private conversationExpiresAt(): Date {
+    return new Date(Date.now() + CONVERSATION_TTL_MS);
   }
 
   private async saveMessage(
@@ -1181,7 +1362,7 @@ export class ConversationService {
       { conversationId },
       {
         $push: { messages: message },
-        $set: { updatedAt: new Date(), expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000) },
+        $set: { updatedAt: new Date(), expiresAt: this.conversationExpiresAt() },
       },
     );
   }
@@ -1196,6 +1377,121 @@ export class ConversationService {
       { conversationId },
       { $set: { status: 'completed', updatedAt: new Date() } },
     );
+  }
+
+  private buildRouterInput(
+    request: ConversationRequestDto,
+    recentHistory: string[],
+    analysis: ReturnType<SheetAnalyzerService['analyze']>,
+  ): RouterInput {
+    const activeSheet = this.resolveActiveSheetName(request);
+    const workbookCtx = request.workbookContext as
+      | { activeSheet?: string; sheets?: Array<Record<string, unknown>> }
+      | undefined;
+    const sheets = workbookCtx?.sheets ?? [];
+    const activeSheetData =
+      sheets.find(
+        (sheet) => sheet.name === activeSheet || sheet.sheetName === activeSheet,
+      ) ?? sheets[0];
+    const headerRow =
+      (activeSheetData?.headers as string[] | undefined) ??
+      ((activeSheetData?.rows as unknown[][] | undefined)?.[0] as string[] | undefined);
+    const headers = headerRow?.length ? headerRow.map(String) : analysis.headers;
+
+    return {
+      message: request.message,
+      mode: request.mode ?? 'action',
+      sheetHeaders: headers,
+      activeSheet,
+      recentHistory,
+    };
+  }
+
+  private applyRoutedPromptContext(
+    request: ConversationRequestDto,
+    conversationId: string,
+    decision: RouterDecision,
+    analysis: ReturnType<SheetAnalyzerService['analyze']>,
+    traceId: string,
+  ): ConversationRequestDto {
+    if (decision.route === 'shortcut') {
+      return request;
+    }
+
+    const rawToon = request.promptContext ?? '';
+    const cachedContext = this.contextCache.get(conversationId, rawToon);
+    if (cachedContext) {
+      this.logger.debug(`[${traceId}] Using cached promptContext`);
+      return { ...request, promptContext: cachedContext };
+    }
+
+    const activeSheet = this.resolveActiveSheetName(request);
+    const tiered = buildTieredToon({
+      route: decision.route,
+      workbookContext: request.workbookContext ?? {
+        activeSheet,
+        sheets: [
+          {
+            name: activeSheet,
+            headers: analysis.headers,
+            rows: request.sheetData,
+          },
+        ],
+      },
+      rawToonPayload: rawToon || undefined,
+    });
+
+    if (tiered.promptContext) {
+      this.contextCache.set(conversationId, rawToon, tiered.promptContext);
+    }
+
+    return {
+      ...request,
+      promptContext: tiered.promptContext || request.promptContext,
+    };
+  }
+
+  private async handleRouterShortcut(
+    request: ConversationRequestDto,
+    routerDecision: RouterDecision,
+    conversationId: string,
+    traceId: string,
+    reply: FastifyReply,
+    history: ConversationMessageEntry[],
+    analysis: ReturnType<SheetAnalyzerService['analyze']>,
+    emit: (event: string, data: Record<string, unknown>) => void,
+  ): Promise<void> {
+    const activeSheetName = this.resolveActiveSheetName(request);
+    const shortcutActions = routeShortcutAction(request.message, activeSheetName);
+
+    if (!shortcutActions?.length) {
+      this.logger.warn(`[${traceId}] Shortcut router returned null — falling back to write`);
+      await this.streamWithOrchestrator(
+        request,
+        reply,
+        conversationId,
+        traceId,
+        history,
+        analysis,
+        emit,
+      );
+      return;
+    }
+
+    this.logger.log(
+      `Shortcut action routed trace=${traceId} conversation=${conversationId} actions=${shortcutActions.map((action) => action.type).join(',')}`,
+    );
+    await this.emitLocalDecision(
+      conversationId,
+      {
+        kind: 'actions',
+        answer: buildShortcutAnswer(shortcutActions),
+        explanation: routerDecision.reasoning || 'Routed via LLM shortcut handler.',
+        actions: shortcutActions,
+      },
+      emit,
+    );
+    endSseResponse(reply);
   }
 
   private formatUsage(telemetry: LlmCallTelemetry): string {

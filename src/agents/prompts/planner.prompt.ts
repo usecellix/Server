@@ -8,6 +8,7 @@ Your job:
 2. Break the task into ordered subtasks
 3. Identify any clarifications needed before work can start
 4. Return ONLY valid JSON — no markdown, no explanation
+5. Respond only with valid json content
 
 Output schema:
 {
@@ -42,6 +43,7 @@ Rules:
 - Row numbers in descriptions use Excel 1-based row numbers for user clarity
 - Sort/filter requests: plan subtasks that identify the sort column from headers (e.g. CGST) and describe the sort — still return JSON only
 - Large workbooks may send metadata only (dimensions, headers, named ranges) — plan subtasks that name the target sheet/range; executor can fetch data on demand
+- If workbook context contains sheet data markers like sheetDataFormat/sheetDataHeadFormat with TOON, interpret those blocks as compact tabular data and do not return TOON
 - CROSS-SHEET AWARENESS: Consider the ENTIRE workbook, not just the active sheet. When the target entity (e.g. a customer or invoice) may exist in multiple sheets, plan subtasks per affected sheet and use dependsOn + named ranges/references to keep related sheets consistent.
 - If workbook context is empty, set clarificationsNeeded asking which sheet/column to use — do not return prose outside JSON
 `;

@@ -12,13 +12,18 @@ const KNOWN_TYPES = new Set<string>([
   'INSERT_COLUMN',
   'DELETE_COLUMN',
   'HIDE_ROW',
+  'UNHIDE_ROW',
   'SHOW_ROW',
   'HIDE_COLUMN',
+  'UNHIDE_COLUMN',
   'SHOW_COLUMN',
   'SET_ROW_HEIGHT',
   'SET_COLUMN_WIDTH',
   'FREEZE_PANES',
   'UNFREEZE_PANES',
+  'SET_ZOOM',
+  'PROTECT_SHEET',
+  'UNPROTECT_SHEET',
   'MERGE_CELLS',
   'UNMERGE_CELLS',
   'CLEAR_CONTENT',
@@ -77,6 +82,7 @@ function normalizeSingleAction(
   if (record.col !== undefined) action.col = Number(record.col);
   if (record.rowCount !== undefined) action.rowCount = Number(record.rowCount);
   if (record.colCount !== undefined) action.colCount = Number(record.colCount);
+  if (record.zoomPercent !== undefined) action.zoomPercent = Number(record.zoomPercent);
   if (record.value !== undefined) action.value = record.value;
   if (typeof record.formula === 'string') action.formula = record.formula;
   if (typeof record.address === 'string') action.address = record.address;

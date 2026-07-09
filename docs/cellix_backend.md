@@ -1,6 +1,8 @@
 ### 1. Why NestJS for CELLIX Backend
 
-The CELLIX backend is designed as a stateful, multi-module service addressing various distinct concerns, including authentication, LLM orchestration, a deterministic rules engine, audit logging, background jobs, and caching. NestJS is chosen because its opinionated modular architecture perfectly fits this structure. Each concern is encapsulated within its own isolated module, comprising controllers, services, and providers. This modularization facilitates codebase navigability as the team scales, prevents accidental coupling between modules, and allows independent testing of each module. The separation of concerns and well-defined boundaries provided by NestJS promote maintainability and scalability, aligning well with CELLIX’s complex backend requirements.
+The CELLIX backend is a stateful, multi-module NestJS service covering LLM orchestration, conversation management, deterministic routing, audit logging, and change sets. See [`docs/CELLIX_TECHNICAL_DOCUMENTATION.md`](../../docs/CELLIX_TECHNICAL_DOCUMENTATION.md) for the current module map and setup.
+
+> **Note:** Sections below describe a planned GST/rules-engine architecture (Redis, BullMQ, JWT auth) that is **not** implemented in Cellix-2026. Use the main technical doc for accurate setup instructions.
 
 ### 2. Project Initialisation
 

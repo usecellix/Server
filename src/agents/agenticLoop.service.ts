@@ -6,6 +6,7 @@ import {
   ExecutorOutput,
   SubTask,
   VerifierIssue,
+  VerifierOutput,
   WorkbookContext,
 } from './types/agent.types';
 import { SseEmitter } from './sse.emitter';
@@ -22,10 +23,16 @@ import { CompletenessChecker } from './checkers/completeness.checker';
 import { FormattingChecker } from './checkers/formatting.checker';
 import { CheckerResult, mergeCheckerResults } from './checkers/checker.types';
 import { buildDeterministicSubtaskActions } from './utils/compound-action.util';
+import { StepRetryExhaustedError } from './errors';
+import { StepRetryContext } from './types/verifier.types';
+import { StructuredLogger } from './logging/structured-logger';
+import { shouldSkipVerifier } from './verifier-skip.policy';
 
 export interface AgenticLoopOptions {
   conversationId?: string;
+  correlationId?: string;
   toolEmit?: (event: string, data: Record<string, unknown>) => void;
+  parseFailureTracker?: { hadFailure: boolean };
 }
 
 export interface AgenticLoopResult {
@@ -48,7 +55,7 @@ type RetryContext = Pick<
 export class AgenticLoopService {
   private readonly logger = new Logger(AgenticLoopService.name);
   private readonly MAX_ITERATIONS_PER_SUBTASK = 10;
-  private readonly MAX_VERIFY_RETRIES = 2;
+  private readonly MAX_STEP_RETRIES = 2;
   private readonly MAX_FORMULA_RETRIES = 2;
   private readonly MAX_TOOL_REQUESTS = 5;
   private readonly TIMEOUT_MS = 180_000;
@@ -61,6 +68,7 @@ export class AgenticLoopService {
     private readonly toolBridge: ToolBridgeService,
     private readonly completenessChecker: CompletenessChecker,
     private readonly formattingChecker: FormattingChecker,
+    private readonly structuredLogger: StructuredLogger = new StructuredLogger(),
   ) {}
 
   async run(
@@ -146,17 +154,21 @@ export class AgenticLoopService {
     }
 
     let verifierPassed = false;
-    let verifyAttempt = 0;
+    let verifierCycle = 0;
+    const stepRetryAttempts = new Map<string, number>();
+    const maxVerifierCycles = Math.max(1, ordered.length * (this.MAX_STEP_RETRIES + 1));
+    let retryExhaustedMessage: string | null = null;
     const validatorSummary = this.formulaValidator.summarizeForVerifier(formulaValidationLog);
+    loopOptions.parseFailureTracker ??= { hadFailure: false };
 
-    while (!verifierPassed && verifyAttempt < this.MAX_VERIFY_RETRIES && !timedOut) {
+    while (!verifierPassed && verifierCycle < maxVerifierCycles && !timedOut) {
       if (Date.now() - startedAt > this.TIMEOUT_MS) {
         timedOut = true;
         emitter.send({ type: 'ERROR', message: 'Agentic loop timeout' });
         break;
       }
 
-      verifyAttempt += 1;
+      verifierCycle += 1;
       emitter.send({ type: 'THINKING', message: 'Running deterministic checks...' });
 
       const shadow = this.buildShadowFromStates(context, subtaskStates);
@@ -172,16 +184,12 @@ export class AgenticLoopService {
 
       if (!cheapChecks.passed) {
         this.logger.warn(
-          `Deterministic checks failed attempt ${verifyAttempt}: ${cheapChecks.feedback}`,
+          `Deterministic checks failed cycle ${verifierCycle}: ${cheapChecks.feedback}`,
         );
         emitter.send({
           type: 'THINKING',
           message: `Fixing issues: ${cheapChecks.feedback}`,
         });
-
-        if (verifyAttempt >= this.MAX_VERIFY_RETRIES) {
-          break;
-        }
 
         const failingIds = new Set(
           cheapChecks.subtaskResults.filter((result) => !result.passed).map((result) => result.subtaskId),
@@ -190,8 +198,13 @@ export class AgenticLoopService {
           break;
         }
 
-        const downstreamIds = this.collectDownstreamSubtasks(ordered, failingIds);
-        const toRetry = ordered.filter((subtask) => downstreamIds.has(subtask.id));
+        const exhaustedIds = this.findExhaustedSubtasks(failingIds, stepRetryAttempts);
+        if (exhaustedIds.size > 0) {
+          retryExhaustedMessage = this.buildRetryExhaustedMessage(exhaustedIds, cheapChecks.feedback);
+          break;
+        }
+
+        const toRetry = ordered.filter((subtask) => failingIds.has(subtask.id));
 
         iterationsRun += await this.retrySubtasks(
           toRetry,
@@ -206,18 +219,54 @@ export class AgenticLoopService {
           () => {
             timedOut = true;
           },
+          undefined,
+          stepRetryAttempts,
         );
         continue;
       }
 
       emitter.send({ type: 'THINKING', message: 'Verifying semantic correctness...' });
-      const verification = await this.verifier.verify(
-        originalPrompt,
-        ordered,
-        this.actionsBySubtaskMap(subtaskStates),
-        verifyContext,
-        validatorSummary,
+
+      const allActions = this.flattenActions(subtaskStates);
+      const hasFormulaActions = allActions.some(
+        (action) => action.type === 'SET_FORMULA' || action.type === 'FILL_DOWN',
       );
+      const skipDecision = shouldSkipVerifier({
+        actions: allActions,
+        subtaskCount: ordered.length,
+        executorParsedOnFirstAttempt: !loopOptions.parseFailureTracker?.hadFailure,
+        hasFormulaActions,
+      });
+
+      let verification: VerifierOutput;
+      if (skipDecision.skip) {
+        this.logger.log(
+          `[${loopOptions.correlationId ?? '-'}] ${skipDecision.reason}`,
+        );
+        verification = {
+          passed: true,
+          feedback: skipDecision.reason,
+          issues: [],
+          subtaskResults: ordered.map((subtask) => ({
+            subtaskId: subtask.id,
+            passed: true,
+            feedback: skipDecision.reason,
+            issues: [],
+          })),
+        };
+      } else {
+        this.logger.log(
+          `[${loopOptions.correlationId ?? '-'}] Running Verifier: ${skipDecision.reason}`,
+        );
+        verification = await this.verifier.verify(
+          originalPrompt,
+          ordered,
+          this.actionsBySubtaskMap(subtaskStates),
+          verifyContext,
+          validatorSummary,
+          loopOptions.correlationId,
+        );
+      }
 
       if (verification.passed) {
         verifierPassed = true;
@@ -225,15 +274,11 @@ export class AgenticLoopService {
         break;
       }
 
-      this.logger.warn(`Verifier failed attempt ${verifyAttempt}: ${verification.feedback}`);
+      this.logger.warn(`Verifier failed cycle ${verifierCycle}: ${verification.feedback}`);
       emitter.send({
         type: 'THINKING',
         message: `Fixing issues: ${verification.feedback}`,
       });
-
-      if (verifyAttempt >= this.MAX_VERIFY_RETRIES) {
-        break;
-      }
 
       const failingIds = new Set(
         verification.subtaskResults.filter((r) => !r.passed).map((r) => r.subtaskId),
@@ -243,8 +288,13 @@ export class AgenticLoopService {
         break;
       }
 
-      const downstreamIds = this.collectDownstreamSubtasks(ordered, failingIds);
-      const toRetry = ordered.filter((subtask) => downstreamIds.has(subtask.id));
+      const exhaustedIds = this.findExhaustedSubtasks(failingIds, stepRetryAttempts);
+      if (exhaustedIds.size > 0) {
+        retryExhaustedMessage = this.buildRetryExhaustedMessage(exhaustedIds, verification.feedback);
+        break;
+      }
+
+      const toRetry = ordered.filter((subtask) => failingIds.has(subtask.id));
 
       iterationsRun += await this.retrySubtasks(
         toRetry,
@@ -254,7 +304,7 @@ export class AgenticLoopService {
         startedAt,
         formulaValidationLog,
         loopOptions,
-        downstreamIds,
+        failingIds,
         {
           passed: false,
           requiresLlmVerification: true,
@@ -274,13 +324,15 @@ export class AgenticLoopService {
             verifierIssues: subtaskResult?.issues ?? verification.issues,
           };
         },
+        stepRetryAttempts,
       );
     }
 
     if (!verifierPassed) {
       emitter.send({
         type: 'VERIFY_FAIL',
-        feedback: 'Could not verify after retries — showing best attempt',
+        feedback:
+          retryExhaustedMessage ?? 'Could not verify after scoped retries — showing best attempt',
       });
     }
 
@@ -329,6 +381,7 @@ export class AgenticLoopService {
     checkResult: CheckerResult,
     onTimeout: () => void,
     retryContextFor?: (subtask: SubTask) => RetryContext,
+    stepRetryAttempts?: Map<string, number>,
   ): Promise<number> {
     let iterationsRun = 0;
     const completedIds = new Set(
@@ -354,6 +407,8 @@ export class AgenticLoopService {
 
       state.actions = [];
       const visibleIds = new Set([...completedIds, ...subtask.dependsOn]);
+      const retryAttempt = (stepRetryAttempts?.get(subtask.id) ?? 0) + 1;
+      stepRetryAttempts?.set(subtask.id, retryAttempt);
       iterationsRun += await this.executeSubtask(
         state,
         subtaskStates,
@@ -365,6 +420,7 @@ export class AgenticLoopService {
         visibleIds,
         onTimeout,
         retryContextFor?.(subtask) ?? { verifierFeedback: feedback, verifierIssues: issues },
+        retryAttempt,
       );
     }
 
@@ -382,6 +438,7 @@ export class AgenticLoopService {
     visibleStateIds: Set<string>,
     onTimeout: () => void,
     retryContext?: RetryContext,
+    retryAttempt?: number,
   ): Promise<number> {
     const { subtask } = state;
     let iterationsRun = 0;
@@ -428,6 +485,14 @@ export class AgenticLoopService {
         onTimeout,
         formulaValidationLog,
         loopOptions,
+        retryAttempt && retryContext?.verifierFeedback
+          ? {
+              originalStep: subtask,
+              attempt: retryAttempt,
+              maxAttempts: this.MAX_STEP_RETRIES,
+              verifierFeedback: retryContext.verifierFeedback,
+            }
+          : undefined,
       );
 
       if (!validatedBatch) {
@@ -477,7 +542,10 @@ export class AgenticLoopService {
     onTimeout: () => void,
     formulaValidationLog: FormulaValidationResult[],
     loopOptions: AgenticLoopOptions,
+    retryStepContext?: StepRetryContext,
   ): Promise<ExecutorOutput | null> {
+    const callStartedAt = Date.now();
+    const model = this.executor.modelName;
     let execContext = { ...context };
     let result = buildDeterministicSubtaskActions(subtask, execContext);
     if (result) {
@@ -485,7 +553,44 @@ export class AgenticLoopService {
         `Using ${result.actions.length} deterministic action(s) for "${subtask.description}"`,
       );
     } else {
-      result = await this.executor.execute(subtask, execContext, previousActions);
+      try {
+        result = retryStepContext
+          ? await this.executor.retryStep(
+              retryStepContext,
+              execContext,
+              previousActions,
+              loopOptions.correlationId,
+            )
+          : await this.executor.execute(
+              subtask,
+              execContext,
+              previousActions,
+              loopOptions.correlationId,
+            );
+        this.noteExecutorParseResult(result, loopOptions);
+      } catch (error) {
+        if (error instanceof StepRetryExhaustedError) {
+          this.logger.error(error.message);
+          this.structuredLogger.logAgentEvent({
+            correlationId: loopOptions.correlationId ?? '-',
+            agent: 'workbook',
+            model,
+            durationMs: Date.now() - callStartedAt,
+            success: false,
+            error: error.message,
+          });
+          return null;
+        }
+        this.structuredLogger.logAgentEvent({
+          correlationId: loopOptions.correlationId ?? '-',
+          agent: 'workbook',
+          model,
+          durationMs: Date.now() - callStartedAt,
+          success: false,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        throw error;
+      }
     }
 
     let toolAttempts = 0;
@@ -523,10 +628,24 @@ export class AgenticLoopService {
         }
 
         execContext = this.mergeFetchedRange(execContext, toolRequest, fetched.values);
-        result = await this.executor.execute(subtask, execContext, previousActions);
+        result = await this.executor.execute(
+          subtask,
+          execContext,
+          previousActions,
+          loopOptions.correlationId,
+        );
+        this.noteExecutorParseResult(result, loopOptions);
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Range fetch failed';
         this.logger.warn(`Tool request failed: ${message}`);
+        this.structuredLogger.logAgentEvent({
+          correlationId: loopOptions.correlationId ?? '-',
+          agent: 'workbook',
+          model,
+          durationMs: Date.now() - callStartedAt,
+          success: false,
+          error: message,
+        });
         emitter.send({ type: 'THINKING', message });
         return null;
       }
@@ -569,6 +688,14 @@ export class AgenticLoopService {
         this.logger.warn(
           `Formula pre-validation failed after ${this.MAX_FORMULA_RETRIES} retries for "${subtask.description}"`,
         );
+        this.structuredLogger.logAgentEvent({
+          correlationId: loopOptions.correlationId ?? '-',
+          agent: 'workbook',
+          model,
+          durationMs: Date.now() - callStartedAt,
+          success: false,
+          error: this.formulaValidator.formatFeedback(preValidation.issues),
+        });
         emitter.send({
           type: 'THINKING',
           message: `Formula errors remain: ${this.formulaValidator.formatFeedback(preValidation.issues)}`,
@@ -582,11 +709,25 @@ export class AgenticLoopService {
           formulaValidationFeedback: this.formulaValidator.formatFeedback(preValidation.issues),
           formulaValidationIssues: preValidation.issues,
         };
-        result = await this.executor.execute(subtask, execContext, previousActions);
+        result = await this.executor.execute(
+          subtask,
+          execContext,
+          previousActions,
+          loopOptions.correlationId,
+        );
+        this.noteExecutorParseResult(result, loopOptions);
         continue;
       }
 
       if (result.actions.length === 0) {
+        this.structuredLogger.logAgentEvent({
+          correlationId: loopOptions.correlationId ?? '-',
+          agent: 'workbook',
+          model,
+          durationMs: Date.now() - callStartedAt,
+          success: true,
+          parsedResponse: result,
+        });
         return result;
       }
 
@@ -600,6 +741,14 @@ export class AgenticLoopService {
       formulaValidationLog.push(postValidation);
 
       if (postValidation.passed) {
+        this.structuredLogger.logAgentEvent({
+          correlationId: loopOptions.correlationId ?? '-',
+          agent: 'workbook',
+          model,
+          durationMs: Date.now() - callStartedAt,
+          success: true,
+          parsedResponse: result,
+        });
         return result;
       }
 
@@ -616,6 +765,14 @@ export class AgenticLoopService {
         this.logger.warn(
           `Formula post-validation failed after ${this.MAX_FORMULA_RETRIES} retries for "${subtask.description}"`,
         );
+        this.structuredLogger.logAgentEvent({
+          correlationId: loopOptions.correlationId ?? '-',
+          agent: 'workbook',
+          model,
+          durationMs: Date.now() - callStartedAt,
+          success: false,
+          error: this.formulaValidator.formatFeedback(postValidation.issues),
+        });
         emitter.send({
           type: 'THINKING',
           message: `Post-apply formula errors: ${this.formulaValidator.formatFeedback(postValidation.issues)}`,
@@ -629,9 +786,22 @@ export class AgenticLoopService {
         formulaValidationFeedback: this.formulaValidator.formatFeedback(postValidation.issues),
         formulaValidationIssues: postValidation.issues,
       };
-      result = await this.executor.execute(subtask, execContext, previousActions);
+      result = await this.executor.execute(
+        subtask,
+        execContext,
+        previousActions,
+        loopOptions.correlationId,
+      );
     }
 
+    this.structuredLogger.logAgentEvent({
+      correlationId: loopOptions.correlationId ?? '-',
+      agent: 'workbook',
+      model,
+      durationMs: Date.now() - callStartedAt,
+      success: false,
+      error: `Executor returned null for subtask ${subtask.id}`,
+    });
     return null;
   }
 
@@ -713,6 +883,33 @@ export class AgenticLoopService {
     }
 
     return downstream;
+  }
+
+  private findExhaustedSubtasks(
+    failingIds: Set<string>,
+    stepRetryAttempts: Map<string, number>,
+  ): Set<string> {
+    const exhausted = new Set<string>();
+    for (const subtaskId of failingIds) {
+      if ((stepRetryAttempts.get(subtaskId) ?? 0) >= this.MAX_STEP_RETRIES) {
+        exhausted.add(subtaskId);
+      }
+    }
+    return exhausted;
+  }
+
+  private buildRetryExhaustedMessage(exhaustedIds: Set<string>, feedback: string): string {
+    const ids = Array.from(exhaustedIds).join(', ');
+    return `Could not complete step(s) ${ids} after ${this.MAX_STEP_RETRIES} attempts. ${feedback}`;
+  }
+
+  private noteExecutorParseResult(
+    result: ExecutorOutput | null | undefined,
+    loopOptions: AgenticLoopOptions,
+  ): void {
+    if (result?.parsedOnFirstAttempt === false && loopOptions.parseFailureTracker) {
+      loopOptions.parseFailureTracker.hadFailure = true;
+    }
   }
 
   private orderByDependencies(subtasks: SubTask[]): SubTask[] {

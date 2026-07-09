@@ -5,8 +5,15 @@ export interface SheetAnalysis {
   rowCount: number;
   columnCount: number;
   headers: string[];
+  /** 0-based row index where column headers live (Tally sheets often have title rows above). */
+  headerRowIndex: number;
   isEmpty: boolean;
   columnLetters: string[];
+}
+
+export interface AnalyzeOptions {
+  /** Headers from workbook snapshot when row 0 of sheetData is not the header row. */
+  knownHeaders?: string[];
 }
 
 export interface ColumnStats {
@@ -28,17 +35,25 @@ export interface DuplicateEntry {
 
 @Injectable()
 export class SheetAnalyzerService {
-  analyze(sheetData: unknown[][]): SheetAnalysis {
+  analyze(sheetData: unknown[][], options?: AnalyzeOptions): SheetAnalysis {
     const rows = Array.isArray(sheetData) ? sheetData : [];
-    const columnCount = rows.reduce((max, row) => Math.max(max, Array.isArray(row) ? row.length : 0), 0);
-    const headers = Array.isArray(rows[0])
-      ? rows[0].map((cell, index) => this.formatHeader(cell, index))
-      : [];
+    const columnCount = rows.reduce(
+      (max, row) => Math.max(max, Array.isArray(row) ? row.length : 0),
+      0,
+    );
+    const detected = this.detectHeaderRow(rows, columnCount);
+    const headers = options?.knownHeaders?.length
+      ? this.alignHeaders(options.knownHeaders, columnCount)
+      : detected.headers;
+    const headerRowIndex = options?.knownHeaders?.length
+      ? this.findHeaderRowIndex(rows, options.knownHeaders, detected.headerRowIndex)
+      : detected.headerRowIndex;
 
     return {
       rowCount: rows.length,
       columnCount,
       headers,
+      headerRowIndex,
       isEmpty: rows.length === 0 || (rows.length === 1 && headers.every((h) => !h)),
       columnLetters: Array.from({ length: columnCount }, (_, i) => this.columnIndexToLetter(i)),
     };
@@ -57,8 +72,13 @@ export class SheetAnalyzerService {
     return rowData[col];
   }
 
-  sumColumn(sheetData: unknown[][], columnIndex: number, hasHeader = true): number {
-    const startRow = hasHeader ? 1 : 0;
+  sumColumn(
+    sheetData: unknown[][],
+    columnIndex: number,
+    hasHeader = true,
+    headerRowIndex = 0,
+  ): number {
+    const startRow = hasHeader ? headerRowIndex + 1 : 0;
     let total = 0;
 
     for (let row = startRow; row < sheetData.length; row += 1) {
@@ -74,15 +94,16 @@ export class SheetAnalyzerService {
     const trimmed = input.trim();
     if (!trimmed) return null;
 
-    const letterMatch = /^[A-Za-z]+$/.exec(trimmed);
-    if (letterMatch) {
-      return this.columnLetterToIndex(trimmed.toUpperCase());
-    }
-
     const headerIndex = analysis.headers.findIndex(
       (header) => header.toLowerCase() === trimmed.toLowerCase(),
     );
     if (headerIndex >= 0) return headerIndex;
+
+    const letterMatch = /^[A-Za-z]{1,3}$/.exec(trimmed);
+    if (letterMatch) {
+      const idx = this.columnLetterToIndex(trimmed.toUpperCase());
+      if (idx >= 0 && idx < analysis.columnCount) return idx;
+    }
 
     const numeric = Number.parseInt(trimmed, 10);
     if (Number.isFinite(numeric) && numeric > 0 && numeric <= analysis.columnCount) {
@@ -93,29 +114,10 @@ export class SheetAnalyzerService {
   }
 
   resolveColumnIndexFromMessage(message: string, analysis: SheetAnalysis): number | null {
-    const columnMatch = /\bcolumn\s+([A-Za-z0-9 ]+)\b/i.exec(message);
-    if (columnMatch) {
-      return this.resolveColumnIndex(columnMatch[1], analysis);
-    }
-
-    for (const header of analysis.headers) {
-      if (header && message.toLowerCase().includes(header.toLowerCase())) {
-        const idx = this.resolveColumnIndex(header, analysis);
-        if (idx !== null) return idx;
-      }
-    }
-
-    for (const letter of analysis.columnLetters) {
-      const re = new RegExp(`\\b${letter}\\b`, 'i');
-      if (re.test(message)) {
-        return this.resolveColumnIndex(letter, analysis);
-      }
-    }
-
-    return null;
+    return this.resolveFindColumnIndex(message, analysis);
   }
 
-  /** For find/search queries — prefer explicit tax columns; ignore prompt noise like "value". */
+  /** Prefer explicit tax/named columns; ignore prompt noise like "total" or "value". */
   resolveFindColumnIndex(message: string, analysis: SheetAnalysis): number | null {
     const taxKeywords: Array<{ prompt: RegExp; header: RegExp }> = [
       { prompt: /\bcgst\b/i, header: /cgst/i },
@@ -170,8 +172,13 @@ export class SheetAnalyzerService {
     return null;
   }
 
-  columnStats(sheetData: unknown[][], columnIndex: number, hasHeader = true): ColumnStats {
-    const startRow = hasHeader ? 1 : 0;
+  columnStats(
+    sheetData: unknown[][],
+    columnIndex: number,
+    hasHeader = true,
+    headerRowIndex = 0,
+  ): ColumnStats {
+    const startRow = hasHeader ? headerRowIndex + 1 : 0;
     let count = 0;
     let nonEmpty = 0;
     let sum = 0;
@@ -290,6 +297,86 @@ export class SheetAnalyzerService {
     }
 
     return textNumeric > realNumeric && textNumeric > 0;
+  }
+
+  private detectHeaderRow(
+    rows: unknown[][],
+    columnCount: number,
+  ): { headerRowIndex: number; headers: string[] } {
+    for (let rowIndex = 0; rowIndex < Math.min(rows.length, 8); rowIndex += 1) {
+      const row = rows[rowIndex];
+      if (!Array.isArray(row)) continue;
+
+      const nonEmpty = row.filter(
+        (cell) => cell !== null && cell !== undefined && String(cell).trim() !== '',
+      );
+      if (nonEmpty.length === 0) continue;
+
+      const stringLike = nonEmpty.filter((cell) => {
+        const text = String(cell).trim();
+        if (!text) return false;
+        return Number.isNaN(Number(text.replace(/,/g, '')));
+      });
+
+      if (stringLike.length / nonEmpty.length >= 0.6) {
+        return {
+          headerRowIndex: rowIndex,
+          headers: Array.from({ length: columnCount }, (_, index) =>
+            this.formatHeader(row[index], index),
+          ),
+        };
+      }
+    }
+
+    const firstRow = rows[0];
+    return {
+      headerRowIndex: 0,
+      headers: Array.isArray(firstRow)
+        ? Array.from({ length: columnCount }, (_, index) =>
+            this.formatHeader(firstRow[index], index),
+          )
+        : [],
+    };
+  }
+
+  private findHeaderRowIndex(
+    rows: unknown[][],
+    knownHeaders: string[],
+    fallback: number,
+  ): number {
+    const needles = knownHeaders
+      .map((header) => header.toLowerCase().trim())
+      .filter((header) => header.length > 1);
+
+    if (needles.length === 0) return fallback;
+
+    let bestRow = fallback;
+    let bestScore = 0;
+
+    for (let rowIndex = 0; rowIndex < Math.min(rows.length, 12); rowIndex += 1) {
+      const row = rows[rowIndex];
+      if (!Array.isArray(row)) continue;
+
+      const cells = row.map((cell) => String(cell ?? '').toLowerCase().trim());
+      const score = needles.filter((needle) =>
+        cells.some((cell) => cell === needle || cell.includes(needle)),
+      ).length;
+
+      if (score > bestScore) {
+        bestScore = score;
+        bestRow = rowIndex;
+      }
+    }
+
+    return bestScore > 0 ? bestRow : fallback;
+  }
+
+  private alignHeaders(headers: string[], columnCount: number): string[] {
+    return Array.from({ length: columnCount }, (_, index) => {
+      const header = headers[index];
+      if (header && String(header).trim()) return String(header);
+      return `Column ${this.columnIndexToLetter(index)}`;
+    });
   }
 
   private formatHeader(cell: unknown, index: number): string {

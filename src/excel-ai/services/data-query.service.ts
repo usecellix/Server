@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { formatIndianCurrency, formatIndianNumber, parseIndianNumber } from '../utils/indian-format.util';
+import { parseFindSearchTerms } from '../utils/find-query-parser.util';
 import { SheetAnalysis, SheetAnalyzerService } from './sheet-analyzer.service';
 import { WorkbookContext } from '../types/sheet-actions.types';
 
@@ -47,10 +48,7 @@ export class DataQueryService {
     ctx?: WorkbookContext,
     options?: FindQueryOptions,
   ): DataQueryResult | null {
-    const columnIndex =
-      subIntent === 'find'
-        ? this.analyzer.resolveFindColumnIndex(message, analysis)
-        : this.analyzer.resolveColumnIndexFromMessage(message, analysis);
+    const columnIndex = this.analyzer.resolveColumnIndexFromMessage(message, analysis);
     const lower = message.toLowerCase();
 
     switch (subIntent) {
@@ -76,32 +74,13 @@ export class DataQueryService {
     }
   }
 
+  private extractFindSearchTerms(message: string): string[] {
+    return parseFindSearchTerms(message);
+  }
+
   private extractFindSearchTerm(message: string): string | null {
-    const quoted = /"([^"]+)"/.exec(message);
-    if (quoted?.[1]?.trim()) return quoted[1].trim();
-
-    // Prefer the last number in the message — handles "Find CGST value 1868".
-    const numbers = message.match(/[\d,]+(?:\.\d+)?/g);
-    if (numbers?.length) {
-      return numbers[numbers.length - 1].replace(/,/g, '');
-    }
-
-    const afterFind =
-      /\b(?:find|search|locate|look up|lookup|show me|where is|get me|fetch)\s+(.+)/i.exec(
-        message,
-      );
-    if (!afterFind?.[1]) return null;
-
-    const remainder = afterFind[1]
-      .replace(
-        /\b(cgst|sgst|igst|tds|gstin|value|amount|invoice|row|column|cell|the|a|an|in|for|of)\b/gi,
-        ' ',
-      )
-      .trim();
-    if (!remainder) return null;
-
-    const tokens = remainder.split(/\s+/).filter(Boolean);
-    return tokens[tokens.length - 1] ?? remainder;
+    const terms = this.extractFindSearchTerms(message);
+    return terms.length ? terms.join(', ') : null;
   }
 
   /**
@@ -231,9 +210,13 @@ export class DataQueryService {
     return `${summary}\n${colLetter}${rowNum} (${header}): ${matchValue}`;
   }
 
-  /** Public accessor for the search term so callers can build cross-sheet results. */
+  /** Public accessor for search terms (single label joins multi-value lists). */
   extractSearchTerm(message: string): string | null {
     return this.extractFindSearchTerm(message);
+  }
+
+  extractSearchTerms(message: string): string[] {
+    return this.extractFindSearchTerms(message);
   }
 
   /**
@@ -247,50 +230,56 @@ export class DataQueryService {
     sheetName: string,
     hintColumnIndex: number | null = null,
   ): FindMatch[] {
-    const rawTerm = this.extractFindSearchTerm(message);
-    if (!rawTerm) return [];
+    const searchTerms = this.extractFindSearchTerms(message);
+    if (!searchTerms.length) return [];
 
-    const searchNum = parseIndianNumber(rawTerm);
-    const searchText = rawTerm.toLowerCase();
     const headers = analysis.headers;
     const allCols = Array.from({ length: headers.length }, (_, i) => i);
+    const allRowMatches: FindMatch[] = [];
 
-    let scanned = this.scanForMatches(
-      sheetData,
-      analysis,
-      hintColumnIndex !== null ? [hintColumnIndex] : allCols,
-      searchNum,
-      searchText,
-    );
+    for (const rawTerm of searchTerms) {
+      const searchNum = parseIndianNumber(rawTerm);
+      const searchText = rawTerm.toLowerCase();
 
-    if (scanned.length === 0 && hintColumnIndex !== null) {
-      scanned = this.scanForMatches(sheetData, analysis, allCols, searchNum, searchText);
+      let scanned = this.scanForMatches(
+        sheetData,
+        analysis,
+        hintColumnIndex !== null ? [hintColumnIndex] : allCols,
+        searchNum,
+        searchText,
+      );
+
+      if (scanned.length === 0 && hintColumnIndex !== null) {
+        scanned = this.scanForMatches(sheetData, analysis, allCols, searchNum, searchText);
+      }
+
+      const rowMatches = scanned.map((m) => {
+        const rowData = sheetData[m.rowIndex] as unknown[];
+        const context = this.buildRowContext(
+          rowData,
+          headers,
+          m.colIndex,
+          m.rawValue,
+          m.colLetter,
+          m.rowNum,
+        );
+        const [label, ...detailParts] = context.split('\n');
+        return {
+          label: label || `Row ${m.rowNum}`,
+          detail: detailParts.join(' ') || undefined,
+          sheetName,
+          row: m.rowIndex,
+          col: m.colIndex,
+          colLetter: m.colLetter,
+          rowNum: m.rowNum,
+          rawValue: m.rawValue,
+        };
+      });
+
+      allRowMatches.push(...rowMatches);
     }
 
-    const rowMatches = scanned.map((m) => {
-      const rowData = sheetData[m.rowIndex] as unknown[];
-      const context = this.buildRowContext(
-        rowData,
-        headers,
-        m.colIndex,
-        m.rawValue,
-        m.colLetter,
-        m.rowNum,
-      );
-      const [label, ...detailParts] = context.split('\n');
-      return {
-        label: label || `Row ${m.rowNum}`,
-        detail: detailParts.join(' ') || undefined,
-        sheetName,
-        row: m.rowIndex,
-        col: m.colIndex,
-        colLetter: m.colLetter,
-        rowNum: m.rowNum,
-        rawValue: m.rawValue,
-      };
-    });
-
-    return this.deduplicateMatchesByRow(rowMatches);
+    return this.deduplicateMatchesByRow(allRowMatches);
   }
 
   /** One clickable result per row (merge CGST/SGST hits on the same row). */
@@ -337,31 +326,29 @@ export class DataQueryService {
     );
   }
 
-  /** Build a find result (answer text + jump targets) from aggregated matches. */
-  buildFindResult(term: string, matches: FindMatch[]): DataQueryResult {
+  /** Build a find result (compact answer + jump targets) from aggregated matches. */
+  buildFindResult(terms: string | string[], matches: FindMatch[]): DataQueryResult {
+    const termList = Array.isArray(terms) ? terms : [terms];
+    const label = termList.join(', ');
+
     if (matches.length === 0) {
       return {
-        answer: `No value matching **${term}** found in the workbook. Tally values often appear as "1,868.41 Dr" — try searching with just the number (e.g. 1868).`,
+        answer: `No value matching **${label}** found in the workbook. Tally values often appear as "1,868.41 Dr" — try searching with just the number (e.g. 1868).`,
         matches: [],
       };
     }
 
-    const first = matches[0];
     const sheetCount = new Set(matches.map((m) => m.sheetName)).size;
     const acrossSheets = sheetCount > 1 ? ` across ${sheetCount} sheets` : '';
     const rowWord = matches.length === 1 ? 'row' : 'rows';
+    const intro =
+      matches.length === 1
+        ? `Found **${label}** in 1 ${rowWord}`
+        : `Found **${label}** in ${matches.length} ${rowWord}${acrossSheets}`;
 
     return {
-      answer:
-        matches.length === 1
-          ? `Found **${term}** in 1 ${rowWord}. Click the link below to jump to it.`
-          : `Found **${term}** in ${matches.length} ${rowWord}${acrossSheets}. Click a link below to jump to it.`,
-      selectCell: { sheetName: first.sheetName, row: first.row, col: first.col },
+      answer: intro,
       matches,
-      followUp:
-        matches.length === 1
-          ? undefined
-          : `Selected ${first.sheetName}!${first.colLetter}${first.rowNum} — use the links for other rows.`,
     };
   }
 
@@ -372,8 +359,8 @@ export class DataQueryService {
     hintColumnIndex: number | null,
     options?: FindQueryOptions,
   ): DataQueryResult | null {
-    const rawTerm = this.extractFindSearchTerm(message);
-    if (!rawTerm) {
+    const terms = this.extractFindSearchTerms(message);
+    if (!terms.length) {
       return {
         answer:
           'I could not extract a search value from your message. Please try: "Find CGST value 1868".',
@@ -382,7 +369,7 @@ export class DataQueryService {
 
     const sheetName = options?.sheetName ?? 'Sheet1';
     const matches = this.collectMatches(message, sheetData, analysis, sheetName, hintColumnIndex);
-    return this.buildFindResult(rawTerm, matches);
+    return this.buildFindResult(terms, matches);
   }
 
   private sum(
@@ -401,7 +388,12 @@ export class DataQueryService {
       return null;
     }
 
-    const total = this.analyzer.sumColumn(sheetData, columnIndex);
+    const total = this.analyzer.sumColumn(
+      sheetData,
+      columnIndex,
+      true,
+      analysis.headerRowIndex ?? 0,
+    );
     const label = analysis.headers[columnIndex] || analysis.columnLetters[columnIndex];
     const letter = analysis.columnLetters[columnIndex];
 
@@ -421,7 +413,12 @@ export class DataQueryService {
       return { answer: 'Which column should I average? Tell me the column name or letter.' };
     }
 
-    const stats = this.analyzer.columnStats(sheetData, columnIndex);
+    const stats = this.analyzer.columnStats(
+      sheetData,
+      columnIndex,
+      true,
+      analysis.headerRowIndex ?? 0,
+    );
     const label = analysis.headers[columnIndex] || analysis.columnLetters[columnIndex];
 
     return {
@@ -440,7 +437,12 @@ export class DataQueryService {
       return { answer: 'Which column should I check for the maximum value?' };
     }
 
-    const stats = this.analyzer.columnStats(sheetData, columnIndex);
+    const stats = this.analyzer.columnStats(
+      sheetData,
+      columnIndex,
+      true,
+      analysis.headerRowIndex ?? 0,
+    );
     const label = analysis.headers[columnIndex] || analysis.columnLetters[columnIndex];
 
     if (stats.max === null) {
@@ -464,7 +466,12 @@ export class DataQueryService {
       return { answer: 'Which column should I check for the minimum value?' };
     }
 
-    const stats = this.analyzer.columnStats(sheetData, columnIndex);
+    const stats = this.analyzer.columnStats(
+      sheetData,
+      columnIndex,
+      true,
+      analysis.headerRowIndex ?? 0,
+    );
     const label = analysis.headers[columnIndex] || analysis.columnLetters[columnIndex];
 
     if (stats.min === null) {
@@ -485,7 +492,12 @@ export class DataQueryService {
     lower: string,
   ): DataQueryResult | null {
     if (columnIndex !== null) {
-      const stats = this.analyzer.columnStats(sheetData, columnIndex);
+      const stats = this.analyzer.columnStats(
+      sheetData,
+      columnIndex,
+      true,
+      analysis.headerRowIndex ?? 0,
+    );
       const label = analysis.headers[columnIndex] || analysis.columnLetters[columnIndex];
       const threshold = this.extractThreshold(lower);
 
@@ -605,6 +617,9 @@ export class DataQueryService {
   }
 
   private isGenericTotal(lower: string): boolean {
+    if (/\b(cgst|sgst|igst|tds|gstin|invoice amount|amount|particulars)\b/.test(lower)) {
+      return false;
+    }
     return /\b(total|sum|add up)\b/.test(lower) && !/\bcolumn\b/.test(lower);
   }
 }

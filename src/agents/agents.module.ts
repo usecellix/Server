@@ -10,6 +10,7 @@ import { VerifierAgent } from './verifier.agent';
 import { CompletenessChecker } from './checkers/completeness.checker';
 import { FormattingChecker } from './checkers/formatting.checker';
 import { ToolBridgeService } from './tool-bridge.service';
+import { StructuredLogger } from './logging/structured-logger';
 
 @Module({
   imports: [AppConfigModule, LlmModule, FormulaModule],
@@ -20,6 +21,7 @@ import { ToolBridgeService } from './tool-bridge.service';
     ExecutorAgent,
     VerifierAgent,
     ToolBridgeService,
+    StructuredLogger,
     CompletenessChecker,
     FormattingChecker,
   ],
