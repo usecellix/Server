@@ -45,13 +45,18 @@ export type SheetActionType =
   | 'INSERT_COLUMN'
   | 'DELETE_COLUMN'
   | 'HIDE_ROW'
+  | 'UNHIDE_ROW'
   | 'SHOW_ROW'
   | 'HIDE_COLUMN'
+  | 'UNHIDE_COLUMN'
   | 'SHOW_COLUMN'
   | 'SET_ROW_HEIGHT'
   | 'SET_COLUMN_WIDTH'
   | 'FREEZE_PANES'
   | 'UNFREEZE_PANES'
+  | 'SET_ZOOM'
+  | 'PROTECT_SHEET'
+  | 'UNPROTECT_SHEET'
   | 'MERGE_CELLS'
   | 'UNMERGE_CELLS'
   | 'CLEAR_CONTENT'
@@ -69,7 +74,22 @@ export type SheetActionType =
   | 'SET_SHEET_COLOR'
   | 'ADD_COMMENT'
   | 'DELETE_COMMENT'
-  | 'WRITE_TABLE';
+  | 'WRITE_TABLE'
+  | 'BATCH_SET'
+  | 'CREATE_TABLE'
+  | 'DEFINE_NAMED_RANGE'
+  | 'AUTOFIT_COLUMNS'
+  | 'CLARIFY'
+  | 'CHECKPOINT'
+  | 'ADD_SHEET'
+  | 'SORT_RANGE';
+
+export interface BatchSetOperation {
+  address: string;
+  value?: unknown;
+  formula?: string;
+  format?: FormatSpec;
+}
 
 export interface SheetActionPayload {
   type: SheetActionType;
@@ -87,6 +107,7 @@ export interface SheetActionPayload {
   width?: number;
   freezeRows?: number;
   freezeColumns?: number;
+  zoomPercent?: number;
   mergeAcross?: boolean;
   format?: FormatSpec;
   endRow?: number;
@@ -97,9 +118,39 @@ export interface SheetActionPayload {
   comment?: string;
   headers?: string[];
   rows?: unknown[][];
+  afterRow?: number;
+  values?: unknown[];
+  address?: string;
+  range?: string;
+  sourceRange?: string;
+  targetRange?: string;
+  operations?: BatchSetOperation[];
+  rowNumbers?: number[];
+  beforeColumn?: string;
+  columns?: string[];
+  oldName?: string;
+  sourceName?: string;
+  newName?: string;
+  name?: string;
+  tableName?: string;
+  hasHeaders?: boolean;
+  style?: string;
+  question?: string;
+  options?: string[];
+  message?: string;
+  copyFrom?: string;
+  /** SORT_RANGE — 0-based column index within range */
+  key?: number;
+  ascending?: boolean;
+  columnName?: string;
 }
 
+export type SheetAction = SheetActionPayload;
+
 export type IntentType = 'ACTION' | 'EXPLAIN' | 'FIX' | 'DATA_QUESTION' | 'FORMULA_HELP';
+
+/** User-selected operational mode from the add-in. */
+export type AssistantMode = 'ask' | 'action' | 'plan';
 
 export interface IntentClassification {
   intent: IntentType;

@@ -24,8 +24,13 @@ MERGE_CELLS:  { type, row, col, rowCount, colCount }
 UNMERGE_CELLS:{ type, row, col, rowCount, colCount }
 CLEAR_CONTENT:{ type, row, col, rowCount?, colCount? }
 CLEAR_FORMAT: { type, row, col, rowCount?, colCount? }
-FILL_DOWN:    { type, col, row, endRow }
+FILL_DOWN:    { type, col, row, endRow } OR { type, sheetName, sourceRange, targetRange }
 FILL_RIGHT:   { type, row, col, endCol }
+BATCH_SET:    { type, sheetName, operations: [{ address, value?, formula?, format? }] }
+CREATE_TABLE: { type, sheetName, range, tableName, hasHeaders, style? }
+DEFINE_NAMED_RANGE: { type, name, formula, comment? }
+AUTOFIT_COLUMNS: { type, sheetName, columns? }
+ADD_SHEET:    { type, name, position?, copyFrom? }
 `.trim();
 
 function formatSampleRow(row: (string | number | null)[]): string {

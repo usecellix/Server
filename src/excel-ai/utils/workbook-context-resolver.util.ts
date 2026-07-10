@@ -1,5 +1,6 @@
 import { WorkbookContext, SheetSnapshot } from '../../types/cellix.types';
 import { ConversationRequestDto, WorkbookContextDto } from '../dto/conversation-request.dto';
+import { ConversationMessageEntry } from '../schemas/conversation.schema';
 import { WorkbookContextInput } from '../services/conversation-engine.service';
 import { SheetAnalysis } from '../services/sheet-analyzer.service';
 
@@ -30,7 +31,12 @@ export function resolveWorkbookContext(
   sheetData: unknown[][],
 ): WorkbookContext {
   if (isRichWorkbookContext(request.workbookContext)) {
-    return request.workbookContext;
+    const rich = request.workbookContext;
+    const promptContext = request.promptContext ?? rich.prompt_context;
+    if (promptContext && promptContext !== rich.prompt_context) {
+      return { ...rich, prompt_context: promptContext };
+    }
+    return rich;
   }
 
   const legacy = request.workbookContext as
@@ -81,6 +87,7 @@ export function resolveWorkbookContext(
             sheetName: name,
           },
     ),
+    ...(request.promptContext ? { prompt_context: request.promptContext } : {}),
   };
 }
 
@@ -108,6 +115,7 @@ export function resolveEngineWorkbookMeta(
 
 export function resolveConversationHistory(
   request: ConversationRequestDto,
+  mongoMessages?: ConversationMessageEntry[],
 ): Array<{ role: string; content: string }> {
   if (request.conversationHistory?.length) {
     return request.conversationHistory.map((entry) => ({
@@ -116,8 +124,20 @@ export function resolveConversationHistory(
     }));
   }
 
-  return (request.context?.previousMessages ?? []).map((entry) => ({
-    role: entry.role,
-    content: entry.content,
-  }));
+  const clientMessages = request.context?.previousMessages ?? [];
+  if (clientMessages.length > 0) {
+    return clientMessages.map((entry) => ({
+      role: entry.role,
+      content: entry.content,
+    }));
+  }
+
+  if (mongoMessages?.length) {
+    return mongoMessages.map((entry) => ({
+      role: entry.role,
+      content: entry.content,
+    }));
+  }
+
+  return [];
 }

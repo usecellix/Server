@@ -25,11 +25,17 @@ export function parseIndianNumber(value: unknown): number | null {
   if (typeof value === 'number' && Number.isFinite(value)) return value;
   if (typeof value !== 'string') return null;
 
-  const cleaned = value.replace(/[\u20B9\u0024\u20AC\u00A3,\s%]/g, '').trim();
+  // Tally exports append " Dr" (debit) or " Cr" (credit) — strip and track sign.
+  const drCrMatch = /\b(Dr|CR|Cr)\s*$/i.exec(value.trim());
+  const isTallyCr = drCrMatch ? /cr/i.test(drCrMatch[1]) : false;
+  const withoutDrCr = drCrMatch ? value.slice(0, value.lastIndexOf(drCrMatch[0])) : value;
+
+  const cleaned = withoutDrCr.replace(/[\u20B9\u0024\u20AC\u00A3,\s%]/g, '').trim();
   if (!cleaned) return null;
 
   const isWrappedNegative = /^\(.+\)$/.test(cleaned);
   const numericCandidate = isWrappedNegative ? `-${cleaned.slice(1, -1)}` : cleaned;
   const parsed = Number(numericCandidate);
-  return Number.isFinite(parsed) ? parsed : null;
+  if (!Number.isFinite(parsed)) return null;
+  return isTallyCr ? -parsed : parsed;
 }

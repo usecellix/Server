@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { isFindLookupMessage } from '../utils/find-query-parser.util';
 import { IntentClassification, IntentType } from '../types/sheet-actions.types';
 
 @Injectable()
@@ -64,8 +65,13 @@ export class IntentClassifierService {
     );
   }
 
+  isFindLookupIntent(lower: string): boolean {
+    return isFindLookupMessage(lower);
+  }
+
   private isDataQuestionIntent(lower: string): boolean {
     return (
+      this.isFindLookupIntent(lower) ||
       /\b(how many|what is the total|what is the average|what is the highest|what is the lowest|what is the maximum|what is the minimum|which rows|which supplier|which column|are there duplicate|what percentage|count of|number of)\b/.test(
         lower,
       ) ||
@@ -75,6 +81,7 @@ export class IntentClassifierService {
   }
 
   private detectDataQuery(lower: string): string {
+    if (this.isFindLookupIntent(lower)) return 'find';
     if (/\b(average|mean)\b/.test(lower)) return 'average';
     if (/\b(max|maximum|highest|largest)\b/.test(lower)) return 'max';
     if (/\b(min|minimum|lowest|smallest)\b/.test(lower)) return 'min';

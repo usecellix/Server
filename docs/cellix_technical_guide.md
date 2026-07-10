@@ -1,6 +1,8 @@
 ### 1. System Overview
 
-CELLIX is an AI-powered compliance assistant designed as a Microsoft Excel add-in using Office.js task pane architecture. It integrates a React 18 frontend with a Node.js backend that orchestrates several key components: a large language model (LLM) pipeline, a deterministic GST rules engine, and a MongoDB database for audit trails and session state management. The system is structured around named, discrete processes; each interaction within CELLIX is mapped to a specific named process. This naming convention facilitates clear traceability in both code and logs, allowing engineers to easily identify the role and function of each process within the system.
+CELLIX is an AI-powered Excel assistant implemented as a Microsoft Excel add-in using Office.js task pane architecture. It integrates a React 18 frontend with a NestJS backend that orchestrates an LLM multi-agent pipeline, deterministic routing (find/export, shortcuts), and a MongoDB database for conversations, audit trails, and change sets.
+
+> **Note:** This document is a legacy GST/compliance-oriented draft. For the current Cellix-2026 architecture, see [`docs/CELLIX_TECHNICAL_DOCUMENTATION.md`](../../docs/CELLIX_TECHNICAL_DOCUMENTATION.md) (updated June 2026: LLM Router, tiered TOON, data aggregation vs find, sheet mentions, Tally header detection).
 
 **Key components:**
 

@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import { AuditLogEntry, LLMTier, MODEL_CONFIGS } from '../types/cellix.types';
+import { ChangeSetService } from './change-set.service';
 import { AuditEntry, AuditEntryDocument } from './schemas/audit-entry.schema';
 import { AuditLog, AuditLogDocument } from './schemas/audit-log.schema';
 
@@ -38,6 +39,7 @@ export class AuditService {
     private readonly auditEntryModel: Model<AuditEntryDocument>,
     @InjectModel(AuditLog.name)
     private readonly auditLogModel: Model<AuditLogDocument>,
+    private readonly changeSetService: ChangeSetService,
   ) {}
 
   async create(input: CreateAuditEntryInput): Promise<AuditEntry> {
@@ -227,5 +229,76 @@ export class AuditService {
     }
 
     return { totalCost, totalTokens, totalCalls, successRate, avgLatencyMs, byTier };
+  }
+
+  async exportAudit(
+    fromDate: Date,
+    toDate: Date,
+  ): Promise<{
+    exportedAt: string;
+    from: string;
+    to: string;
+    changeSets: Awaited<ReturnType<ChangeSetService['getByDateRange']>>;
+    auditLogs: AuditLogEntry[];
+  }> {
+    const [changeSets, logsResult] = await Promise.all([
+      this.changeSetService.getByDateRange(fromDate, toDate),
+      this.getLogs({ fromDate, toDate, limit: 5000, offset: 0 }),
+    ]);
+
+    return {
+      exportedAt: new Date().toISOString(),
+      from: fromDate.toISOString(),
+      to: toDate.toISOString(),
+      changeSets,
+      auditLogs: logsResult.logs,
+    };
+  }
+
+  buildExportCsv(
+    fromDate: Date,
+    toDate: Date,
+    payload: Awaited<ReturnType<AuditService['exportAudit']>>,
+  ): string {
+    const lines = [
+      `# Cellix audit export`,
+      `# from=${fromDate.toISOString()}`,
+      `# to=${toDate.toISOString()}`,
+      `# exportedAt=${payload.exportedAt}`,
+      '',
+      'recordType,id,traceId,timestamp,details,costUsd,tokens,status',
+    ];
+
+    for (const changeSet of payload.changeSets) {
+      lines.push(
+        [
+          'change_set',
+          changeSet.changeSetId,
+          changeSet.traceId,
+          new Date(changeSet.timestamp).toISOString(),
+          `"${changeSet.prompt.replace(/"/g, '""')}"`,
+          '',
+          '',
+          changeSet.status,
+        ].join(','),
+      );
+    }
+
+    for (const log of payload.auditLogs) {
+      lines.push(
+        [
+          'llm_call',
+          log.id,
+          log.traceId,
+          log.timestamp,
+          `"${log.intent.replace(/"/g, '""')} (${log.model}/${log.tier})"`,
+          log.estimatedCostUsd.toFixed(6),
+          log.totalTokens,
+          log.success ? 'success' : 'failed',
+        ].join(','),
+      );
+    }
+
+    return lines.join('\n');
   }
 }

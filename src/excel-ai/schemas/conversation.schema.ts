@@ -26,6 +26,7 @@ export class ConversationMessageEntry {
   @Prop({ type: Object })
   metadata?: {
     actions?: unknown[];
+    changeSetId?: string;
     questionOptions?: string[];
     pendingIntent?: string;
     ambiguityScore?: number;
@@ -51,6 +52,20 @@ export class Conversation {
     columnCount: number;
     headers: string[];
   };
+
+  /**
+   * Hash of the last TOON-compressed payload.
+   * Used by ContextCacheService to skip re-analysis when sheet hasn't changed.
+   */
+  @Prop({ type: String, required: false })
+  lastSheetHash?: string;
+
+  /**
+   * The cached promptContext from the last successful SheetAnalyzer run.
+   * Only valid when lastSheetHash matches the current turn's TOON hash.
+   */
+  @Prop({ type: String, required: false })
+  cachedPromptContext?: string;
 
   @Prop({ enum: ['active', 'completed', 'error'], default: 'active' })
   status!: 'active' | 'completed' | 'error';
