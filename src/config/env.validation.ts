@@ -16,4 +16,13 @@ export const envValidationSchema = Joi.object({
   OPENAI_MODEL_LOW: Joi.string().optional(),
   OPENAI_MODEL_MEDIUM: Joi.string().optional(),
   OPENAI_MODEL_HIGH: Joi.string().optional(),
+  // Better Auth / OAuth — required at runtime for social login; optional so the API can boot without them.
+  BETTER_AUTH_SECRET: Joi.string().min(32).optional(),
+  BETTER_AUTH_URL: Joi.string().uri().optional(),
+  CLIENT_ORIGIN: Joi.string().uri().default('https://localhost:3000'),
+  GOOGLE_CLIENT_ID: Joi.string().allow('').optional(),
+  GOOGLE_CLIENT_SECRET: Joi.string().allow('').optional(),
+  MICROSOFT_CLIENT_ID: Joi.string().allow('').optional(),
+  MICROSOFT_CLIENT_SECRET: Joi.string().allow('').optional(),
+  MICROSOFT_TENANT_ID: Joi.string().default('common'),
 });

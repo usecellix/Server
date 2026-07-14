@@ -8,10 +8,18 @@ import { AppConfigService } from '../config/app-config.service';
     MongooseModule.forRootAsync({
       imports: [AppConfigModule],
       inject: [AppConfigService],
-      useFactory: (config: AppConfigService) => ({
-        uri: config.mongoUrl,
-        dbName: config.mongoDbName,
-      }),
+      useFactory: (config: AppConfigService) => {
+        const uri = config.mongoUrl.includes('retryWrites=')
+          ? config.mongoUrl
+          : config.mongoUrl.includes('?')
+            ? `${config.mongoUrl}&retryWrites=false`
+            : `${config.mongoUrl}?retryWrites=false`;
+        return {
+          uri,
+          dbName: config.mongoDbName,
+          retryWrites: false,
+        };
+      },
     }),
   ],
 })

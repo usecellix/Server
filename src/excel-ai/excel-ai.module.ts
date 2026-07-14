@@ -14,6 +14,7 @@ import { FindExportService } from './services/find-export.service';
 import { DataQueryService } from './services/data-query.service';
 import { IntentClassifierService } from './services/intent-classifier.service';
 import { LlmRouterService } from './services/llm-router.service';
+import { SheetAnalyzerService } from './services/sheet-analyzer.service';
 import { SmartDataQueryService } from './services/smart-data-query.service';
 
 @Module({

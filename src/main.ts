@@ -28,9 +28,12 @@ async function bootstrap(): Promise<void> {
   );
   app.useGlobalFilters(new HttpExceptionFilter());
   app.useGlobalInterceptors(new ResponseEnvelopeInterceptor(app.get(Reflector)));
-  app.enableCors();
+  app.enableCors({
+    origin: config.clientOrigin,
+    credentials: true,
+  });
 
-  await app.listen(port);
+  await app.listen(port, '0.0.0.0');
   logger.log(`Server started on http://localhost:${port} [${config.nodeEnv}]`);
 }
 
