@@ -157,6 +157,7 @@ function extractHeaders(message: string): string[] {
   const patterns = [
     /\bwith\s+headers?\s+(.+?)(?=\s*,?\s*(?:give|and\s+give|for\s+this)\b|$)/i,
     /\bheaders?\s*:\s*(.+?)(?=\s*,?\s*(?:give|for)\b|$)/i,
+    /\bcolumns?\s+(?:named|called)\s+(.+?)(?=\s*,?\s*(?:give|for)\b|$)/i,
     /\bcolumns?\s+(?:as\s+)?(.+?)(?=\s*,?\s*(?:give|for)\b|$)/i,
   ];
 
@@ -174,7 +175,13 @@ function splitHeaderList(raw: string): string[] {
   const trimmed = raw.split(/\bgive\b|\bwith\b|\bfor\b/i)[0].trim();
   return trimmed
     .split(/,|\band\b/gi)
-    .map((part) => part.trim().replace(/^["']|["']$/g, ''))
+    .map((part) =>
+      part
+        .trim()
+        .replace(/^["']|["']$/g, '')
+        .replace(/^(?:named|called)\s+/i, '')
+        .trim(),
+    )
     .filter((part) => part.length > 0 && part.length < 40 && !/^\d+\s*(rows?|dummy)/i.test(part));
 }
 
