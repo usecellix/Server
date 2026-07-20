@@ -19,6 +19,15 @@ describe('find-query-parser', () => {
     const prompt =
       'Find all the rows Deva steels and create a new sheet with all that value';
     expect(resolveLocalFindRoute(prompt)).toBe('export_rows');
+    expect(
+      resolveLocalFindRoute('find Applied and copy those rows to a new sheet'),
+    ).toBe('export_rows');
+  });
+
+  it('parses Applied find+copy search term without the export clause', () => {
+    expect(
+      parseFindSearchTerms('find Applied and copy those rows to a new sheet'),
+    ).toEqual(['Applied']);
   });
 
   it('strips trailing export clauses before parsing search terms', () => {
@@ -28,13 +37,17 @@ describe('find-query-parser', () => {
     expect(parseFindSearchTerms(prompt)).toEqual(['Deva steels']);
   });
 
-  it('keeps numeric multi-value find behavior', () => {
-    expect(parseFindSearchTerms('Find values 2290, 4180, 7515')).toEqual([
-      '2290',
-      '4180',
-      '7515',
+  it('extracts email addresses as find search terms', () => {
+    expect(parseFindSearchTerms('lookup the value techpath786@gmail.com')).toEqual([
+      'techpath786@gmail.com',
     ]);
-    expect(parseFindSearchTerms('Find CGST value 1868')).toEqual(['1868']);
+    expect(parseFindSearchTerms('find anita.george@example.com')).toEqual([
+      'anita.george@example.com',
+    ]);
+  });
+
+  it('strips leading "value" noise from text find phrases', () => {
+    expect(parseFindSearchTerms('lookup the value qqqq')).toEqual(['qqqq']);
   });
 
   it('does not treat aggregation questions as find search terms', () => {

@@ -1,4 +1,6 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
+import { PlannerFileLoggerService } from '../common/logging/planner-file-logger.service';
+import { truncateForPlannerLog } from '../common/logging/planner-file-logger.util';
 import { AppConfigService } from '../config/app-config.service';
 import { PLANNER_RULES_ADDITION } from '../excel-ai/prompt/cellix-system-prompt';
 import { OpenRouterService } from '../excel-ai/services/openrouter.service';
@@ -19,6 +21,7 @@ export class PlannerAgent {
     private readonly llm: OpenRouterService,
     private readonly config: AppConfigService,
     private readonly structuredLogger: StructuredLogger = new StructuredLogger(),
+    @Optional() private readonly plannerFileLogger?: PlannerFileLoggerService,
   ) {}
 
   async plan(
@@ -46,8 +49,10 @@ export class PlannerAgent {
     });
     this.structuredLogger.debugRawResponse(correlationId, 'planner', model, raw);
 
+    let retried = false;
     let parsed = this.tryParsePlanner(raw, correlationId, model);
     if (!parsed) {
+      retried = true;
       this.logger.warn(`Planner JSON parse failed — retrying once. Raw snippet: ${this.clip(raw)}`);
       raw = await this.llm.complete({
         systemPrompt,
@@ -74,6 +79,23 @@ export class PlannerAgent {
         rawResponse: raw,
         parsedResponse: parsed,
       });
+      this.writePlannerFileLog({
+        correlationId,
+        model,
+        durationMs: Date.now() - startedAt,
+        success: true,
+        prompt,
+        context,
+        history,
+        promptContext,
+        routerAssumption,
+        userMessage,
+        systemPrompt,
+        raw,
+        parsed,
+        fallback: false,
+        retried,
+      });
       return parsed;
     }
 
@@ -92,7 +114,76 @@ export class PlannerAgent {
       parsedResponse: fallback,
       error: 'Planner JSON parse failed after retry',
     });
+    this.writePlannerFileLog({
+      correlationId,
+      model,
+      durationMs: Date.now() - startedAt,
+      success: false,
+      error: 'Planner JSON parse failed after retry',
+      prompt,
+      context,
+      history,
+      promptContext,
+      routerAssumption,
+      userMessage,
+      systemPrompt,
+      raw,
+      parsed: fallback,
+      fallback: true,
+      retried,
+    });
     return fallback;
+  }
+
+  private writePlannerFileLog(args: {
+    correlationId: string;
+    model: string;
+    durationMs: number;
+    success: boolean;
+    error?: string;
+    prompt: string;
+    context: WorkbookContext;
+    history: { role: string; content: string }[];
+    promptContext?: string;
+    routerAssumption?: string;
+    userMessage: string;
+    systemPrompt: string;
+    raw: string;
+    parsed: PlannerOutput;
+    fallback: boolean;
+    retried: boolean;
+  }): void {
+    if (!this.plannerFileLogger) return;
+
+    const userTrunc = truncateForPlannerLog(args.userMessage);
+    const rawTrunc = truncateForPlannerLog(args.raw);
+    const includeSystem = this.plannerFileLogger.shouldLogFullPrompts();
+
+    this.plannerFileLogger.logPlanner({
+      correlationId: args.correlationId,
+      model: args.model,
+      durationMs: args.durationMs,
+      success: args.success,
+      ...(args.error ? { error: args.error } : {}),
+      input: {
+        prompt: args.prompt,
+        ...(args.routerAssumption ? { routerAssumption: args.routerAssumption } : {}),
+        userMessage: userTrunc.value,
+        ...(userTrunc.truncated ? { userMessageTruncated: true } : {}),
+        historyLength: args.history.length,
+        sheets: args.context.sheets.map((s) => s.name),
+        activeSheet: args.context.activeSheetName,
+        hasPromptContext: Boolean(args.promptContext?.trim()),
+        ...(includeSystem ? { systemPrompt: args.systemPrompt } : {}),
+      },
+      output: {
+        raw: rawTrunc.value,
+        ...(rawTrunc.truncated ? { rawTruncated: true } : {}),
+        parsed: args.parsed,
+        fallback: args.fallback,
+        retried: args.retried,
+      },
+    });
   }
 
   private tryParsePlanner(raw: string, correlationId: string, model: string): PlannerOutput | null {
@@ -118,14 +209,20 @@ export class PlannerAgent {
     const subtasks = Array.isArray(parsed.subtasks)
       ? parsed.subtasks
           .filter((s): s is SubTask => Boolean(s?.id && s?.description && s?.targetSheet))
-          .map((s) => ({
-            id: String(s.id),
-            description: String(s.description),
-            targetSheet: String(s.targetSheet),
-            dependsOn: Array.isArray(s.dependsOn) ? s.dependsOn.map(String) : [],
-            estimatedActions:
-              typeof s.estimatedActions === 'number' ? s.estimatedActions : 1,
-          }))
+          .map((s) => {
+            const subtask: SubTask = {
+              id: String(s.id),
+              description: String(s.description),
+              targetSheet: String(s.targetSheet),
+              dependsOn: Array.isArray(s.dependsOn) ? s.dependsOn.map(String) : [],
+              estimatedActions:
+                typeof s.estimatedActions === 'number' ? s.estimatedActions : 1,
+            };
+            if (typeof s.suggestedActionType === 'string' && s.suggestedActionType.trim()) {
+              subtask.suggestedActionType = s.suggestedActionType.trim();
+            }
+            return subtask;
+          })
       : [];
 
     const clarificationsNeeded = Array.isArray(parsed.clarificationsNeeded)
@@ -145,6 +242,11 @@ export class PlannerAgent {
       confidence,
       reasoning: String(parsed.reasoning ?? ''),
     };
+  }
+
+  /** Exposed for unit tests — preserves suggestedActionType and required fields. */
+  normalizePlannerOutputForTest(parsed: Partial<PlannerOutput>): PlannerOutput {
+    return this.normalizePlannerOutput(parsed);
   }
 
   private buildFallbackPlan(prompt: string, context: WorkbookContext): PlannerOutput {

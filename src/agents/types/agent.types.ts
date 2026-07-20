@@ -44,6 +44,8 @@ export interface SubTask {
   targetSheet: string;
   dependsOn: string[];
   estimatedActions: number;
+  /** Optional nudge toward a native action type (e.g. COPY_FILTERED_RANGE). */
+  suggestedActionType?: string;
 }
 
 export interface PlannerOutput {

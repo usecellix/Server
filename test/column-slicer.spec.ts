@@ -136,3 +136,64 @@ describe('sliceRelevantColumns — edge cases', () => {
     expect(result.sheets[0].headers).toContain('CGST');
   });
 });
+
+describe('sliceRelevantColumns — email / value lookup', () => {
+  const applicationsRows: unknown[][] = [
+    [
+      'Job Title',
+      'Company/Shop',
+      'Student Name',
+      'Student Email',
+      'Student Phone',
+      'Location',
+      'Resume Link',
+      'Status',
+      'Applied Date',
+    ],
+    [
+      'Mobile Service Manager',
+      '',
+      'qqqq',
+      'techpath786@gmail.com',
+      '9778488342',
+      'Kannur',
+      '',
+      'Pending',
+      '15-01-2024',
+    ],
+    [
+      'Sales Associate',
+      'ABC Retail',
+      'Anita George',
+      'anita.george@example.com',
+      '9638527410',
+      'Kochi',
+      'https://resume.link/anita',
+      'Applied',
+      '16-01-2024',
+    ],
+  ];
+
+  it('includes Student Email for lookup of an email address (not Company via "com")', () => {
+    const result = sliceFromRawData(
+      'lookup the value techpath786@gmail.com',
+      applicationsRows,
+      'Applications',
+    );
+    const sheet = result.sheets[0];
+    expect(sheet.headers).toContain('Student Email');
+    expect(sheet.headers).not.toContain('Company/Shop');
+    expect(sheet.rows.some((row) => row.includes('techpath786@gmail.com'))).toBe(true);
+  });
+
+  it('does not treat email TLD "com" as a Company column keyword', () => {
+    const result = sliceFromRawData(
+      'lookup the value anita.george@example.com',
+      applicationsRows,
+      'Applications',
+    );
+    const sheet = result.sheets[0];
+    expect(sheet.headers).toContain('Student Email');
+    expect(sheet.headers).not.toContain('Company/Shop');
+  });
+});

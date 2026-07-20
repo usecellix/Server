@@ -1,0 +1,14 @@
+{
+  "documentId": "synth-26as-001",
+  "format": "synthetic-json",
+  "rows": [
+    {
+      "pan": "ABCDE1234F",
+      "deducteeName": "Synthetic Vendor Pvt Ltd",
+      "amountPaid": 50000,
+      "tdsDeducted": 5000,
+      "section": "194C",
+      "sourceRow": 1
+    }
+  ]
+}

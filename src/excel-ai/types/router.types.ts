@@ -36,6 +36,21 @@ export interface RouterDecision {
    * e.g. "I'll treat 'Amount' as the column to sum."
    */
   assumption?: string;
+
+  /** Complexity tier for route='write' only — 0/1/2/3 */
+  complexity?: 0 | 1 | 2 | 3;
+
+  /** Catalog action hint for route='write' (e.g. FORMULA_GEN, SORT_OR_FILTER) */
+  actionHint?: string;
+
+  /** Whether complexity came from regex classifier or LLM semantic fallback */
+  matchedBy?: 'regex' | 'llm-fallback';
+
+  /**
+   * True when write-intent-guard overrode a non-write route (data/ask/etc.)
+   * because the message deterministically implies a sheet mutation.
+   */
+  overridden?: boolean;
 }
 
 /** What we send to the LLM Router */

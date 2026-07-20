@@ -88,6 +88,11 @@ export function parseFindSearchTerms(message: string): string[] {
   const quoted = /"([^"]+)"/.exec(message);
   if (quoted?.[1]?.trim()) return [quoted[1].trim()];
 
+  const emails = message.match(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/gi);
+  if (emails?.length) {
+    return [...new Set(emails.map((email) => email.trim()))];
+  }
+
   const scoped = stripFindFollowOnClauses(message);
 
   const numericTokens = extractNumericTokens(scoped);
@@ -99,7 +104,12 @@ export function parseFindSearchTerms(message: string): string[] {
   }
 
   const textPhrase = extractTextFindPhrase(scoped);
-  return textPhrase ? [textPhrase] : [];
+  if (!textPhrase) return [];
+
+  const cleaned = textPhrase
+    .replace(/^(?:the\s+)?(?:value|values)\s+/i, '')
+    .trim();
+  return cleaned ? [cleaned] : [];
 }
 
 export function sanitizeSheetName(name: string): string {

@@ -1,4 +1,6 @@
 import { compareSortValues } from '../agents/utils/sort-value.util';
+import { buildOutputRows, filterDataRows, applyFilterOperator } from '../agents/utils/range-filter.util';
+import { buildAggregateTable } from '../agents/utils/aggregate-table.util';
 import { Logger } from '@nestjs/common';
 import { Action } from '../agents/types/agent.types';
 import {
@@ -8,6 +10,8 @@ import {
   shadowSheetToContext,
 } from './shadowWorkbook';
 import { ShadowCell, ShadowSheet, ShadowWorkbook } from './shadowWorkbook.types';
+import { parseA1Range } from '../agents/utils/range-merge.util';
+import { stripSheetPrefix } from '../agents/utils/range-address.util';
 
 const logger = new Logger('VirtualApply');
 
@@ -77,11 +81,25 @@ function applyAction(wb: ShadowWorkbook, action: Action): void {
     case 'SORT_RANGE':
       virtualSortRange(wb, action);
       break;
+    case 'COPY_FILTERED_RANGE':
+      virtualCopyFilteredRange(wb, action);
+      break;
+    case 'FORMAT_MATCHING_ROWS':
+      // Format-only — shadow workbook has no fill state to update.
+      break;
+    case 'MOVE_RANGE':
+      virtualMoveRange(wb, action);
+      break;
+    case 'AGGREGATE_TABLE':
+      virtualAggregateTable(wb, action);
+      break;
     case 'FORMAT_RANGE':
     case 'AUTOFIT_COLUMNS':
     case 'FILL_DOWN':
     case 'FILL_RIGHT':
     case 'CREATE_TABLE':
+    case 'CREATE_CHART':
+    case 'UPDATE_CHART':
     case 'CLARIFY':
     case 'CHECKPOINT':
     case 'HIGHLIGHT_CELL':
@@ -273,6 +291,73 @@ function virtualInsertColumnLegacy(wb: ShadowWorkbook, action: Action): void {
   const sheet = getSheet(wb, sheetName);
   if (!sheet) return;
 
+  // Semantic INSERT_COLUMN: columnName + afterLastColumn / afterColumn
+  const columnName =
+    typeof action.columnName === 'string' ? action.columnName.trim() : '';
+  const afterColumn =
+    typeof action.afterColumn === 'string' ? action.afterColumn.trim() : '';
+  const isSemantic =
+    Boolean(columnName) &&
+    (action.position === 'afterLastColumn' || Boolean(afterColumn));
+
+  if (isSemantic) {
+    let insertAt = sheet.columnCount;
+    if (afterColumn) {
+      const headerRow = 1; // Excel 1-based header in shadow keys
+      let found = -1;
+      for (let c = 0; c < sheet.columnCount; c += 1) {
+        const addr = `${colIndexToLetter(c)}${headerRow}`;
+        const cell = sheet.cells.get(addr);
+        if (
+          cell &&
+          String(cell.value ?? '')
+            .trim()
+            .toLowerCase() === afterColumn.toLowerCase()
+        ) {
+          found = c;
+          break;
+        }
+      }
+      if (found >= 0) {
+        insertAt = found + 1;
+        virtualInsertColumn(wb, sheetName, insertAt, 1);
+      }
+    }
+
+    const headerAddr = `${colIndexToLetter(insertAt)}1`;
+    sheet.cells.set(headerAddr, {
+      value: columnName,
+      formula: '',
+      numberFormat: 'General',
+    });
+    wb.changedCells.add(`${sheetName}!${headerAddr}`);
+
+    if (typeof action.formula === 'string' && action.formula) {
+      const dataRows = Math.max(sheet.rowCount - 1, 0);
+      for (let r = 2; r <= dataRows + 1; r += 1) {
+        const addr = `${colIndexToLetter(insertAt)}${r}`;
+        const formula = action.formula.includes('{row}')
+          ? action.formula.replace(/\{row\}/g, String(r))
+          : action.formula.replace(/([A-Za-z]+)(\d+)/g, (_m, col: string, row: string) => {
+              // Shift relative row refs from the template's base row to current row
+              const base = Number(row);
+              const delta = r - base;
+              return `${col}${base + delta}`;
+            });
+        sheet.cells.set(addr, {
+          value: null,
+          formula,
+          numberFormat: 'General',
+        });
+        wb.changedCells.add(`${sheetName}!${addr}`);
+      }
+    }
+
+    sheet.columnCount = Math.max(sheet.columnCount, insertAt + 1);
+    sheet.rowCount = Math.max(sheet.rowCount, 1);
+    return;
+  }
+
   const insertAt =
     action.beforeColumn !== undefined
       ? letterToColIndex(action.beforeColumn)
@@ -401,6 +486,17 @@ function virtualSortRange(wb: ShadowWorkbook, action: Action): void {
   const headerRow = hasHeaders ? snapshot.values[0] : null;
   const dataStart = hasHeaders ? 1 : 0;
   const dataRows = snapshot.values.slice(dataStart).map((row) => [...row]);
+
+  // Compressed workbook context pads missing rows with nulls. Sorting that matrix
+  // produces garbage diffs (clears + wrong moves) while the client SORT_RANGE on the
+  // live sheet is what actually matters — skip virtual mutation when data is sparse.
+  const populatedDataRows = dataRows.filter((row) =>
+    row.some((cell) => cell !== null && cell !== undefined && cell !== ''),
+  );
+  if (populatedDataRows.length < dataRows.length) {
+    return;
+  }
+
   const formulaRows = snapshot.formulas.slice(dataStart).map((row) => [...row]);
   const formatRows = snapshot.numberFormats.slice(dataStart).map((row) => [...row]);
 
@@ -453,3 +549,173 @@ function updateSheetBounds(sheet: ShadowSheet): void {
     ...addresses.map((a) => letterToColIndex(a.replace(/\d+/g, '')) + 1),
   );
 }
+
+function parseDestStartCell(destStartCell: string): { row: number; col: number } | null {
+  const parsed = parseA1Range(stripSheetPrefix(destStartCell));
+  if (!parsed) return null;
+  return { row: parsed.startRow, col: parsed.startCol };
+}
+
+function readRangeValues(
+  sheet: ShadowSheet,
+  sourceRange: string,
+): unknown[][] {
+  const bounds = parseA1Range(stripSheetPrefix(sourceRange));
+  if (!bounds) {
+    // Fall back to full sheet snapshot when range is invalid/empty
+    return shadowSheetToContext(sheet).values;
+  }
+
+  const rows: unknown[][] = [];
+  for (let r = bounds.startRow; r <= bounds.endRow; r += 1) {
+    const row: unknown[] = [];
+    for (let c = bounds.startCol; c <= bounds.endCol; c += 1) {
+      const address = `${colIndexToLetter(c)}${r + 1}`;
+      const cell = sheet.cells.get(address);
+      row.push(cell?.value ?? null);
+    }
+    rows.push(row);
+  }
+  return rows;
+}
+
+function writeRowsAt(
+  wb: ShadowWorkbook,
+  sheetName: string,
+  startRow: number,
+  startCol: number,
+  outputRows: unknown[][],
+): void {
+  const sheet = ensureSheet(wb, sheetName);
+  for (let r = 0; r < outputRows.length; r += 1) {
+    const row = outputRows[r] ?? [];
+    for (let c = 0; c < row.length; c += 1) {
+      const address = `${colIndexToLetter(startCol + c)}${startRow + r + 1}`;
+      virtualSetCell(wb, sheetName, address, row[c] ?? null, '');
+    }
+  }
+  sheet.rowCount = Math.max(sheet.rowCount, startRow + outputRows.length);
+  sheet.columnCount = Math.max(
+    sheet.columnCount,
+    startCol + (outputRows.length ? Math.max(...outputRows.map((row) => row.length)) : 0),
+  );
+}
+
+function virtualCopyFilteredRange(wb: ShadowWorkbook, action: Action): void {
+  const sourceSheetName = action.sourceSheet ?? action.sheetName ?? wb.activeSheetName;
+  const destSheetName = action.destSheet;
+  const sourceRange = action.sourceRange ?? action.range;
+  const destStartCell = action.destStartCell ?? 'A1';
+  if (!destSheetName || !sourceRange) return;
+
+  const sourceSheet = getSheet(wb, sourceSheetName);
+  if (!sourceSheet) return;
+
+  const rows = readRangeValues(sourceSheet, sourceRange);
+  const hasHeaders = action.hasHeaders ?? true;
+  const { headerRow, filteredRows } = filterDataRows(rows, hasHeaders, action.filter);
+  const outputRows = buildOutputRows(headerRow, filteredRows);
+  if (outputRows.length === 0) return;
+
+  const dest = parseDestStartCell(destStartCell);
+  if (!dest) return;
+
+  writeRowsAt(wb, destSheetName, dest.row, dest.col, outputRows);
+
+  if (action.mode === 'move' && action.filter && hasHeaders && headerRow) {
+    clearMatchedSourceRows(wb, sourceSheetName, sourceRange, hasHeaders, action.filter);
+  }
+}
+
+function virtualMoveRange(wb: ShadowWorkbook, action: Action): void {
+  const sourceSheetName = action.sourceSheet ?? action.sheetName ?? wb.activeSheetName;
+  const destSheetName = action.destSheet;
+  const sourceRange = action.sourceRange ?? action.range;
+  const destStartCell = action.destStartCell ?? 'A1';
+  if (!destSheetName || !sourceRange) return;
+
+  const sourceSheet = getSheet(wb, sourceSheetName);
+  if (!sourceSheet) return;
+
+  const rows = readRangeValues(sourceSheet, sourceRange);
+  if (rows.length === 0) return;
+
+  const dest = parseDestStartCell(destStartCell);
+  if (!dest) return;
+
+  writeRowsAt(wb, destSheetName, dest.row, dest.col, rows);
+
+  const bounds = parseA1Range(stripSheetPrefix(sourceRange));
+  if (!bounds) return;
+  for (let r = bounds.startRow; r <= bounds.endRow; r += 1) {
+    for (let c = bounds.startCol; c <= bounds.endCol; c += 1) {
+      const address = `${colIndexToLetter(c)}${r + 1}`;
+      virtualSetCell(wb, sourceSheetName, address, null, '');
+    }
+  }
+}
+
+function clearMatchedSourceRows(
+  wb: ShadowWorkbook,
+  sourceSheetName: string,
+  sourceRange: string,
+  hasHeaders: boolean,
+  filter: NonNullable<Action['filter']>,
+): void {
+  const sourceSheet = getSheet(wb, sourceSheetName);
+  if (!sourceSheet) return;
+
+  const bounds = parseA1Range(stripSheetPrefix(sourceRange));
+  if (!bounds) return;
+
+  const rows = readRangeValues(sourceSheet, sourceRange);
+  const headerRow = hasHeaders && rows.length > 0 ? rows[0] : null;
+  if (!headerRow) return;
+
+  const colIndex = headerRow.findIndex(
+    (cell) => String(cell ?? '').trim().toLowerCase() === filter.column.trim().toLowerCase(),
+  );
+  if (colIndex === -1) return;
+
+  const dataStart = hasHeaders ? 1 : 0;
+  // Clear matched data rows bottom-to-top
+  for (let i = rows.length - 1; i >= dataStart; i -= 1) {
+    const row = rows[i];
+    if (!row) continue;
+    if (!applyFilterOperator(row[colIndex], filter)) continue;
+    const absoluteRow = bounds.startRow + i;
+    for (let c = bounds.startCol; c <= bounds.endCol; c += 1) {
+      const address = `${colIndexToLetter(c)}${absoluteRow + 1}`;
+      virtualSetCell(wb, sourceSheetName, address, null, '');
+    }
+  }
+}
+
+function virtualAggregateTable(wb: ShadowWorkbook, action: Action): void {
+  const sourceSheetName = action.sourceSheet ?? action.sheetName ?? wb.activeSheetName;
+  const destSheetName = action.destSheet;
+  const sourceRange = action.sourceRange ?? action.range;
+  const destStartCell = action.destStartCell ?? 'A1';
+  if (!destSheetName || !sourceRange || !action.groupByColumn || !action.aggregations?.length) {
+    return;
+  }
+
+  const sourceSheet = getSheet(wb, sourceSheetName);
+  if (!sourceSheet) return;
+
+  const rows = readRangeValues(sourceSheet, sourceRange);
+  const outputRows = buildAggregateTable({
+    rows,
+    hasHeaders: action.hasHeaders !== false,
+    groupByColumn: action.groupByColumn,
+    aggregations: action.aggregations,
+    sortBy: action.sortBy,
+    topN: action.topN,
+  });
+  if (outputRows.length === 0) return;
+
+  const dest = parseDestStartCell(destStartCell);
+  if (!dest) return;
+  writeRowsAt(wb, destSheetName, dest.row, dest.col, outputRows);
+}
+

@@ -53,6 +53,9 @@ describe('OrchestratorService SSE write path', () => {
         actions: expectedActions,
         iterationsRun: 1,
         verifierPassed: true,
+        completedSubtasks: [],
+        failedSubtask: null,
+        partialProgress: false,
       }),
     };
 
@@ -79,6 +82,8 @@ describe('OrchestratorService SSE write path', () => {
       'Set sales to 1200',
       mockContext,
       [],
+      undefined,
+      expect.any(String),
       undefined,
     );
     expect(agenticLoop.run).toHaveBeenCalledTimes(1);
@@ -113,6 +118,42 @@ describe('OrchestratorService SSE write path', () => {
     );
 
     expect(actions).toEqual([]);
+    expect(agenticLoop.run).not.toHaveBeenCalled();
+    expect(sseEvents.some((e) => e.event === 'clarification')).toBe(true);
+  });
+
+  it('blocks Executor when confidence is low even without clarificationsNeeded', async () => {
+    const planner = {
+      plan: jest.fn().mockResolvedValue({
+        subtasks: [
+          {
+            id: 's1',
+            description: 'Guess clean-up',
+            targetSheet: 'Sheet1',
+            dependsOn: [],
+            estimatedActions: 3,
+          },
+        ],
+        clarificationsNeeded: [],
+        confidence: 'low',
+        reasoning: "Unclear what 'clean up' means",
+      }),
+    };
+
+    const agenticLoop = { run: jest.fn() };
+    const orchestrator = new OrchestratorService(
+      planner as unknown as PlannerAgent,
+      agenticLoop as unknown as AgenticLoopService,
+    );
+
+    const sseEvents: Array<{ event: string; data: Record<string, unknown> }> = [];
+    const result = await orchestrator.runDetailed(
+      { prompt: 'clean up this data', context: mockContext },
+      new SseEmitter((event, data) => sseEvents.push({ event, data })),
+    );
+
+    expect(result.clarificationRequested).toBe(true);
+    expect(result.actions).toEqual([]);
     expect(agenticLoop.run).not.toHaveBeenCalled();
     expect(sseEvents.some((e) => e.event === 'clarification')).toBe(true);
   });

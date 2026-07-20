@@ -4,6 +4,7 @@ import { LLMTier } from '../../types/cellix.types';
 import { LlmRequestError } from '../errors/llm-request.error';
 import { ModelRouter } from '../llm/model-router';
 import { extractChatContent } from '../utils/extract-chat-content.util';
+import { isReasoningMandatoryError } from '../utils/reasoning-mandatory.util';
 
 export type OpenRouterChatMessage = {
   role: 'system' | 'user' | 'assistant';
@@ -53,6 +54,8 @@ type ChatCompletionResult = {
   };
 };
 
+type OpenRouterClient = InstanceType<Awaited<typeof import('@openrouter/sdk')>['OpenRouter']>;
+
 @Injectable()
 export class OpenRouterService {
   private readonly logger = new Logger(OpenRouterService.name);
@@ -91,7 +94,8 @@ export class OpenRouterService {
             ? this.config.openRouterModelMedium
             : this.config.openRouterModelMedium);
     const budget = opts.maxTokens ?? 1500;
-    const minCompletionBudget = budget <= 512 ? budget : Math.max(budget, 4096);
+    const completionBudget = budget;
+    const requestedEffort = opts.reasoningEffort ?? 'low';
 
     try {
       const { OpenRouter } = await import('@openrouter/sdk');
@@ -110,25 +114,26 @@ export class OpenRouterService {
         model,
         messages: baseMessages,
         temperature: opts.temperature ?? 0.2,
-        maxCompletionTokens: minCompletionBudget,
-        reasoningEffort: opts.reasoningEffort ?? 'low',
+        maxCompletionTokens: completionBudget,
+        reasoningEffort: requestedEffort,
         responseFormat: opts.responseFormat ?? 'json_object',
       });
 
       let text = this.extractCompletionText(response);
       if (!text.trim()) {
         this.logEmptyCompletion(model, response, 'first attempt');
+        // Prefer low over none — gpt-5 family rejects effort=none.
         response = await this.requestChatCompletion(client, {
           model,
           messages: baseMessages,
           temperature: opts.temperature ?? 0.2,
-          maxCompletionTokens: Math.max(minCompletionBudget, 8192),
-          reasoningEffort: 'none',
+          maxCompletionTokens: Math.min(Math.max(completionBudget, 1024), 8192),
+          reasoningEffort: 'low',
           responseFormat: opts.responseFormat ?? 'json_object',
         });
         text = this.extractCompletionText(response);
         if (!text.trim()) {
-          this.logEmptyCompletion(model, response, 'retry with reasoning.effort=none');
+          this.logEmptyCompletion(model, response, 'retry with reasoning.effort=low');
         }
       }
 
@@ -232,8 +237,45 @@ export class OpenRouterService {
     }
   }
 
+  /**
+   * Send a chat completion. If the model rejects disabled reasoning, retry once with effort=low.
+   */
   private async requestChatCompletion(
-    client: InstanceType<Awaited<typeof import('@openrouter/sdk')>['OpenRouter']>,
+    client: OpenRouterClient,
+    opts: {
+      model: string;
+      messages: ChatMessage[];
+      temperature: number;
+      maxCompletionTokens: number;
+      reasoningEffort: ReasoningEffort;
+      responseFormat: 'json_object' | 'text';
+    },
+  ): Promise<ChatCompletionResult> {
+    try {
+      return await this.sendChatCompletionOnce(client, opts);
+    } catch (error: unknown) {
+      const status = this.extractStatus(error);
+      if (opts.reasoningEffort !== 'low' && isReasoningMandatoryError(error, status)) {
+        this.logger.warn(
+          `OpenRouter rejected reasoning.effort=${opts.reasoningEffort} — retrying with effort=low`,
+        );
+        return await this.sendChatCompletionOnce(client, {
+          ...opts,
+          reasoningEffort: 'low',
+        });
+      }
+      if (this.isTransientNetworkError(error)) {
+        this.logger.warn(
+          `OpenRouter transient network error (${this.describeNetworkError(error)}) — retrying once`,
+        );
+        return await this.sendChatCompletionOnce(client, opts);
+      }
+      throw error;
+    }
+  }
+
+  private async sendChatCompletionOnce(
+    client: OpenRouterClient,
     opts: {
       model: string;
       messages: ChatMessage[];
@@ -287,6 +329,9 @@ export class OpenRouterService {
   }
 
   private extractStatus(error: unknown): number {
+    if (this.isTransientNetworkError(error)) {
+      return 503;
+    }
     if (error && typeof error === 'object') {
       const record = error as Record<string, unknown>;
       if (typeof record.statusCode === 'number') {
@@ -297,6 +342,29 @@ export class OpenRouterService {
       }
     }
     return 502;
+  }
+
+  private isTransientNetworkError(error: unknown): boolean {
+    if (!error || typeof error !== 'object') return false;
+    const err = error as Error & { cause?: { code?: string }; code?: string };
+    const message = String(err.message ?? '').toLowerCase();
+    const code = err.code ?? err.cause?.code;
+    return (
+      message === 'terminated' ||
+      message.includes('econnreset') ||
+      message.includes('fetch failed') ||
+      message.includes('socket hang up') ||
+      code === 'ECONNRESET' ||
+      code === 'ECONNREFUSED' ||
+      code === 'ETIMEDOUT' ||
+      code === 'UND_ERR_SOCKET'
+    );
+  }
+
+  private describeNetworkError(error: unknown): string {
+    if (!(error instanceof Error)) return String(error);
+    const cause = (error as Error & { cause?: { code?: string } }).cause;
+    return cause?.code ? `${error.message} (${cause.code})` : error.message;
   }
 
   private normalizeUsage(usage: Record<string, unknown> | undefined): LlmUsage | undefined {

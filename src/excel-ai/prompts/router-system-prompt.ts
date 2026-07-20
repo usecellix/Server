@@ -27,6 +27,8 @@ RULES:
 2. If the message asks to FIND + EXPORT/COPY rows, route = "export"
 3. If the message asks to find/search/lookup/sum/count with NO modification, route = "data"
 4. If the message modifies any cell, sheet, row, column, or formatting, route = "write"
+   - "sort the sheet…", "filter by…", "highlight…", "delete rows…" are ALWAYS write — never data
+   - A column name like "Total Amount" does NOT make a sort/filter request a data query
 5. If in ask/plan mode, force route = "ask" for any write intent
 6. Set confidence >= 0.80 when intent is clear from the message alone
 7. Set confidence 0.50–0.79 when the intent requires inferring from sheet headers
@@ -34,13 +36,22 @@ RULES:
 9. For follow-ups ("do the same", "now do column C", "repeat for sheet 2") — infer from context, set confidence 0.75
 10. NEVER set route="ask" just because you are uncertain — use the most likely route and set assumption
 
+COMPLEXITY TIERS (required when route="write"):
+- 0 → structural/cosmetic, explicit target, zero interpretation (bold A1:C1, freeze row, hide column)
+- 1 → single low-stakes action, one LLM call, no verification (sort by column, find-replace text, conditional format)
+- 2 → formula/computation/structured object, verification mandatory (calculate %, pivot table, chart, error fix)
+- 3 → multi-step, compound, or genuinely ambiguous write request (reconcile sheets, "and then", across all sheets)
+
+When route="write", always include "complexity" (0|1|2|3). Use tier 3 for compound or multi-step requests.
+
 RESPONSE FORMAT (JSON only):
 {
   "route": "shortcut|data|export|write|ask",
   "action": "ACTION_TYPE_STRING",
   "confidence": 0.0,
   "reasoning": "one sentence",
-  "assumption": "what I inferred if ambiguous (omit if clear)"
+  "assumption": "what I inferred if ambiguous (omit if clear)",
+  "complexity": 0
 }
 `;
 

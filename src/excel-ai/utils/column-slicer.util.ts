@@ -16,6 +16,8 @@ export interface SliceResult {
   unresolved: string[];
 }
 
+const EMAIL_RE = /[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/gi;
+
 /**
  * Extract only the columns likely needed to answer a data query from raw sheet rows.
  */
@@ -26,8 +28,9 @@ export function sliceFromRawData(
   knownHeaders?: string[],
 ): SliceResult {
   const normalizedRows = normalizeRows(rows);
-  const keywords = extractColumnKeywords(message);
-  const sliced = sliceSheet(normalizedRows, sheetName, keywords, knownHeaders);
+  const emails = extractEmails(message);
+  const keywords = extractColumnKeywords(message, emails);
+  const sliced = sliceSheet(normalizedRows, sheetName, keywords, knownHeaders, emails);
   const unresolved = keywords.filter(
     (keyword) => !sliced.columnIndices.length || !matchesAnyHeader(keyword, sliced.headers),
   );
@@ -98,7 +101,14 @@ function cellToString(cell: unknown): string {
   return String(cell).trim();
 }
 
-function extractColumnKeywords(message: string): string[] {
+function extractEmails(message: string): string[] {
+  return [...new Set((message.match(EMAIL_RE) ?? []).map((email) => email.toLowerCase()))];
+}
+
+function extractColumnKeywords(
+  message: string,
+  emails: string[] = extractEmails(message),
+): string[] {
   const noise = new Set([
     'what',
     'is',
@@ -150,6 +160,9 @@ function extractColumnKeywords(message: string): string[] {
     'does',
     'please',
     'everything',
+    'lookup',
+    'search',
+    'locate',
   ]);
 
   const taxTerms = [
@@ -176,11 +189,20 @@ function extractColumnKeywords(message: string): string[] {
     'particulars',
   ];
 
-  const lower = message.toLowerCase();
+  // Strip emails so local-part / domain / TLD ("com") are not treated as column names.
+  let scrubbed = message;
+  for (const email of emails) {
+    scrubbed = scrubbed.replace(new RegExp(escapeRegExp(email), 'ig'), ' ');
+  }
+
+  const lower = scrubbed.toLowerCase();
   const found: string[] = [];
 
   for (const term of taxTerms.sort((a, b) => b.length - a.length)) {
-    if (messageIncludesTaxTerm(lower, term) && !found.some((existing) => existing.includes(term) && existing !== term)) {
+    if (
+      messageIncludesTaxTerm(lower, term) &&
+      !found.some((existing) => existing.includes(term) && existing !== term)
+    ) {
       found.push(term);
     }
   }
@@ -196,7 +218,19 @@ function extractColumnKeywords(message: string): string[] {
     }
   }
 
+  if (emails.length) {
+    for (const hint of ['email', 'mail', 'e-mail']) {
+      if (!found.includes(hint)) {
+        found.push(hint);
+      }
+    }
+  }
+
   return [...new Set(found)];
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function messageIncludesTaxTerm(lower: string, term: string): boolean {
@@ -211,6 +245,7 @@ function sliceSheet(
   sheetName: string,
   keywords: string[],
   knownHeaders?: string[],
+  searchValues: string[] = [],
 ): SlicedSheetData {
   if (!rows.length) {
     return emptySlice(sheetName);
@@ -219,7 +254,7 @@ function sliceSheet(
   const headerRowIndex = detectHeaderRow(rows, knownHeaders);
   const headerRow = resolveHeaderRow(rows, headerRowIndex, knownHeaders);
 
-  if (!keywords.length) {
+  if (!keywords.length && !searchValues.length) {
     return buildSlice(
       sheetName,
       headerRow,
@@ -233,12 +268,14 @@ function sliceSheet(
 
   for (const keyword of keywords) {
     for (let index = 0; index < headerRow.length; index++) {
-      const header = (headerRow[index] ?? '').toLowerCase().trim();
-      if (header.includes(keyword) || keyword.includes(header.replace(/\s+/g, ''))) {
+      if (headerMatchesKeyword(headerRow[index] ?? '', keyword)) {
         matched.add(index);
       }
     }
   }
+
+  // Value lookups (emails, exact cell text): include columns that actually contain the value.
+  addColumnsContainingValues(rows, headerRowIndex, searchValues, matched);
 
   if (!matched.size) {
     return buildSlice(
@@ -261,6 +298,54 @@ function sliceSheet(
   );
 }
 
+/** Short keywords must match a header token exactly — avoid "com" matching "Company". */
+function headerMatchesKeyword(header: string, keyword: string): boolean {
+  const h = header.toLowerCase().trim();
+  const k = keyword.toLowerCase().trim();
+  if (!h || !k) {
+    return false;
+  }
+
+  const tokens = h.split(/[^a-z0-9]+/).filter(Boolean);
+  if (k.length <= 3) {
+    return tokens.includes(k);
+  }
+
+  const compactHeader = h.replace(/\s+/g, '');
+  return (
+    h.includes(k) ||
+    k.includes(compactHeader) ||
+    tokens.some((token) => token.includes(k) || k.includes(token))
+  );
+}
+
+function addColumnsContainingValues(
+  rows: string[][],
+  headerRowIndex: number,
+  searchValues: string[],
+  matched: Set<number>,
+): void {
+  if (!searchValues.length) {
+    return;
+  }
+
+  const dataRows = rows.slice(headerRowIndex + 1);
+  for (const raw of searchValues) {
+    const needle = raw.toLowerCase().trim();
+    if (!needle) {
+      continue;
+    }
+    for (const row of dataRows) {
+      for (let index = 0; index < row.length; index++) {
+        const cell = (row[index] ?? '').toLowerCase();
+        if (cell && (cell === needle || cell.includes(needle))) {
+          matched.add(index);
+        }
+      }
+    }
+  }
+}
+
 function resolveHeaderRow(
   rows: string[][],
   headerRowIndex: number,
@@ -274,15 +359,18 @@ function resolveHeaderRow(
 }
 
 function addAnchorColumns(headers: string[], matched: Set<number>): void {
-  const datePatterns = [/date/i, /dt/i];
-  const keyPatterns = [/invoice/i, /voucher/i, /bill/i, /no\.?$/i, /sr\.?$/i, /id$/i];
+  const datePatterns = [/date/i, /\bdt\b/i];
+  const keyPatterns = [/invoice/i, /voucher/i, /bill/i, /no\.?$/i, /sr\.?$/i, /\bid\b/i];
 
   for (let index = 0; index < headers.length; index++) {
     if (matched.has(index)) {
       continue;
     }
     const header = headers[index] ?? '';
-    if (datePatterns.some((pattern) => pattern.test(header)) || keyPatterns.some((pattern) => pattern.test(header))) {
+    if (
+      datePatterns.some((pattern) => pattern.test(header)) ||
+      keyPatterns.some((pattern) => pattern.test(header))
+    ) {
       matched.add(index);
     }
   }
@@ -346,10 +434,7 @@ function detectHeaderRow(rows: string[][], knownHeaders?: string[]): number {
 }
 
 function matchesAnyHeader(keyword: string, headers: string[]): boolean {
-  return headers.some(
-    (header) =>
-      header.toLowerCase().includes(keyword) || keyword.includes(header.toLowerCase()),
-  );
+  return headers.some((header) => headerMatchesKeyword(header, keyword));
 }
 
 function emptySlice(sheetName: string): SlicedSheetData {

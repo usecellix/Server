@@ -30,6 +30,9 @@ export class ConversationMessageEntry {
     questionOptions?: string[];
     pendingIntent?: string;
     ambiguityScore?: number;
+    /** Spec 12 — successful early subtasks delivered when a later step fails */
+    partialProgress?: boolean;
+    failedSubtask?: { subtaskId: string; reason: string } | null;
   };
 }
 

@@ -20,6 +20,16 @@ export class ConversationController {
     await this.conversationService.handleConversation(body, reply, traceId);
   }
 
+  @Get('conversation')
+  @SkipEnvelope()
+  conversationRoot() {
+    return {
+      ok: true,
+      message:
+        'Use POST /excel-ai/conversation to send messages, or GET /excel-ai/conversation/:conversationId to load a conversation.',
+    };
+  }
+
   @Get('conversation/:conversationId')
   @SkipEnvelope()
   async getConversation(@Param('conversationId') conversationId: string) {

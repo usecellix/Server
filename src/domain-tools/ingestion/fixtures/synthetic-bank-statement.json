@@ -1,0 +1,22 @@
+{
+  "documentId": "synth-bank-001",
+  "format": "synthetic-json",
+  "rows": [
+    {
+      "date": "2026-04-12",
+      "description": "NEFT IN SYNTH CORP",
+      "amount": 15000,
+      "type": "credit",
+      "balance": 125000,
+      "sourceRow": 1
+    },
+    {
+      "date": "2026-04-13",
+      "description": "CHQ PAID RENT",
+      "amount": 20000,
+      "type": "debit",
+      "balance": 105000,
+      "sourceRow": 2
+    }
+  ]
+}

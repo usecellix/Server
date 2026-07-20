@@ -57,7 +57,7 @@ export class SmartDataQueryService {
         tier: 'medium',
         maxTokens: 512,
         responseFormat: 'text',
-        reasoningEffort: 'none',
+        reasoningEffort: 'low',
       });
       return answer.trim();
     } catch (error) {

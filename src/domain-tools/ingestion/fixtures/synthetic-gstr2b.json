@@ -1,0 +1,22 @@
+{
+  "documentId": "synth-gstr2b-001",
+  "format": "synthetic-json",
+  "rows": [
+    {
+      "gstin": "32AAAAA0000A1Z5",
+      "invoiceNumber": "INV-1001",
+      "invoiceDate": "2026-04-15",
+      "taxableValue": 10000,
+      "taxAmount": 1800,
+      "sourceRow": 2
+    },
+    {
+      "gstin": "29BBBBB1111B1Z5",
+      "invoiceNumber": "INV-1002",
+      "invoiceDate": "2026-04-18",
+      "taxableValue": 25000,
+      "taxAmount": 4500,
+      "sourceRow": 3
+    }
+  ]
+}

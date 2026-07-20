@@ -3,11 +3,13 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { createHash } from 'crypto';
 
+/** Spec 09 item 2: TTL bounds abandoned conversations only — hash still owns correctness. */
+const CONTEXT_CACHE_TTL_MS = 60 * 60 * 1000; // was 10 min
+/** Soft cap so widening TTL cannot grow memory without bound. */
+const CONTEXT_CACHE_MAX_ENTRIES = 100;
+
 /**
  * Caches the expensive SheetAnalyzer + TOON output per conversation turn.
- *
- * Problem solved: every follow-up message re-runs SheetAnalyzerService,
- * formula enrichment, and TOON compression even when the sheet hasn't changed.
  *
  * Strategy: hash the TOON-compressed string. If hash matches last turn's hash
  * for this conversationId, return the cached promptContext instead of re-running.
@@ -16,35 +18,46 @@ import { createHash } from 'crypto';
 export class ContextCacheService {
   private readonly logger = new Logger(ContextCacheService.name);
 
-  // In-memory cache for the current process (first line of defense)
-  // Key: conversationId, Value: { hash, promptContext, timestamp }
   private readonly memCache = new Map<
     string,
     { hash: string; promptContext: string; timestamp: number }
   >();
 
-  // TTL: 10 minutes. After this, always re-run analysis.
-  private readonly TTL_MS = 10 * 60 * 1000;
+  private readonly TTL_MS = CONTEXT_CACHE_TTL_MS;
+  private readonly MAX_ENTRIES = CONTEXT_CACHE_MAX_ENTRIES;
+
+  private hits = 0;
+  private misses = 0;
 
   /**
    * Check if we have a valid cached promptContext for this conversation + sheet state.
-   *
-   * @param conversationId  The active conversation ID
-   * @param toonPayload     The raw TOON-compressed string from the frontend
-   * @returns               Cached promptContext if valid, null if must re-analyze
    */
   get(conversationId: string, toonPayload: string): string | null {
     const hash = this.hashToon(toonPayload);
     const cached = this.memCache.get(conversationId);
 
-    if (!cached) return null;
-    if (cached.hash !== hash) return null;
+    if (!cached) {
+      this.misses += 1;
+      return null;
+    }
+    if (cached.hash !== hash) {
+      this.misses += 1;
+      return null;
+    }
     if (Date.now() - cached.timestamp > this.TTL_MS) {
       this.memCache.delete(conversationId);
+      this.misses += 1;
       return null;
     }
 
-    this.logger.debug(`Context cache hit for conversation ${conversationId}`);
+    // Refresh LRU order (Map insertion order).
+    this.memCache.delete(conversationId);
+    this.memCache.set(conversationId, { ...cached, timestamp: cached.timestamp });
+
+    this.hits += 1;
+    this.logger.debug(
+      `Context cache hit for conversation ${conversationId} (hits=${this.hits} misses=${this.misses})`,
+    );
     return cached.promptContext;
   }
 
@@ -53,27 +66,46 @@ export class ContextCacheService {
    */
   set(conversationId: string, toonPayload: string, promptContext: string): void {
     const hash = this.hashToon(toonPayload);
+    if (this.memCache.has(conversationId)) {
+      this.memCache.delete(conversationId);
+    }
     this.memCache.set(conversationId, {
       hash,
       promptContext,
       timestamp: Date.now(),
     });
+    this.evictIfNeeded();
     this.logger.debug(`Context cache stored for conversation ${conversationId}`);
   }
 
   /**
    * Invalidate cache when an action is applied (sheet has changed).
-   * Call this after POST /audit/apply/:changeSetId.
    */
   invalidate(conversationId: string): void {
     this.memCache.delete(conversationId);
     this.logger.debug(`Context cache invalidated for conversation ${conversationId}`);
   }
 
-  /**
-   * Compute a short hash of the TOON string.
-   * SHA-256 truncated to 16 chars — fast and collision-resistant enough.
-   */
+  /** Exposed for ops / tests — hit rate over process lifetime. */
+  getStats(): { hits: number; misses: number; size: number; ttlMs: number; maxEntries: number } {
+    return {
+      hits: this.hits,
+      misses: this.misses,
+      size: this.memCache.size,
+      ttlMs: this.TTL_MS,
+      maxEntries: this.MAX_ENTRIES,
+    };
+  }
+
+  private evictIfNeeded(): void {
+    while (this.memCache.size > this.MAX_ENTRIES) {
+      const oldestKey = this.memCache.keys().next().value as string | undefined;
+      if (!oldestKey) break;
+      this.memCache.delete(oldestKey);
+      this.logger.debug(`Context cache LRU evicted conversation ${oldestKey}`);
+    }
+  }
+
   private hashToon(toonPayload: string): string {
     return createHash('sha256').update(toonPayload).digest('hex').slice(0, 16);
   }

@@ -353,15 +353,13 @@ Sheet has ${analysis.rowCount} rows, ${analysis.columnCount} columns. Next appen
       }
       if (richWorkbookContext) {
         finalActions = injectMissingFormats(finalActions, richWorkbookContext);
-        if (richWorkbookContext.sheets.length > 1) {
-          const validation = validateCrossSheetActions(finalActions, richWorkbookContext);
-          if (validation.errors.length > 0) {
-            this.logger.warn(
-              `Cross-sheet action validation errors: ${validation.errors.join('; ')}`,
-            );
-          }
-          finalActions = validation.valid;
+        const validation = validateCrossSheetActions(finalActions, richWorkbookContext);
+        if (validation.errors.length > 0) {
+          this.logger.warn(
+            `Cross-sheet action validation errors: ${validation.errors.join('; ')}`,
+          );
         }
+        finalActions = validation.valid;
       }
 
       const sanitized = this.sanitizeActions(finalActions, analysis);
@@ -427,15 +425,13 @@ Sheet has ${analysis.rowCount} rows, ${analysis.columnCount} columns. Next appen
     let finalActions = actions;
     if (richWorkbookContext) {
       finalActions = injectMissingFormats(finalActions, richWorkbookContext);
-      if (richWorkbookContext.sheets.length > 1) {
-        const validation = validateCrossSheetActions(finalActions, richWorkbookContext);
-        if (validation.errors.length > 0) {
-          this.logger.warn(
-            `Cross-sheet action validation errors: ${validation.errors.join('; ')}`,
-          );
-        }
-        finalActions = validation.valid;
+      const validation = validateCrossSheetActions(finalActions, richWorkbookContext);
+      if (validation.errors.length > 0) {
+        this.logger.warn(
+          `Cross-sheet action validation errors: ${validation.errors.join('; ')}`,
+        );
       }
+      finalActions = validation.valid;
     }
     return this.sanitizeActions(finalActions, analysis);
   }
@@ -541,7 +537,22 @@ Sheet has ${analysis.rowCount} rows, ${analysis.columnCount} columns. Next appen
       case 'SET_ROW_HEIGHT':
         if (row === undefined) return null;
         return { ...action, row };
-      case 'INSERT_COLUMN':
+      case 'INSERT_COLUMN': {
+        // Semantic add-column: columnName + afterLastColumn / afterColumn — no numeric col required.
+        if (
+          typeof action.columnName === 'string' &&
+          action.columnName.trim() &&
+          (action.position === 'afterLastColumn' ||
+            (typeof action.afterColumn === 'string' && action.afterColumn.trim()) ||
+            (action.position &&
+              typeof action.position === 'object' &&
+              typeof (action.position as { afterColumn?: string }).afterColumn === 'string'))
+        ) {
+          return action;
+        }
+        if (col === undefined && typeof action.beforeColumn !== 'string') return null;
+        return col !== undefined ? { ...action, col } : action;
+      }
       case 'DELETE_COLUMN':
       case 'HIDE_COLUMN':
       case 'UNHIDE_COLUMN':
@@ -582,15 +593,103 @@ Sheet has ${analysis.rowCount} rows, ${analysis.columnCount} columns. Next appen
       case 'SET_SHEET_COLOR':
       case 'BATCH_SET':
       case 'CREATE_TABLE':
+      case 'CREATE_CHART':
       case 'DEFINE_NAMED_RANGE':
       case 'AUTOFIT_COLUMNS':
       case 'CLARIFY':
       case 'CHECKPOINT':
       case 'ADD_SHEET':
       case 'SORT_RANGE':
+      case 'COPY_FILTERED_RANGE':
+      case 'FORMAT_MATCHING_ROWS':
+      case 'MOVE_RANGE':
+      case 'AGGREGATE_TABLE':
+      case 'UPDATE_CHART':
       case 'SET_ZOOM':
         if (action.type === 'SORT_RANGE') {
           if (!action.sheetName || !action.range || action.key === undefined) return null;
+        }
+        if (action.type === 'FORMAT_MATCHING_ROWS') {
+          if (
+            !action.sheetName ||
+            !action.range ||
+            !action.filter?.column ||
+            !action.filter?.operator ||
+            (typeof action.filter.value !== 'string' &&
+              typeof action.filter.value !== 'number') ||
+            (!action.format?.fillColor && !action.format?.clearFill)
+          ) {
+            return null;
+          }
+          if (action.hasHeaders === undefined) action.hasHeaders = true;
+        }
+        if (action.type === 'COPY_FILTERED_RANGE') {
+          if (
+            !action.sourceSheet ||
+            !action.sourceRange ||
+            !action.destSheet ||
+            !action.destStartCell ||
+            (action.mode !== 'copy' && action.mode !== 'move')
+          ) {
+            return null;
+          }
+          if (action.filter) {
+            const op = action.filter.operator;
+            const validOps = new Set([
+              'equals',
+              'contains',
+              'greaterThan',
+              'lessThan',
+              'notEquals',
+              'lengthEquals',
+              'lengthNotEquals',
+              'matchesRegex',
+              'notMatchesRegex',
+            ]);
+            if (
+              !action.filter.column ||
+              !validOps.has(op) ||
+              (typeof action.filter.value !== 'string' &&
+                typeof action.filter.value !== 'number')
+            ) {
+              return null;
+            }
+          }
+        }
+        if (action.type === 'MOVE_RANGE') {
+          if (
+            !action.sourceSheet ||
+            !action.sourceRange ||
+            !action.destSheet ||
+            !action.destStartCell
+          ) {
+            return null;
+          }
+        }
+        if (action.type === 'AGGREGATE_TABLE') {
+          if (
+            !action.sourceSheet ||
+            !action.sourceRange ||
+            !action.groupByColumn ||
+            !action.destSheet ||
+            !action.destStartCell ||
+            !Array.isArray(action.aggregations) ||
+            action.aggregations.length === 0
+          ) {
+            return null;
+          }
+        }
+        if (action.type === 'UPDATE_CHART') {
+          if (!action.sheetName || !action.chartId) return null;
+        }
+        if (
+          action.type === 'CREATE_CHART' &&
+          (!action.sheetName ||
+            !action.sourceRange ||
+            !action.sourceSheetName ||
+            !action.chartType)
+        ) {
+          return null;
         }
         if (
           action.type === 'SET_ZOOM' &&

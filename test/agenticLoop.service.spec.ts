@@ -446,4 +446,85 @@ describe('AgenticLoopService verifier retry', () => {
     expect(executor.retryStep).toHaveBeenCalledTimes(2);
     expect(verifier.verify).toHaveBeenCalledTimes(3);
   });
+
+  it('delivers partial progress when s1 completes and s2 hits max iterations', async () => {
+    const s1Action: Action = {
+      type: 'ADD_SHEET',
+      name: 'Pending Payments',
+    } as Action;
+
+    executor.execute.mockImplementation(async (subtask: SubTask) => {
+      if (subtask.id === 's1') {
+        return { subtaskId: 's1', actions: [s1Action], isDone: true };
+      }
+      // Never finish s2 — burn iterations with empty unfinished turns
+      return {
+        subtaskId: 's2',
+        actions: [],
+        isDone: false,
+        nextStep: 'still working',
+      };
+    });
+
+    // Skip LLM verifier path: deterministic checks will require LLM for multi-subtask,
+    // but we never get there if timed... actually we complete all waves then verify.
+    // Force cheap path by making completeness fail for s2 (no actions).
+    const result = await service.run(
+      'Create sheet then copy pending',
+      subtasks,
+      baseContext,
+      new SseEmitter(emit),
+    );
+
+    expect(result.verifierPassed).toBe(false);
+    expect(result.partialProgress).toBe(true);
+    expect(result.completedSubtasks.map((s) => s.subtaskId)).toContain('s1');
+    expect(result.actions).toEqual([s1Action]);
+    expect(result.failedSubtask?.subtaskId).toBe('s2');
+    expect(result.failedSubtask?.reason).toMatch(/max iterations/i);
+    expect(toolBridge.waitForRangeData).not.toHaveBeenCalled();
+  });
+
+  it('does not call get_range_data when COPY_FILTERED_RANGE is emitted on first turn', async () => {
+    const copyAction: Action = {
+      type: 'COPY_FILTERED_RANGE',
+      sourceSheet: 'Sheet1',
+      sourceRange: 'A1:C3',
+      hasHeaders: true,
+      destSheet: 'Pending',
+      destStartCell: 'A1',
+      mode: 'copy',
+      filter: { column: 'Name', operator: 'equals', value: 'Apple' },
+    } as Action;
+
+    const nativeSubtasks: SubTask[] = [
+      {
+        id: 's1',
+        description: 'Copy filtered rows to Pending',
+        targetSheet: 'Pending',
+        dependsOn: [],
+        estimatedActions: 1,
+        suggestedActionType: 'COPY_FILTERED_RANGE',
+      },
+    ];
+
+    executor.execute.mockResolvedValue({
+      subtaskId: 's1',
+      actions: [copyAction],
+      isDone: true,
+    });
+
+    // Deterministic checks: completeness may pass; formatting may pass.
+    // Multi-subtask check is false for 1 subtask without dependsOn formulas.
+    const result = await service.run(
+      'Copy pending rows',
+      nativeSubtasks,
+      baseContext,
+      new SseEmitter(emit),
+    );
+
+    expect(toolBridge.waitForRangeData).not.toHaveBeenCalled();
+    expect(result.actions).toEqual([copyAction]);
+    expect(executor.execute).toHaveBeenCalledTimes(1);
+  });
 });

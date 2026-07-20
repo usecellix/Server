@@ -1,0 +1,104 @@
+[
+  {
+    "prompt": "create a new sheet called pending payments and then move the pending data to there create a copy",
+    "expectedSubtaskCount": 2,
+    "expectedSuggestedActionType": "COPY_FILTERED_RANGE",
+    "mustNotDecomposeInto": ["read", "filter", "paste as separate subtasks"],
+    "examplePlan": {
+      "subtasks": [
+        {
+          "id": "s1",
+          "description": "Create sheet 'Pending Payments' if it doesn't exist",
+          "targetSheet": "Pending Payments",
+          "dependsOn": [],
+          "estimatedActions": 1
+        },
+        {
+          "id": "s2",
+          "description": "Copy header + rows where Payment Status = Pending from 'Purchase Register' to 'Pending Payments' starting at A1",
+          "targetSheet": "Pending Payments",
+          "dependsOn": ["s1"],
+          "estimatedActions": 1,
+          "suggestedActionType": "COPY_FILTERED_RANGE"
+        }
+      ],
+      "clarificationsNeeded": [],
+      "confidence": "high",
+      "reasoning": "Create destination sheet then one native filtered copy."
+    }
+  },
+  {
+    "prompt": "extract pending rows into a new tab",
+    "expectedSubtaskCount": 2,
+    "expectedSuggestedActionType": "COPY_FILTERED_RANGE",
+    "examplePlan": {
+      "subtasks": [
+        {
+          "id": "s1",
+          "description": "Create sheet for pending rows if needed",
+          "targetSheet": "Pending",
+          "dependsOn": [],
+          "estimatedActions": 1
+        },
+        {
+          "id": "s2",
+          "description": "Copy header + pending rows to Pending sheet at A1",
+          "targetSheet": "Pending",
+          "dependsOn": ["s1"],
+          "estimatedActions": 1,
+          "suggestedActionType": "COPY_FILTERED_RANGE"
+        }
+      ],
+      "clarificationsNeeded": [],
+      "confidence": "high",
+      "reasoning": "Single native copy after sheet create."
+    }
+  },
+  {
+    "prompt": "copy rows where status is pending to Pending sheet",
+    "expectedSubtaskCountMax": 2,
+    "expectedSuggestedActionType": "COPY_FILTERED_RANGE",
+    "examplePlan": {
+      "subtasks": [
+        {
+          "id": "s1",
+          "description": "Copy header + rows where status is Pending to Pending sheet starting at A1",
+          "targetSheet": "Pending",
+          "dependsOn": [],
+          "estimatedActions": 1,
+          "suggestedActionType": "COPY_FILTERED_RANGE"
+        }
+      ],
+      "clarificationsNeeded": [],
+      "confidence": "high",
+      "reasoning": "Destination may already exist; one COPY_FILTERED_RANGE subtask."
+    }
+  },
+  {
+    "prompt": "move all overdue invoices into an Overdue tab as a copy",
+    "expectedSubtaskCount": 2,
+    "expectedSuggestedActionType": "COPY_FILTERED_RANGE",
+    "examplePlan": {
+      "subtasks": [
+        {
+          "id": "s1",
+          "description": "Create sheet 'Overdue' if it doesn't exist",
+          "targetSheet": "Overdue",
+          "dependsOn": [],
+          "estimatedActions": 1
+        },
+        {
+          "id": "s2",
+          "description": "Copy header + overdue rows to Overdue at A1",
+          "targetSheet": "Overdue",
+          "dependsOn": ["s1"],
+          "estimatedActions": 1,
+          "suggestedActionType": "COPY_FILTERED_RANGE"
+        }
+      ],
+      "clarificationsNeeded": [],
+      "confidence": "high",
+      "reasoning": "Create + one filtered copy."
+    }
+  }
+]

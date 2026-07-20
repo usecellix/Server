@@ -21,6 +21,7 @@ import { mergeRangeIntoSheet } from './utils/range-merge.util';
 import { computeExecutionWaves } from './utils/task-graph.util';
 import { CompletenessChecker } from './checkers/completeness.checker';
 import { FormattingChecker } from './checkers/formatting.checker';
+import { SemanticFormulaChecker } from './checkers/semantic-formula.checker';
 import { CheckerResult, mergeCheckerResults } from './checkers/checker.types';
 import { buildDeterministicSubtaskActions } from './utils/compound-action.util';
 import { StepRetryExhaustedError } from './errors';
@@ -35,15 +36,33 @@ export interface AgenticLoopOptions {
   parseFailureTracker?: { hadFailure: boolean };
 }
 
+export interface CompletedSubtaskResult {
+  subtaskId: string;
+  actions: Action[];
+  verified: boolean;
+}
+
+export interface FailedSubtaskResult {
+  subtaskId: string;
+  reason: string;
+}
+
 export interface AgenticLoopResult {
   actions: Action[];
   iterationsRun: number;
   verifierPassed: boolean;
+  completedSubtasks: CompletedSubtaskResult[];
+  failedSubtask: FailedSubtaskResult | null;
+  /** True when some subtasks completed but the full chain did not verify/pass. */
+  partialProgress: boolean;
 }
 
 interface SubtaskActionState {
   subtask: SubTask;
   actions: Action[];
+  completed: boolean;
+  verified?: boolean;
+  failedReason?: string;
 }
 
 type RetryContext = Pick<
@@ -58,7 +77,7 @@ export class AgenticLoopService {
   private readonly MAX_STEP_RETRIES = 2;
   private readonly MAX_FORMULA_RETRIES = 2;
   private readonly MAX_TOOL_REQUESTS = 5;
-  private readonly TIMEOUT_MS = 180_000;
+  private readonly TIMEOUT_MS = 300_000;
 
   constructor(
     private readonly executor: ExecutorAgent,
@@ -68,6 +87,7 @@ export class AgenticLoopService {
     private readonly toolBridge: ToolBridgeService,
     private readonly completenessChecker: CompletenessChecker,
     private readonly formattingChecker: FormattingChecker,
+    private readonly semanticFormulaChecker: SemanticFormulaChecker = new SemanticFormulaChecker(),
     private readonly structuredLogger: StructuredLogger = new StructuredLogger(),
   ) {}
 
@@ -97,6 +117,7 @@ export class AgenticLoopService {
     const subtaskStates: SubtaskActionState[] = ordered.map((subtask) => ({
       subtask,
       actions: [],
+      completed: false,
     }));
 
     const waves = computeExecutionWaves(ordered);
@@ -115,42 +136,66 @@ export class AgenticLoopService {
         });
       }
 
-      const waveResults = await Promise.all(
+      // Await every sibling to settlement so a mid-wave LLM failure cannot leave
+      // other in-flight fetches as unhandled rejections (Node process crash).
+      const waveSettled = await Promise.all(
         wave.map(async (subtask) => {
           const state = subtaskStates.find((entry) => entry.subtask.id === subtask.id);
-          if (!state) return 0;
+          if (!state) {
+            return { iterations: 0 as number, error: null as unknown };
+          }
 
           const visibleIds = new Set([...completedIds, ...subtask.dependsOn]);
-          return this.executeSubtask(
-            state,
-            subtaskStates,
-            context,
-            emitter,
-            startedAt,
-            formulaValidationLog,
-            loopOptions,
-            visibleIds,
-            () => {
-              timedOut = true;
-            },
-          );
+          try {
+            const iterations = await this.executeSubtask(
+              state,
+              subtaskStates,
+              context,
+              emitter,
+              startedAt,
+              formulaValidationLog,
+              loopOptions,
+              visibleIds,
+              () => {
+                timedOut = true;
+              },
+            );
+            return { iterations, error: null as unknown };
+          } catch (error) {
+            const reason =
+              error instanceof Error ? error.message : 'Parallel subtask execution failed';
+            state.failedReason = reason;
+            this.logger.warn(
+              `Parallel subtask "${subtask.description}" failed: ${reason}`,
+            );
+            return { iterations: 0, error };
+          }
         }),
       );
 
-      iterationsRun += waveResults.reduce((sum, count) => sum + count, 0);
+      iterationsRun += waveSettled.reduce((sum, entry) => sum + entry.iterations, 0);
       for (const subtask of wave) {
         completedIds.add(subtask.id);
+      }
+
+      // Do not rethrow — keep going so completed siblings can surface as partialProgress.
+      // Siblings were awaited above so mid-wave LLM aborts cannot become unhandled rejections.
+      const failedInWave = waveSettled.filter((entry) => entry.error);
+      if (failedInWave.length > 0) {
+        emitter.send({
+          type: 'THINKING',
+          message: `${failedInWave.length} parallel step(s) failed — continuing with remaining work`,
+        });
       }
     }
 
     if (timedOut) {
       this.logger.warn('Agentic loop timed out before completion');
       emitter.send({ type: 'ERROR', message: 'Agentic loop timeout' });
-      return {
-        actions: this.flattenActions(subtaskStates),
-        iterationsRun,
-        verifierPassed: false,
-      };
+      return this.buildLoopResult(subtaskStates, iterationsRun, false, {
+        preferCompletedOnly: true,
+        defaultFailReason: 'Agentic loop timed out before completion',
+      });
     }
 
     let verifierPassed = false;
@@ -160,6 +205,8 @@ export class AgenticLoopService {
     let retryExhaustedMessage: string | null = null;
     const validatorSummary = this.formulaValidator.summarizeForVerifier(formulaValidationLog);
     loopOptions.parseFailureTracker ??= { hadFailure: false };
+    let lastSubtaskVerifyResults: Array<{ subtaskId: string; passed: boolean; feedback: string }> =
+      [];
 
     while (!verifierPassed && verifierCycle < maxVerifierCycles && !timedOut) {
       if (Date.now() - startedAt > this.TIMEOUT_MS) {
@@ -173,10 +220,20 @@ export class AgenticLoopService {
 
       const shadow = this.buildShadowFromStates(context, subtaskStates);
       const verifyContext = this.enrichContextFromShadow(shadow);
-      const cheapChecks = this.runDeterministicChecks(ordered, subtaskStates, verifyContext);
+      const cheapChecks = this.runDeterministicChecks(
+        originalPrompt,
+        ordered,
+        subtaskStates,
+        verifyContext,
+      );
 
       if (cheapChecks.passed && !cheapChecks.requiresLlmVerification) {
         verifierPassed = true;
+        lastSubtaskVerifyResults = ordered.map((subtask) => ({
+          subtaskId: subtask.id,
+          passed: true,
+          feedback: 'Deterministic checks passed',
+        }));
         emitter.send({ type: 'VERIFY_PASS' });
         this.logger.log('Skipped LLM verifier — deterministic checks passed cleanly');
         break;
@@ -191,6 +248,12 @@ export class AgenticLoopService {
           message: `Fixing issues: ${cheapChecks.feedback}`,
         });
 
+        lastSubtaskVerifyResults = cheapChecks.subtaskResults.map((result) => ({
+          subtaskId: result.subtaskId,
+          passed: result.passed,
+          feedback: result.feedback,
+        }));
+
         const failingIds = new Set(
           cheapChecks.subtaskResults.filter((result) => !result.passed).map((result) => result.subtaskId),
         );
@@ -201,6 +264,14 @@ export class AgenticLoopService {
         const exhaustedIds = this.findExhaustedSubtasks(failingIds, stepRetryAttempts);
         if (exhaustedIds.size > 0) {
           retryExhaustedMessage = this.buildRetryExhaustedMessage(exhaustedIds, cheapChecks.feedback);
+          for (const id of exhaustedIds) {
+            const state = subtaskStates.find((entry) => entry.subtask.id === id);
+            if (state) {
+              state.failedReason =
+                state.failedReason ??
+                `Could not complete after ${this.MAX_STEP_RETRIES} attempts: ${cheapChecks.feedback}`;
+            }
+          }
           break;
         }
 
@@ -270,6 +341,11 @@ export class AgenticLoopService {
 
       if (verification.passed) {
         verifierPassed = true;
+        lastSubtaskVerifyResults = verification.subtaskResults.map((result) => ({
+          subtaskId: result.subtaskId,
+          passed: result.passed,
+          feedback: result.feedback,
+        }));
         emitter.send({ type: 'VERIFY_PASS' });
         break;
       }
@@ -279,6 +355,12 @@ export class AgenticLoopService {
         type: 'THINKING',
         message: `Fixing issues: ${verification.feedback}`,
       });
+
+      lastSubtaskVerifyResults = verification.subtaskResults.map((result) => ({
+        subtaskId: result.subtaskId,
+        passed: result.passed,
+        feedback: result.feedback,
+      }));
 
       const failingIds = new Set(
         verification.subtaskResults.filter((r) => !r.passed).map((r) => r.subtaskId),
@@ -291,6 +373,14 @@ export class AgenticLoopService {
       const exhaustedIds = this.findExhaustedSubtasks(failingIds, stepRetryAttempts);
       if (exhaustedIds.size > 0) {
         retryExhaustedMessage = this.buildRetryExhaustedMessage(exhaustedIds, verification.feedback);
+        for (const id of exhaustedIds) {
+          const state = subtaskStates.find((entry) => entry.subtask.id === id);
+          if (state) {
+            state.failedReason =
+              state.failedReason ??
+              `Could not complete after ${this.MAX_STEP_RETRIES} attempts: ${verification.feedback}`;
+          }
+        }
         break;
       }
 
@@ -336,21 +426,116 @@ export class AgenticLoopService {
       });
     }
 
+    this.applyVerifyResultsToStates(subtaskStates, lastSubtaskVerifyResults, verifierPassed);
+
+    return this.buildLoopResult(subtaskStates, iterationsRun, verifierPassed, {
+      preferCompletedOnly: !verifierPassed,
+      defaultFailReason:
+        retryExhaustedMessage ?? 'Could not complete and verify the full request',
+      timedOut,
+    });
+  }
+
+  private applyVerifyResultsToStates(
+    subtaskStates: SubtaskActionState[],
+    results: Array<{ subtaskId: string; passed: boolean; feedback: string }>,
+    verifierPassed: boolean,
+  ): void {
+    if (verifierPassed) {
+      for (const state of subtaskStates) {
+        state.verified = true;
+        state.completed = true;
+      }
+      return;
+    }
+
+    for (const result of results) {
+      const state = subtaskStates.find((entry) => entry.subtask.id === result.subtaskId);
+      if (!state) continue;
+      state.verified = result.passed;
+      if (result.passed) {
+        state.completed = true;
+      } else if (!state.failedReason) {
+        state.failedReason = result.feedback || 'Verification failed for this step';
+      }
+    }
+  }
+
+  private buildLoopResult(
+    subtaskStates: SubtaskActionState[],
+    iterationsRun: number,
+    verifierPassed: boolean,
+    options: {
+      preferCompletedOnly: boolean;
+      defaultFailReason: string;
+      timedOut?: boolean;
+    },
+  ): AgenticLoopResult {
+    const completedSubtasks: CompletedSubtaskResult[] = subtaskStates
+      .filter((state) => {
+        if (!state.completed || state.actions.length === 0) return false;
+        if (verifierPassed) return true;
+        // Partial progress: only include steps that verified or finished cleanly before a later failure
+        return state.verified === true || (state.completed && !state.failedReason);
+      })
+      .map((state) => ({
+        subtaskId: state.subtask.id,
+        actions: state.actions,
+        verified: state.verified === true || verifierPassed,
+      }));
+
+    const failedState =
+      subtaskStates.find((state) => Boolean(state.failedReason)) ??
+      (!verifierPassed
+        ? subtaskStates.find((state) => state.verified === false) ??
+          subtaskStates.find((state) => !state.completed)
+        : undefined);
+
+    const failedSubtask: FailedSubtaskResult | null =
+      !verifierPassed && failedState
+        ? {
+            subtaskId: failedState.subtask.id,
+            reason:
+              failedState.failedReason ??
+              (options.timedOut
+                ? 'Timed out before this step completed'
+                : options.defaultFailReason),
+          }
+        : null;
+
+    const partialProgress =
+      !verifierPassed && completedSubtasks.length > 0 && failedSubtask !== null;
+
+    const actions =
+      options.preferCompletedOnly && partialProgress
+        ? completedSubtasks.flatMap((entry) => entry.actions)
+        : this.flattenActions(subtaskStates);
+
     return {
-      actions: this.flattenActions(subtaskStates),
+      actions,
       iterationsRun,
       verifierPassed,
+      completedSubtasks,
+      failedSubtask,
+      partialProgress,
     };
   }
 
   private runDeterministicChecks(
+    originalPrompt: string,
     subtasks: SubTask[],
     subtaskStates: SubtaskActionState[],
     context: WorkbookContext,
   ): CheckerResult {
     const completeness = this.completenessChecker.check(subtasks, subtaskStates);
     const formatting = this.formattingChecker.check(subtaskStates, context);
-    const merged = mergeCheckerResults([completeness, formatting]);
+    const semantic = this.semanticFormulaChecker.check(
+      originalPrompt,
+      subtasks,
+      subtaskStates,
+      context,
+    );
+    const merged = mergeCheckerResults([completeness, formatting, semantic]);
 
     const needsSemanticReview =
       subtaskStates.some((state) =>
@@ -406,6 +591,9 @@ export class AgenticLoopService {
       const issues: VerifierIssue[] = subtaskResult?.issues ?? checkResult.issues;
 
       state.actions = [];
+      state.completed = false;
+      state.verified = undefined;
+      state.failedReason = undefined;
       const visibleIds = new Set([...completedIds, ...subtask.dependsOn]);
       const retryAttempt = (stepRetryAttempts?.get(subtask.id) ?? 0) + 1;
       stepRetryAttempts?.set(subtask.id, retryAttempt);
@@ -515,13 +703,16 @@ export class AgenticLoopService {
       }
     }
 
-    if (!subtaskDone) {
+    if (subtaskDone) {
+      state.completed = true;
+      state.failedReason = undefined;
+    } else {
       const hitTimeout = Date.now() - startedAt > this.TIMEOUT_MS;
-      this.logger.warn(
-        hitTimeout
-          ? `Subtask "${subtask.description}" timed out before completion`
-          : `Subtask "${subtask.description}" hit max iterations (${this.MAX_ITERATIONS_PER_SUBTASK})`,
-      );
+      const reason = hitTimeout
+        ? `Subtask "${subtask.description}" timed out before completion`
+        : `Subtask "${subtask.description}" hit max iterations (${this.MAX_ITERATIONS_PER_SUBTASK})`;
+      state.failedReason = reason;
+      this.logger.warn(reason);
       emitter.send({
         type: 'THINKING',
         message: `Reached step limit for "${subtask.description}" — moving on`,

@@ -1,4 +1,10 @@
 import { Action } from '../../agents/types/agent.types';
+import {
+  DomainException,
+  SourceRef,
+} from '../../domain-tools/types/domain-tool.types';
+
+export type { DomainException, SourceRef };
 
 export type ChangeSetStatus = 'previewed' | 'applied' | 'reverted';
 
@@ -15,6 +21,10 @@ export interface CellChange {
   after: unknown;
   formula?: string;
   isHardcoded: boolean;
+  /** Optional citations — undefined for Tier 0/1 is expected */
+  sourceRefs?: SourceRef[];
+  /** Domain-tool exception flags — rendered distinctly in the UI */
+  exceptionFlags?: DomainException[];
 }
 
 export interface ChangeSetRecord {
@@ -29,4 +39,6 @@ export interface ChangeSetRecord {
   status: ChangeSetStatus;
   appliedAt?: Date;
   revertedAt?: Date;
+  /** Aggregate provenance for the change set (domain-tool confidence, etc.) */
+  provenanceConfidence?: number;
 }

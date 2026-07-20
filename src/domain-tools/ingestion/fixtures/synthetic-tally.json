@@ -1,0 +1,14 @@
+{
+  "documentId": "synth-tally-001",
+  "format": "synthetic-json",
+  "rows": [
+    {
+      "voucherType": "Purchase",
+      "voucherNumber": "PUR-501",
+      "date": "2026-04-10",
+      "ledgerName": "Purchase Account",
+      "amount": 12000,
+      "sourceRow": 1
+    }
+  ]
+}

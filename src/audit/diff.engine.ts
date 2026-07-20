@@ -127,6 +127,7 @@ export function beforeStateToInverseActions(
         sheetName: sheet,
         address,
         value: null,
+        explicitOverwriteConfirmed: true,
       } as Action);
       continue;
     }
@@ -137,6 +138,7 @@ export function beforeStateToInverseActions(
         sheetName: sheet,
         address,
         formula: snapshot.formula,
+        explicitOverwriteConfirmed: true,
       } as Action);
     } else {
       actions.push({
@@ -144,6 +146,7 @@ export function beforeStateToInverseActions(
         sheetName: sheet,
         address,
         value: snapshot.value as string | number | boolean | null,
+        explicitOverwriteConfirmed: true,
       } as Action);
     }
   }

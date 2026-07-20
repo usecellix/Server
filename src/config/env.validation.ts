@@ -16,4 +16,7 @@ export const envValidationSchema = Joi.object({
   OPENAI_MODEL_LOW: Joi.string().optional(),
   OPENAI_MODEL_MEDIUM: Joi.string().optional(),
   OPENAI_MODEL_HIGH: Joi.string().optional(),
+  ENABLE_COMPLEXITY_TIERING: Joi.string()
+    .valid('off', 'shadow', 'tier01', 'tier0-1', 'tier0_1', 'full', 'on', 'true', 'false', '0', '1')
+    .optional(),
 });

@@ -17,7 +17,31 @@ describe('AuditService export helpers', () => {
           timestamp: fromDate,
           prompt: 'Add row',
           beforeState: {},
-          changes: [],
+          changes: [
+            {
+              cell: 'C2',
+              sheet: 'Sheet1',
+              before: '',
+              after: '=B2*0.18',
+              formula: '=B2*0.18',
+              isHardcoded: false,
+              sourceRefs: [
+                {
+                  documentType: 'workbook',
+                  documentId: 'Sheet1',
+                  rowOrLine: 'Sheet1!B2',
+                },
+              ],
+              exceptionFlags: [
+                {
+                  code: 'GST_NAME_FUZZY_MATCH',
+                  severity: 'flag',
+                  message: 'Fuzzy vendor match',
+                  affectedRows: [2],
+                },
+              ],
+            },
+          ],
           actions: [],
           status: 'applied',
         },
@@ -42,6 +66,8 @@ describe('AuditService export helpers', () => {
 
     expect(csv).toContain('recordType,id,traceId');
     expect(csv).toContain('change_set,cs_1');
+    expect(csv).toContain('sourceRefs=');
+    expect(csv).toContain('exceptionFlags=');
     expect(csv).toContain('llm_call,log_1');
   });
 });

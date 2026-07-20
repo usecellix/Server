@@ -4,6 +4,16 @@ import { AgenticLoopService } from './agenticLoop.service';
 import { SseEmitter } from './sse.emitter';
 import { Action, AgentRunOptions, PlannerOutput } from './types/agent.types';
 
+export interface OrchestratorRunResult {
+  actions: Action[];
+  iterationsRun: number;
+  verifierPassed: boolean;
+  clarificationRequested: boolean;
+  completedSubtasks: Array<{ subtaskId: string; actions: Action[]; verified: boolean }>;
+  failedSubtask: { subtaskId: string; reason: string } | null;
+  partialProgress: boolean;
+}
+
 @Injectable()
 export class OrchestratorService {
   private readonly logger = new Logger(OrchestratorService.name);
@@ -32,6 +42,14 @@ export class OrchestratorService {
   }
 
   async run(opts: AgentRunOptions, emitter: SseEmitter): Promise<Action[]> {
+    const result = await this.runDetailed(opts, emitter);
+    return result.actions;
+  }
+
+  async runDetailed(
+    opts: AgentRunOptions,
+    emitter: SseEmitter,
+  ): Promise<OrchestratorRunResult> {
     const {
       prompt,
       context,
@@ -56,14 +74,35 @@ export class OrchestratorService {
 
     if (plan.clarificationsNeeded.length > 0) {
       emitter.send({ type: 'CLARIFY', questions: plan.clarificationsNeeded });
-      return [];
+      return {
+        actions: [],
+        iterationsRun: 0,
+        verifierPassed: false,
+        clarificationRequested: true,
+        completedSubtasks: [],
+        failedSubtask: null,
+        partialProgress: false,
+      };
     }
 
     if (plan.confidence === 'low') {
-      emitter.send({
-        type: 'THINKING',
-        message: `Low confidence — proceeding carefully (${plan.reasoning})`,
-      });
+      const questions =
+        plan.clarificationsNeeded.length > 0
+          ? plan.clarificationsNeeded
+          : [
+              plan.reasoning?.trim() ||
+                'This request is ambiguous — what exactly should I change in the workbook?',
+            ];
+      emitter.send({ type: 'CLARIFY', questions });
+      return {
+        actions: [],
+        iterationsRun: 0,
+        verifierPassed: false,
+        clarificationRequested: true,
+        completedSubtasks: [],
+        failedSubtask: null,
+        partialProgress: false,
+      };
     }
 
     emitter.send({
@@ -71,15 +110,21 @@ export class OrchestratorService {
       step: `${plan.subtasks.length} step${plan.subtasks.length > 1 ? 's' : ''} planned`,
     });
 
-    const { actions: allActions, iterationsRun, verifierPassed } =
-      await this.agenticLoop.run(prompt, plan.subtasks, context, emitter, {
-        conversationId,
-        correlationId: resolvedCorrelationId,
-        toolEmit,
-      });
+    const {
+      actions: allActions,
+      iterationsRun,
+      verifierPassed,
+      completedSubtasks,
+      failedSubtask,
+      partialProgress,
+    } = await this.agenticLoop.run(prompt, plan.subtasks, context, emitter, {
+      conversationId,
+      correlationId: resolvedCorrelationId,
+      toolEmit,
+    });
 
     this.logger.log(
-      `Agentic loop complete: ${allActions.length} actions, ${iterationsRun} iterations, verified: ${verifierPassed}`,
+      `Agentic loop complete: ${allActions.length} actions, ${iterationsRun} iterations, verified: ${verifierPassed}, partial: ${partialProgress}`,
     );
 
     emitter.send({
@@ -87,7 +132,15 @@ export class OrchestratorService {
       step: `${allActions.length} actions ready for preview`,
     });
 
-    return allActions;
+    return {
+      actions: allActions,
+      iterationsRun,
+      verifierPassed,
+      clarificationRequested: false,
+      completedSubtasks,
+      failedSubtask,
+      partialProgress,
+    };
   }
 
   private resolveCorrelationId(value?: string): string {

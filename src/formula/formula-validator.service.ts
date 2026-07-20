@@ -120,6 +120,58 @@ export class FormulaValidatorService {
     return `Deterministic formula validator found ${allIssues.length} issue(s):\n${this.formatFeedback(allIssues)}`;
   }
 
+  /**
+   * Post-generation lint: reject numeric literals where a formula is expected.
+   * Used by Tier 2 before the LLM verifier runs.
+   */
+  checkNoHardcodedLiterals(actions: Action[]): {
+    passed: boolean;
+    reason?: string;
+  } {
+    const issues: string[] = [];
+
+    actions.forEach((action, actionIndex) => {
+      if (action.type === 'SET_CELL' && typeof action.value === 'number') {
+        issues.push(
+          `Action ${actionIndex}: numeric literal ${action.value} — use a formula (e.g. =D2*0.18) instead of a hard-coded value`,
+        );
+      }
+
+      if (action.type === 'BATCH_SET' && Array.isArray(action.operations)) {
+        action.operations.forEach((operation, operationIndex) => {
+          if (
+            operation.value !== undefined &&
+            typeof operation.value === 'number' &&
+            !operation.formula
+          ) {
+            issues.push(
+              `Action ${actionIndex} operation ${operationIndex}: numeric literal ${operation.value} without formula`,
+            );
+          }
+        });
+      }
+
+      if (action.type === 'ADD_ROW' && Array.isArray(action.data)) {
+        action.data.forEach((value, columnIndex) => {
+          if (typeof value === 'number') {
+            issues.push(
+              `Action ${actionIndex} column ${columnIndex}: numeric literal ${value} in row data — prefer a formula`,
+            );
+          }
+        });
+      }
+    });
+
+    if (issues.length === 0) {
+      return { passed: true };
+    }
+
+    return {
+      passed: false,
+      reason: issues.join('; '),
+    };
+  }
+
   private extractFormulas(actions: Action[], defaultSheet: string): ExtractedFormula[] {
     const out: ExtractedFormula[] = [];
 
@@ -234,7 +286,7 @@ export class FormulaValidatorService {
       });
     }
 
-    if (/[^A-Za-z0-9_+\-*/^&=<>:"'.,!% \t[\]\\@#$~;]/.test(body)) {
+    if (/[^A-Za-z0-9_+\-*/^&=<>:"'.,!%() \t[\]\\@#$~;]/.test(body)) {
       issues.push({
         severity: 'error',
         code: 'SYNTAX',

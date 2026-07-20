@@ -17,6 +17,7 @@ describe('ConversationEngineService finalizeActions', () => {
     headers: ['Date', 'Particulars', 'CGST'],
     isEmpty: false,
     columnLetters: ['A', 'B', 'C'],
+    headerRowIndex: 0,
   };
 
   it('preserves SORT_RANGE actions through sanitization', () => {
@@ -38,5 +39,47 @@ describe('ConversationEngineService finalizeActions', () => {
     expect(result).toHaveLength(1);
     expect(result[0].type).toBe('SORT_RANGE');
     expect(result[0].sheetName).toBe('Purchases');
+  });
+
+  it('preserves COPY_FILTERED_RANGE through sanitization', () => {
+    const result = service.finalizeActions(
+      [
+        {
+          type: 'COPY_FILTERED_RANGE',
+          sourceSheet: 'Purchase Register',
+          sourceRange: 'A1:L51',
+          hasHeaders: true,
+          destSheet: 'Pending Payments',
+          destStartCell: 'A1',
+          filter: {
+            column: 'Payment Status',
+            operator: 'equals',
+            value: 'Pending',
+          },
+          mode: 'copy',
+        },
+      ],
+      analysis,
+    );
+
+    expect(result).toHaveLength(1);
+    expect(result[0].type).toBe('COPY_FILTERED_RANGE');
+    expect(result[0].destSheet).toBe('Pending Payments');
+  });
+
+  it('drops incomplete COPY_FILTERED_RANGE actions', () => {
+    const result = service.finalizeActions(
+      [
+        {
+          type: 'COPY_FILTERED_RANGE',
+          sourceSheet: 'Purchase Register',
+          // missing destSheet / destStartCell / mode
+          sourceRange: 'A1:L51',
+        },
+      ],
+      analysis,
+    );
+
+    expect(result).toHaveLength(0);
   });
 });

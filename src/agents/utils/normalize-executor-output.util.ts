@@ -1,5 +1,19 @@
 import { SheetActionPayload, SheetActionType } from '../../excel-ai/types/sheet-actions.types';
 import { Action, ExecutorOutput, SubTask } from '../types/agent.types';
+import { stripSheetPrefix } from './range-address.util';
+import { parseA1Range } from './range-merge.util';
+
+/** Action types that sanitizeAction requires integer row/col for. */
+const INDEX_RANGE_ACTION_TYPES = new Set<SheetActionType>([
+  'FORMAT_RANGE',
+  'MERGE_CELLS',
+  'UNMERGE_CELLS',
+  'CLEAR_CONTENT',
+  'CLEAR_FORMAT',
+  'CLEAR_ALL',
+  'ADD_COMMENT',
+  'DELETE_COMMENT',
+]);
 
 const KNOWN_TYPES = new Set<string>([
   'SET_CELL',
@@ -44,12 +58,18 @@ const KNOWN_TYPES = new Set<string>([
   'WRITE_TABLE',
   'BATCH_SET',
   'CREATE_TABLE',
+  'CREATE_CHART',
   'DEFINE_NAMED_RANGE',
   'AUTOFIT_COLUMNS',
   'CLARIFY',
   'CHECKPOINT',
   'ADD_SHEET',
   'SORT_RANGE',
+  'COPY_FILTERED_RANGE',
+  'FORMAT_MATCHING_ROWS',
+  'MOVE_RANGE',
+  'AGGREGATE_TABLE',
+  'UPDATE_CHART',
 ]);
 
 function normalizeActionType(raw: unknown): SheetActionType | null {
@@ -57,6 +77,26 @@ function normalizeActionType(raw: unknown): SheetActionType | null {
   const upper = raw.trim().toUpperCase().replace(/[\s-]+/g, '_');
   if (upper === 'SORT' || upper === 'SORT_COLUMN' || upper === 'SORT_ROWS') {
     return 'SORT_RANGE';
+  }
+  if (
+    upper === 'COPY_FILTERED' ||
+    upper === 'COPY_FILTER' ||
+    upper === 'FILTER_COPY' ||
+    upper === 'COPY_ROWS'
+  ) {
+    return 'COPY_FILTERED_RANGE';
+  }
+  if (upper === 'MOVE' || upper === 'MOVE_ROWS') {
+    return 'MOVE_RANGE';
+  }
+  if (
+    upper === 'FORMAT_MATCHING' ||
+    upper === 'FORMAT_MATCHING_ROWS' ||
+    upper === 'HIGHLIGHT_MATCHING' ||
+    upper === 'HIGHLIGHT_ROWS' ||
+    upper === 'CONDITIONAL_FORMAT'
+  ) {
+    return 'FORMAT_MATCHING_ROWS';
   }
   if (KNOWN_TYPES.has(upper)) {
     return upper as SheetActionType;
@@ -89,6 +129,13 @@ function normalizeSingleAction(
   if (typeof record.range === 'string') action.range = record.range;
   if (typeof record.sourceRange === 'string') action.sourceRange = record.sourceRange;
   if (typeof record.targetRange === 'string') action.targetRange = record.targetRange;
+  if (typeof record.sourceSheetName === 'string') {
+    action.sourceSheetName = record.sourceSheetName;
+  }
+  if (typeof record.chartType === 'string') action.chartType = record.chartType;
+  if (typeof record.title === 'string') action.title = record.title;
+  if (typeof record.startCell === 'string') action.startCell = record.startCell;
+  if (typeof record.endCell === 'string') action.endCell = record.endCell;
   if (typeof record.oldName === 'string') action.oldName = record.oldName;
   if (typeof record.newName === 'string') action.newName = record.newName;
   if (typeof record.name === 'string') action.name = record.name;
@@ -97,8 +144,34 @@ function normalizeSingleAction(
   if (Array.isArray(record.options)) action.options = record.options.map(String);
   if (typeof record.message === 'string') action.message = record.message;
   if (typeof record.beforeColumn === 'string') action.beforeColumn = record.beforeColumn;
+  if (typeof record.afterColumn === 'string') action.afterColumn = record.afterColumn;
   if (Array.isArray(record.columns)) action.columns = record.columns.map(String);
   if (typeof record.afterRow === 'number') action.afterRow = record.afterRow;
+  if (record.explicitOverwriteConfirmed === true) {
+    action.explicitOverwriteConfirmed = true;
+  }
+
+  if (type === 'INSERT_COLUMN') {
+    if (typeof record.columnName === 'string') action.columnName = record.columnName;
+    if (record.position === 'afterLastColumn') {
+      action.position = 'afterLastColumn';
+    } else if (record.position && typeof record.position === 'object') {
+      const pos = record.position as Record<string, unknown>;
+      if (typeof pos.afterColumn === 'string') {
+        action.afterColumn = pos.afterColumn;
+      }
+    } else if (
+      record.position === 'above' ||
+      record.position === 'below' ||
+      record.position === 'left' ||
+      record.position === 'right' ||
+      record.position === 'before' ||
+      record.position === 'after'
+    ) {
+      action.position = record.position;
+    }
+    if (typeof record.formula === 'string') action.formula = record.formula;
+  }
 
   if (Array.isArray(record.data)) action.data = record.data;
   if (Array.isArray(record.values)) action.values = record.values;
@@ -110,12 +183,25 @@ function normalizeSingleAction(
   }
 
   if (Array.isArray(record.operations)) action.operations = record.operations as SheetActionPayload['operations'];
+  if (Array.isArray(record.headers)) {
+    action.headers = record.headers.map((h) => (h == null ? '' : String(h)));
+  }
   if (Array.isArray(record.rows)) {
     if (record.rows.every((n) => typeof n === 'number')) {
       action.rowNumbers = record.rows as number[];
+    } else {
+      // WRITE_TABLE / create_data payloads use 2D row arrays
+      action.rows = record.rows as unknown[][];
     }
   }
   if (Array.isArray(record.rowNumbers)) action.rowNumbers = record.rowNumbers as number[];
+
+  if (type === 'CREATE_TABLE') {
+    const tableName = record.tableName ?? record.name;
+    if (typeof tableName === 'string') action.tableName = tableName.trim();
+    action.hasHeaders =
+      record.hasHeaders === undefined ? true : Boolean(record.hasHeaders);
+  }
 
   if (type === 'SORT_RANGE') {
     const key =
@@ -130,11 +216,186 @@ function normalizeSingleAction(
     if (typeof record.columnName === 'string') action.columnName = record.columnName;
   }
 
+  if (type === 'COPY_FILTERED_RANGE' || type === 'MOVE_RANGE') {
+    if (typeof record.sourceSheet === 'string') action.sourceSheet = record.sourceSheet;
+    else if (typeof record.sheetName === 'string') action.sourceSheet = record.sheetName;
+    if (typeof record.sourceRange === 'string') action.sourceRange = record.sourceRange;
+    else if (typeof record.range === 'string') action.sourceRange = record.range;
+    if (typeof record.destSheet === 'string') action.destSheet = record.destSheet;
+    else if (typeof record.targetSheet === 'string') action.destSheet = record.targetSheet;
+    if (typeof record.destStartCell === 'string') action.destStartCell = record.destStartCell;
+    else if (typeof record.startCell === 'string') action.destStartCell = record.startCell;
+    if (record.hasHeaders !== undefined) action.hasHeaders = Boolean(record.hasHeaders);
+    else if (type === 'COPY_FILTERED_RANGE') action.hasHeaders = true;
+    if (record.mode === 'copy' || record.mode === 'move') {
+      action.mode = record.mode;
+    } else if (type === 'COPY_FILTERED_RANGE') {
+      action.mode = 'copy';
+    }
+    if (record.filter && typeof record.filter === 'object') {
+      const filter = record.filter as Record<string, unknown>;
+      if (
+        typeof filter.column === 'string' &&
+        typeof filter.operator === 'string' &&
+        (typeof filter.value === 'string' || typeof filter.value === 'number')
+      ) {
+        action.filter = {
+          column: filter.column,
+          operator: filter.operator as NonNullable<SheetActionPayload['filter']>['operator'],
+          value: filter.value,
+        };
+      }
+    }
+  }
+
+  if (type === 'FORMAT_MATCHING_ROWS') {
+    if (typeof record.sheetName === 'string') action.sheetName = record.sheetName;
+    if (typeof record.range === 'string') action.range = stripSheetPrefix(record.range);
+    else if (typeof record.sourceRange === 'string') {
+      action.range = stripSheetPrefix(record.sourceRange);
+    }
+    if (record.hasHeaders !== undefined) action.hasHeaders = Boolean(record.hasHeaders);
+    else action.hasHeaders = true;
+    if (record.filter && typeof record.filter === 'object') {
+      const filter = record.filter as Record<string, unknown>;
+      if (
+        typeof filter.column === 'string' &&
+        typeof filter.operator === 'string' &&
+        (typeof filter.value === 'string' || typeof filter.value === 'number')
+      ) {
+        action.filter = {
+          column: filter.column,
+          operator: filter.operator as NonNullable<SheetActionPayload['filter']>['operator'],
+          value: filter.value,
+        };
+      }
+    }
+    if (record.format && typeof record.format === 'object') {
+      action.format = record.format as SheetActionPayload['format'];
+    } else if (typeof record.color === 'string') {
+      action.format = { fillColor: record.color };
+    }
+    if (
+      action.format &&
+      typeof action.format === 'object' &&
+      (action.format as { clearFill?: boolean }).clearFill !== true &&
+      !action.format.fillColor
+    ) {
+      const formatRecord = record.format as Record<string, unknown> | undefined;
+      if (formatRecord?.clearFill === true) {
+        action.format = { clearFill: true };
+      }
+    }
+  }
+
+  if (type === 'AGGREGATE_TABLE') {
+    if (typeof record.sourceSheet === 'string') action.sourceSheet = record.sourceSheet;
+    else if (typeof record.sheetName === 'string') action.sourceSheet = record.sheetName;
+    if (typeof record.sourceRange === 'string') action.sourceRange = record.sourceRange;
+    else if (typeof record.range === 'string') action.sourceRange = record.range;
+    if (typeof record.groupByColumn === 'string') action.groupByColumn = record.groupByColumn;
+    if (typeof record.destSheet === 'string') action.destSheet = record.destSheet;
+    if (typeof record.destStartCell === 'string') action.destStartCell = record.destStartCell;
+    else if (typeof record.startCell === 'string') action.destStartCell = record.startCell;
+    if (record.hasHeaders !== undefined) action.hasHeaders = Boolean(record.hasHeaders);
+    else action.hasHeaders = true;
+    if (typeof record.topN === 'number') action.topN = record.topN;
+    if (record.sortBy && typeof record.sortBy === 'object') {
+      const sortBy = record.sortBy as Record<string, unknown>;
+      if (typeof sortBy.column === 'string') {
+        action.sortBy = {
+          column: sortBy.column,
+          direction: sortBy.direction === 'desc' ? 'desc' : 'asc',
+        };
+      }
+    }
+    if (Array.isArray(record.aggregations)) {
+      action.aggregations = record.aggregations
+        .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object')
+        .map((item) => ({
+          column: String(item.column ?? ''),
+          fn: (['sum', 'count', 'average', 'max', 'min'].includes(String(item.fn))
+            ? String(item.fn)
+            : 'sum') as NonNullable<SheetActionPayload['aggregations']>[number]['fn'],
+          outputLabel: String(item.outputLabel ?? item.column ?? 'Value'),
+        }))
+        .filter((item) => item.column);
+    }
+  }
+
+  if (type === 'CREATE_CHART') {
+    if (typeof record.sourceSheetName === 'string') action.sourceSheetName = record.sourceSheetName;
+    else if (typeof record.sheetName === 'string') action.sourceSheetName = record.sheetName;
+    if (typeof record.sourceRange === 'string') action.sourceRange = record.sourceRange;
+    else if (typeof record.range === 'string') action.sourceRange = record.range;
+    if (typeof record.chartType === 'string') action.chartType = record.chartType;
+    if (typeof record.title === 'string') action.title = record.title;
+    if (typeof record.startCell === 'string') action.startCell = record.startCell;
+    if (typeof record.endCell === 'string') action.endCell = record.endCell;
+    if (typeof record.destCell === 'string') action.destCell = record.destCell;
+    if (typeof record.chartId === 'string') action.chartId = record.chartId;
+    else action.chartId = `Chart_${Date.now().toString(36)}`;
+    if (
+      record.colorScheme === 'default' ||
+      record.colorScheme === 'blue' ||
+      record.colorScheme === 'grey' ||
+      record.colorScheme === 'blueGrey'
+    ) {
+      action.colorScheme = record.colorScheme;
+    }
+  }
+
+  if (type === 'UPDATE_CHART') {
+    if (typeof record.chartId === 'string') action.chartId = record.chartId;
+    if (typeof record.chartType === 'string') action.chartType = record.chartType;
+    if (
+      record.colorScheme === 'default' ||
+      record.colorScheme === 'blue' ||
+      record.colorScheme === 'grey' ||
+      record.colorScheme === 'blueGrey'
+    ) {
+      action.colorScheme = record.colorScheme;
+    }
+  }
+
   if (record.format && typeof record.format === 'object') {
     action.format = record.format as SheetActionPayload['format'];
   }
 
+  // sanitizeAction requires integer row/col for these types. Models often emit an
+  // A1 `range` string instead — convert when possible so sanitize does not drop them.
+  if (INDEX_RANGE_ACTION_TYPES.has(type)) {
+    expandRangeStringToIndices(action);
+  }
+
   return action;
+}
+
+function isValidIndex(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0;
+}
+
+/**
+ * If row/col are already valid, leave as-is. Otherwise parse `range` (e.g. "A1:L1")
+ * into 0-indexed row/col/rowCount/colCount. Malformed actions (no range, no indices)
+ * are left unchanged for sanitizeAction to reject.
+ */
+function expandRangeStringToIndices(action: SheetActionPayload): void {
+  if (isValidIndex(action.row) && isValidIndex(action.col)) {
+    return;
+  }
+  if (typeof action.range !== 'string' || !action.range.trim()) {
+    return;
+  }
+  // Sheet prefix is optional noise; A1 alone is enough to resolve indices.
+  const parsed = parseA1Range(stripSheetPrefix(action.range));
+  if (!parsed) {
+    return;
+  }
+  action.row = parsed.startRow;
+  action.col = parsed.startCol;
+  action.rowCount = parsed.endRow - parsed.startRow + 1;
+  action.colCount = parsed.endCol - parsed.startCol + 1;
 }
 
 export function normalizeExecutorOutput(
@@ -162,7 +423,9 @@ export function normalizeExecutorOutput(
   const toolRequest = parseToolRequest(parsed.toolRequest);
 
   return {
-    subtaskId: String(parsed.subtaskId ?? subtask.id),
+    // The executor is invoked for one known subtask. Canonicalize the ID instead
+    // of letting an omitted, empty, or invented model value break loop progress.
+    subtaskId: subtask.id,
     actions,
     isDone,
     nextStep,

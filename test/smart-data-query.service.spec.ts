@@ -64,6 +64,7 @@ describe('SmartDataQueryService', () => {
     expect(callArgs.systemPrompt).toContain('do NOT suggest formulas');
     expect(callArgs.tier).toBe('medium');
     expect(callArgs.responseFormat).toBe('text');
+    expect(callArgs.reasoningEffort).toBe('low');
   });
 
   it('returns fallback answer when sheet data is missing', async () => {

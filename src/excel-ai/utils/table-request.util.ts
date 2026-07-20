@@ -87,6 +87,8 @@ function extractRowCount(message: string): number | null {
   const patterns = [
     /\b(\d{1,3})\s+dummy\b/i,
     /\bwith\s+(\d{1,3})\s+(?:dummy|sample)\b/i,
+    /\b(\d{1,3})\s+(?:dummy|sample)\s+rows?\b/i,
+    /\band\s+(\d{1,3})\s+(?:dummy|sample)\s+rows?\b/i,
     /\b(\d{1,3})\s*rows?\b/i,
     /\bcreate\s+(\d{1,3})\b/i,
     /\bgive\s+(\d{1,3})\b/i,
@@ -155,9 +157,12 @@ export function buildNewSheetWithDummyDataActions(message: string): SheetActionP
 
 function extractHeaders(message: string): string[] {
   const patterns = [
-    /\bwith\s+headers?\s+(.+?)(?=\s*,?\s*(?:give|and\s+give|for\s+this)\b|$)/i,
-    /\bheaders?\s*:\s*(.+?)(?=\s*,?\s*(?:give|for)\b|$)/i,
-    /\bcolumns?\s+(?:as\s+)?(.+?)(?=\s*,?\s*(?:give|for)\b|$)/i,
+    // "add headers Job Title, Company, … and 3 sample rows"
+    /\b(?:add|set|insert|create)\s+headers?\s+(.+?)(?=\s+and\s+\d|\s*,?\s*(?:give|and\s+give|for\s+this)\b|$)/i,
+    /\bwith\s+headers?\s+(.+?)(?=\s+and\s+\d|\s*,?\s*(?:give|and\s+give|for\s+this)\b|$)/i,
+    /\bheaders?\s*:\s*(.+?)(?=\s+and\s+\d|\s*,?\s*(?:give|for)\b|$)/i,
+    /\bheaders?\s+(.+?)(?=\s+and\s+\d|\s*,?\s*(?:give|and\s+give|for\s+this)\b|$)/i,
+    /\bcolumns?\s+(?:as\s+)?(.+?)(?=\s+and\s+\d|\s*,?\s*(?:give|for)\b|$)/i,
   ];
 
   for (const pattern of patterns) {
@@ -171,11 +176,19 @@ function extractHeaders(message: string): string[] {
 }
 
 function splitHeaderList(raw: string): string[] {
-  const trimmed = raw.split(/\bgive\b|\bwith\b|\bfor\b/i)[0].trim();
+  const trimmed = raw
+    .split(/\bgive\b|\bwith\b|\bfor\b|\band\s+\d/i)[0]
+    .trim();
   return trimmed
     .split(/,|\band\b/gi)
     .map((part) => part.trim().replace(/^["']|["']$/g, ''))
-    .filter((part) => part.length > 0 && part.length < 40 && !/^\d+\s*(rows?|dummy)/i.test(part));
+    .filter(
+      (part) =>
+        part.length > 0 &&
+        part.length < 40 &&
+        !/^\d+\s*(rows?|dummy|sample)/i.test(part) &&
+        !/^(?:dummy|sample)\s+rows?$/i.test(part),
+    );
 }
 
 function buildDummyRows(headers: string[], rowCount: number): unknown[][] {
@@ -210,6 +223,17 @@ function dummyCellValue(header: string, rowIndex: number): unknown {
   if (/status|state/i.test(h)) {
     return STATUS_VALUES[rowIndex % STATUS_VALUES.length];
   }
+  if (/email|e-mail|mail\b/i.test(h)) {
+    return `student${rowIndex + 1}@example.com`;
+  }
+  if (/job\s*title|title|role|designation/i.test(h)) {
+    return ['Sales Associate', 'Field Technician', 'Service Manager', 'Analyst', 'Intern'][
+      rowIndex % 5
+    ];
+  }
+  if (/company|shop|employer|organization|org\b/i.test(h)) {
+    return `Company ${rowIndex + 1}`;
+  }
   if (/date/i.test(h)) {
     const day = String(rowIndex + 1).padStart(2, '0');
     return `${day}-04-2024`;
@@ -217,8 +241,8 @@ function dummyCellValue(header: string, rowIndex: number): unknown {
   if (/gstin/i.test(h)) {
     return `29AABCT${1000 + rowIndex}L1Z5`;
   }
-  if (/name|supplier|party/i.test(h)) {
-    return `Sample Vendor ${rowIndex + 1}`;
+  if (/name|supplier|party|student/i.test(h)) {
+    return `Sample Person ${rowIndex + 1}`;
   }
 
   return `Value ${rowIndex + 1}`;

@@ -10,8 +10,17 @@ export function isWriteAction(action: SheetActionPayload): boolean {
   return !NON_MUTATING_ACTION_TYPES.has(action.type);
 }
 
-export function modeIsReadOnly(mode: AssistantMode | undefined): boolean {
-  return mode === 'ask' || mode === 'plan';
+export function modeIsReadOnly(mode: AssistantMode | 'act' | undefined): boolean {
+  const normalized = normalizeAssistantMode(mode);
+  return normalized === 'ask' || normalized === 'plan';
+}
+
+/** Normalize API aliases (`act`) and default omitted mode to `action`. */
+export function normalizeAssistantMode(mode?: string): AssistantMode {
+  if (mode === 'ask' || mode === 'plan') {
+    return mode;
+  }
+  return 'action';
 }
 
 export interface StripResult {

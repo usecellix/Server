@@ -38,6 +38,20 @@ describe('FormulaValidatorService', () => {
     expect(result.issues.filter((i) => i.severity === 'error')).toHaveLength(0);
   });
 
+  it('allows function parentheses and structured table references', () => {
+    const actions: Action[] = [
+      {
+        type: 'SET_FORMULA',
+        sheetName: 'Sheet1',
+        row: 1,
+        col: 2,
+        formula: '=TEXT([@Date],"yyyy-mm")',
+      },
+    ];
+    const result = validator.validatePreApply(actions, baseContext);
+    expect(result.issues.filter((i) => i.code === 'SYNTAX')).toHaveLength(0);
+  });
+
   it('rejects unbalanced parentheses', () => {
     const actions: Action[] = [
       { type: 'SET_FORMULA', sheetName: 'Sheet1', row: 1, col: 2, formula: '=SUM(B2:C2' },
@@ -81,5 +95,40 @@ describe('FormulaValidatorService', () => {
     ];
     const result = validator.validatePreApply(actions, baseContext);
     expect(result.passed).toBe(true);
+  });
+
+  it('rejects hardcoded numeric literals where formulas are expected', () => {
+    const actions: Action[] = [
+      { type: 'SET_CELL', sheetName: 'Sheet1', row: 1, col: 2, value: 180 },
+    ];
+    const result = validator.checkNoHardcodedLiterals(actions);
+    expect(result.passed).toBe(false);
+    expect(result.reason).toMatch(/numeric literal 180/i);
+  });
+
+  it('allows formula actions for GST-style requests', () => {
+    const actions: Action[] = [
+      { type: 'SET_FORMULA', sheetName: 'Sheet1', row: 1, col: 2, formula: '=D2*0.18' },
+    ];
+    const result = validator.checkNoHardcodedLiterals(actions);
+    expect(result.passed).toBe(true);
+  });
+
+  it('rejects domain-tool numeric results written as SET_CELL literals', () => {
+    // Spec 06: Executor must write formulas referencing DomainToolResult.data —
+    // never paste computed tax/ITC amounts as hard-coded cell values.
+    const domainToolItcClaimable = 1800;
+    const actions: Action[] = [
+      {
+        type: 'SET_CELL',
+        sheetName: 'ITC',
+        row: 1,
+        col: 3,
+        value: domainToolItcClaimable,
+      },
+    ];
+    const result = validator.checkNoHardcodedLiterals(actions);
+    expect(result.passed).toBe(false);
+    expect(result.reason).toMatch(/numeric literal 1800/i);
   });
 });

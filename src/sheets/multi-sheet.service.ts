@@ -20,7 +20,61 @@ export interface CompareResult {
   differences: [];
 }
 
-const SKIP_SHEET_VALIDATION = new Set<SheetActionPayload['type']>(['CREATE_SHEET']);
+const SHEET_CREATE_TYPES = new Set<SheetActionPayload['type']>([
+  'CREATE_SHEET',
+  'ADD_SHEET',
+  'COPY_SHEET',
+]);
+
+function createdSheetName(action: SheetActionPayload): string | null {
+  if (action.type === 'CREATE_SHEET' || action.type === 'ADD_SHEET') {
+    const name = action.name ?? action.sheetName;
+    return typeof name === 'string' && name.trim() ? name.trim() : null;
+  }
+  if (action.type === 'COPY_SHEET' || action.type === 'RENAME_SHEET') {
+    const name = action.newName ?? action.newSheetName;
+    return typeof name === 'string' && name.trim() ? name.trim() : null;
+  }
+  return null;
+}
+
+/**
+ * Validate that cross-sheet actions reference sheets present in the workbook context
+ * or created earlier in the same action batch.
+ */
+export function validateCrossSheetActions(
+  actions: SheetActionPayload[],
+  context: WorkbookContext,
+): { valid: SheetActionPayload[]; invalid: SheetActionPayload[]; errors: string[] } {
+  const knownSheets = new Set(context.sheets.map((sheet) => sheet.sheetName));
+
+  // Sheets created in this batch are valid targets for later actions (ADD_ROW, SET_CELL, …).
+  for (const action of actions) {
+    const created = createdSheetName(action);
+    if (created) knownSheets.add(created);
+  }
+
+  const valid: SheetActionPayload[] = [];
+  const invalid: SheetActionPayload[] = [];
+  const errors: string[] = [];
+
+  for (const action of actions) {
+    if (SHEET_CREATE_TYPES.has(action.type) || action.type === 'RENAME_SHEET') {
+      valid.push(action);
+      continue;
+    }
+
+    const sheet = action.sheetName ?? context.activeSheet;
+    if (sheet && !knownSheets.has(sheet)) {
+      invalid.push(action);
+      errors.push(`Action "${action.type}" references unknown sheet "${sheet}"`);
+    } else {
+      valid.push(action);
+    }
+  }
+
+  return { valid, invalid, errors };
+}
 
 function colIndexToLetter(col: number): string {
   let index = col + 1;
@@ -48,36 +102,6 @@ function buildFallbackSummary(
   if (removedInB.length > 0) parts.push(`${removedInB.length} row(s) removed`);
   if (modified.length > 0) parts.push(`${modified.length} cell(s) modified`);
   return parts.length > 0 ? `${parts.join(', ')}.` : 'No differences found.';
-}
-
-/**
- * Validate that cross-sheet actions reference sheets present in the workbook context.
- */
-export function validateCrossSheetActions(
-  actions: SheetActionPayload[],
-  context: WorkbookContext,
-): { valid: SheetActionPayload[]; invalid: SheetActionPayload[]; errors: string[] } {
-  const knownSheets = new Set(context.sheets.map((sheet) => sheet.sheetName));
-  const valid: SheetActionPayload[] = [];
-  const invalid: SheetActionPayload[] = [];
-  const errors: string[] = [];
-
-  for (const action of actions) {
-    if (SKIP_SHEET_VALIDATION.has(action.type)) {
-      valid.push(action);
-      continue;
-    }
-
-    const sheet = action.sheetName ?? context.activeSheet;
-    if (!knownSheets.has(sheet)) {
-      invalid.push(action);
-      errors.push(`Action "${action.type}" references unknown sheet "${sheet}"`);
-    } else {
-      valid.push(action);
-    }
-  }
-
-  return { valid, invalid, errors };
 }
 
 @Injectable()

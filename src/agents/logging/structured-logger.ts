@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { AgentLogEvent } from '../types/log.types';
+import { AgentLogEvent, DomainToolLog, TierDecisionLog } from '../types/log.types';
 
 const SLOW_CALL_MS = 15_000;
 
@@ -13,6 +13,25 @@ export class StructuredLogger {
     if (sanitized.durationMs > SLOW_CALL_MS) {
       this.logger.warn(JSON.stringify({ event: 'agent_slow_call', ...sanitized }));
     }
+  }
+
+  logTierDecision(event: TierDecisionLog): void {
+    const sanitized: TierDecisionLog = {
+      ...event,
+      message: this.redactText(event.message),
+      actionHint: this.redactText(event.actionHint),
+    };
+    this.logger.log(JSON.stringify({ event: 'tier_decision', ...sanitized }));
+  }
+
+  logDomainToolCall(event: DomainToolLog): void {
+    this.logger.log(
+      JSON.stringify({
+        event: 'domain_tool_call',
+        ...event,
+        error: typeof event.error === 'string' ? this.redactText(event.error) : undefined,
+      }),
+    );
   }
 
   debugRawResponse(

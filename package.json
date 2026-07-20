@@ -9,7 +9,8 @@
     "start": "node dist/main.js",
     "start:dev": "concurrently \"npm run build:watch\" \"nodemon --watch src --ext ts --signal SIGINT --exec ts-node src/main.ts\"",
     "test": "jest --runInBand",
-    "test:watch": "jest --watch"
+    "test:watch": "jest --watch",
+    "test:phase-regression": "jest --runInBand --forceExit --coverage=false test/complexity-classifier.spec.ts test/complexity-tiering-flag.spec.ts test/llm-router-complexity.spec.ts test/write-intent-guard.spec.ts test/write-intent-router.spec.ts test/write-route-no-action.error.spec.ts test/tier0-direct.service.spec.ts test/tier1-single-action.service.spec.ts test/tier2-generate-verify.service.spec.ts test/conversation-tier-routing.spec.ts test/conversation.e2e.spec.ts test/mode-guard.util.spec.ts test/mode-plan-only.spec.ts test/mode-selector.e2e.spec.ts test/audit-sourcerefs.spec.ts test/audit-export.spec.ts test/orchestrator.e2e.spec.ts test/formula-validator.service.spec.ts src/domain-tools"
   },
   "keywords": [],
   "author": "",

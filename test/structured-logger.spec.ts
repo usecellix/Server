@@ -22,4 +22,29 @@ describe('StructuredLogger', () => {
     expect(logger.estimateTokens('1234')).toBe(1);
     expect(logger.estimateTokens('12345')).toBe(2);
   });
+
+  it('emits tier_decision events with redacted message', () => {
+    const logger = new StructuredLogger();
+    const logSpy = jest.spyOn(
+      (logger as unknown as { logger: { log: (msg: string) => void } }).logger,
+      'log',
+    );
+
+    logger.logTierDecision({
+      traceId: 'trace-1',
+      message: 'calculate GST api_key=sk-live-1234567890',
+      tier: 2,
+      matchedBy: 'regex',
+      actionHint: 'FORMULA_GEN',
+      llmCallCount: 2,
+      durationMs: 850,
+    });
+
+    expect(logSpy).toHaveBeenCalledTimes(1);
+    const payload = JSON.parse(logSpy.mock.calls[0][0] as string) as Record<string, unknown>;
+    expect(payload.event).toBe('tier_decision');
+    expect(payload.tier).toBe(2);
+    expect(payload.llmCallCount).toBe(2);
+    expect(String(payload.message)).not.toContain('sk-live-1234567890');
+  });
 });

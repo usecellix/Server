@@ -16,13 +16,19 @@ import {
 } from '../schemas/conversation.schema';
 import { endSseResponse, initSseResponse, writeSseEvent } from '../utils/sse.util';
 import { AuditService } from '../../audit/audit.service';
+import {
+  getComplexityTieringMode,
+  resolveExecutableTier,
+} from '../utils/complexity-tiering-flag.util';
 import { ChangeSetService } from '../../audit/change-set.service';
+import { buildWorkbookSourceRefsFromActions } from '../../audit/utils/provenance.util';
 import { classifyIntent, detectAmbiguity } from '../llm/ambiguity-detector';
 import { LLMTier, SheetSnapshot } from '../../types/cellix.types';
 import { OrchestratorService } from '../../agents/orchestrator.service';
 import { SseEmitter } from '../../agents/sse.emitter';
 import { ToolBridgeService } from '../../agents/tool-bridge.service';
 import { buildAgentWorkbookContext } from '../../agents/utils/workbook-context.builder';
+import { WriteRouteNoActionError } from '../errors/write-route-no-action.error';
 import { ConversationEngineService, EngineResponse, LlmRequestError } from './conversation-engine.service';
 import { DataQueryService } from './data-query.service';
 import { FindExportService, FindExportSheetSlice } from './find-export.service';
@@ -35,7 +41,7 @@ import {
   ASK_MODE_READONLY_DIRECTIVE,
   PLAN_MODE_DIRECTIVE,
 } from '../prompt/cellix-system-prompt';
-import { modeIsReadOnly, stripWriteActions } from '../utils/mode-guard.util';
+import { modeIsReadOnly, normalizeAssistantMode, stripWriteActions } from '../utils/mode-guard.util';
 import { PlannerOutput } from '../../agents/types/agent.types';
 import { buildStatusMessage } from '../utils/status-message.util';
 import {
@@ -60,7 +66,13 @@ import { buildEnrichedPromptContext } from '../../formula/enrich-context.util';
 import { FormulaAnalyzer } from '../../formula/formula.analyzer';
 import { SmartDataQueryService } from './smart-data-query.service';
 import { SheetAnalyzerService } from './sheet-analyzer.service';
+import { Tier0DirectService, Tier0Result } from './tier0-direct.service';
+import { Tier1SingleActionService } from './tier1-single-action.service';
+import { Tier2GenerateVerifyService } from './tier2-generate-verify.service';
+import { StructuredLogger } from '../../agents/logging/structured-logger';
 import { WorkbookContext as AgentWorkbookContext } from '../../agents/types/agent.types';
+import { SheetAction } from '../types/sheet-actions.types';
+import { isFindLookupMessage } from '../utils/find-query-parser.util';
 
 const MAX_MESSAGES = 50;
 const CONVERSATION_TTL_MS = Number(process.env.CONVERSATION_TTL_HOURS ?? 168) * 60 * 60 * 1000;
@@ -85,6 +97,10 @@ export class ConversationService {
     private readonly formulaAnalyzer: FormulaAnalyzer,
     private readonly toolBridge: ToolBridgeService,
     private readonly smartDataQuery: SmartDataQueryService,
+    private readonly tier0Direct: Tier0DirectService,
+    private readonly tier1SingleAction: Tier1SingleActionService,
+    private readonly tier2GenerateVerify: Tier2GenerateVerifyService,
+    private readonly structuredLogger: StructuredLogger,
   ) {}
 
   private enrichAgentContext(
@@ -108,7 +124,54 @@ export class ConversationService {
     this.validateRequest(request);
 
     const conversation = await this.getOrCreateConversation(request.conversationId);
-    const activeRequest = await this.applyRefinementContext(request);
+    const activeRequestRaw = await this.applyRefinementContext(request);
+    const activeRequest: ConversationRequestDto = {
+      ...activeRequestRaw,
+      mode: normalizeAssistantMode(activeRequestRaw.mode),
+    };
+    const requestMode = activeRequest.mode ?? 'action';
+    const writeAllowed = requestMode === 'action';
+
+    // Spec 09 item 3: instant shortcut before SheetAnalyzer (no sheet analysis needed).
+    const instantShortcut = this.llmRouter.peekInstantShortcut(activeRequest.message);
+    if (instantShortcut && writeAllowed) {
+      const activeSheetName = this.resolveActiveSheetName(activeRequest);
+      const shortcutActions = routeShortcutAction(activeRequest.message, activeSheetName);
+      if (shortcutActions?.length) {
+        initSseResponse(reply);
+        const conversationId = conversation.conversationId;
+        const emit = (event: string, data: Record<string, unknown>) =>
+          writeSseEvent(reply, event, { ...data, conversationId });
+
+        await this.saveMessage(conversationId, {
+          id: `msg_${Date.now()}`,
+          role: 'user',
+          content: request.message,
+          type: 'command',
+          timestamp: new Date(),
+        });
+
+        this.logger.log(
+          `[${traceId}] Router: route=shortcut confidence=1 (pre-analyze) "Matched instant shortcut regex — no LLM needed"`,
+        );
+        emit('status', { message: 'Working on your request…' });
+
+        await this.emitLocalDecision(
+          conversationId,
+          {
+            kind: 'actions',
+            answer: buildShortcutAnswer(shortcutActions),
+            explanation: 'Matched instant shortcut regex — no LLM needed',
+            actions: shortcutActions,
+          },
+          emit,
+        );
+        endSseResponse(reply);
+        return;
+      }
+      // Regex matched but handler returned null — fall through to full path.
+    }
+
     let analysis = this.sheetAnalyzer.analyze(activeRequest.sheetData);
     const declaredRowCount = this.resolveDeclaredRowCount(activeRequest);
     if (declaredRowCount > analysis.rowCount) {
@@ -156,9 +219,6 @@ export class ConversationService {
       });
 
       const history = await this.getRecentMessages(conversation.conversationId);
-
-      const requestMode = activeRequest.mode;
-      const writeAllowed = requestMode !== 'ask' && requestMode !== 'plan';
 
       const tablePlan = parseTableCreateRequest(request.message);
       const tableActions = buildTableActionsFromMessage(request.message);
@@ -233,13 +293,13 @@ export class ConversationService {
       }
 
       if (routerDecision.route === 'export') {
-        if (activeRequest.mode === 'ask') {
+        if (requestMode === 'ask' || requestMode === 'plan') {
           await this.emitLocalDecision(
             conversationId,
             {
               kind: 'answer',
               answer:
-                'Copying matching rows to a new sheet requires **Action** mode. Switch to Action and send the same request again.',
+                `Copying matching rows to a new sheet requires **Action** mode. Switch to Action and send the same request again.`,
             },
             emit,
           );
@@ -283,49 +343,27 @@ export class ConversationService {
         }
 
         try {
-          if (routerDecision.route === 'write' && writeAllowed) {
-            const richWorkbookContext = resolveWorkbookContext(
+          if (requestMode === 'plan' && routerDecision.route === 'write') {
+            await this.streamPlanOnly(
               routedRequest,
-              analysis,
-              routedRequest.sheetData,
-            );
-            const deleteActions = tryLocalDeleteSheetActions(
-              routedRequest.message,
-              richWorkbookContext,
-            );
-            if (deleteActions?.length) {
-              const sheetNames = deleteActions
-                .map((action) => action.sheetName)
-                .filter(Boolean) as string[];
-              this.logger.log(
-                `Delete sheet (deterministic) trace=${traceId} conversation=${conversationId} sheets=${sheetNames.join(',')}`,
-              );
-              await this.emitLocalDecision(
-                conversationId,
-                {
-                  kind: 'actions',
-                  answer: buildDeleteSheetAnswer(sheetNames),
-                  explanation: 'Removed the requested worksheet tab(s).',
-                  actions: deleteActions,
-                },
-                emit,
-              );
-              endSseResponse(reply);
-              return;
-            }
-
-            await this.streamWithOrchestrator(
-              {
-                ...routedRequest,
-                message: stripSheetMentions(routedRequest.message),
-              },
-              reply,
+              routerDecision,
               conversationId,
               traceId,
+              reply,
               history,
               analysis,
               emit,
-              routerDecision.assumption,
+            );
+          } else if (routerDecision.route === 'write' && writeAllowed) {
+            await this.handleWriteRoute(
+              routedRequest,
+              routerDecision,
+              conversationId,
+              traceId,
+              reply,
+              history,
+              analysis,
+              emit,
             );
           } else {
             await this.streamWithOpenAi(
@@ -367,8 +405,41 @@ export class ConversationService {
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unable to process your request';
       this.logger.error(message, error instanceof Error ? error.stack : undefined);
-      emit('error', { message });
+      if (error instanceof WriteRouteNoActionError) {
+        emit('error', {
+          message: error.message,
+          code: error.code,
+          conversationId: error.conversationId,
+        });
+      } else {
+        emit('error', { message });
+      }
       endSseResponse(reply);
+    }
+  }
+
+  /**
+   * A write-route turn must never terminate as a confident prose answer with
+   * zero actions. Clarifications are allowed; everything else is a bug.
+   */
+  private assertWriteRouteProducedActions(params: {
+    conversationId: string;
+    message: string;
+    actionsLength: number;
+    clarificationsNeeded?: string[];
+  }): void {
+    if (params.actionsLength > 0) {
+      return;
+    }
+
+    this.logger.error('write-route turn terminated without actions', {
+      conversationId: params.conversationId,
+      message: params.message,
+      clarificationsNeeded: params.clarificationsNeeded,
+    });
+
+    if (!params.clarificationsNeeded?.length) {
+      throw new WriteRouteNoActionError(params.conversationId, params.message);
     }
   }
 
@@ -554,14 +625,59 @@ export class ConversationService {
       emit,
     );
 
+    const findPointers = this.resolveFindPointers(
+      request.message,
+      sheetData,
+      analysis,
+      activeSheetName,
+    );
+
     await this.emitLocalDecision(
       conversationId,
       {
         kind: 'answer',
         answer,
+        matches: findPointers.matches,
+        selectCell: findPointers.selectCell,
       },
       emit,
     );
+  }
+
+  /** Deterministic cell targets for find/lookup so the add-in can select/pointer jump. */
+  private resolveFindPointers(
+    message: string,
+    sheetData: unknown[][],
+    _analysis: ReturnType<SheetAnalyzerService['analyze']>,
+    sheetName: string,
+  ): {
+    matches?: ReturnType<DataQueryService['collectMatches']>;
+    selectCell?: { sheetName: string; row: number; col: number };
+  } {
+    if (!isFindLookupMessage(message)) {
+      return {};
+    }
+
+    const sheetAnalysis = this.sheetAnalyzer.analyze(sheetData);
+    const matches = this.dataQuery.collectMatches(
+      message,
+      sheetData,
+      sheetAnalysis,
+      sheetName,
+    );
+    if (!matches.length) {
+      return { matches: [] };
+    }
+
+    const first = matches[0]!;
+    return {
+      matches,
+      selectCell: {
+        sheetName: first.sheetName,
+        row: first.row,
+        col: first.col,
+      },
+    };
   }
 
   /** Read the active sheet's full data, fetching on demand if the payload was compressed. */
@@ -691,11 +807,632 @@ export class ConversationService {
       timestamp: new Date(),
     });
 
+    const matches = decision.kind === 'answer' ? decision.matches : undefined;
+    const selectCell =
+      decision.kind === 'answer'
+        ? decision.selectCell ??
+          (matches?.[0]
+            ? {
+                sheetName: matches[0].sheetName,
+                row: matches[0].row,
+                col: matches[0].col,
+              }
+            : undefined)
+        : undefined;
+
     emit('answer', {
       answer: decision.answer,
-      matches: decision.kind === 'answer' ? decision.matches : undefined,
+      matches,
     });
+    if (matches?.length) {
+      emit('matches', { matches, summary: decision.answer });
+    }
+    if (selectCell) {
+      emit('select_cell', selectCell);
+    }
     emit('conversation_end', { summary: 'Ready for your next message.' });
+    await this.markCompleted(conversationId);
+  }
+
+  /**
+   * Explicit tier dispatch for route=write requests (Tier 0–3).
+   * Tier 3 delegates to streamWithOrchestrator() unchanged.
+   */
+  private async handleWriteRoute(
+    routedRequest: ConversationRequestDto,
+    routerDecision: RouterDecision,
+    conversationId: string,
+    traceId: string,
+    reply: FastifyReply,
+    history: ConversationMessageEntry[],
+    analysis: ReturnType<SheetAnalyzerService['analyze']>,
+    emit: (event: string, data: Record<string, unknown>) => void,
+  ): Promise<void> {
+    const startedAt = Date.now();
+    const outcome = this.resolveInitialWriteOutcome(routerDecision);
+
+    try {
+      const richWorkbookContext = resolveWorkbookContext(
+        routedRequest,
+        analysis,
+        routedRequest.sheetData,
+      );
+      const deleteActions = tryLocalDeleteSheetActions(
+        routedRequest.message,
+        richWorkbookContext,
+      );
+      if (deleteActions?.length) {
+        const sheetNames = deleteActions
+          .map((action) => action.sheetName)
+          .filter(Boolean) as string[];
+        outcome.llmCallCount = 0;
+        this.logger.log(
+          `Delete sheet (deterministic) trace=${traceId} conversation=${conversationId} sheets=${sheetNames.join(',')}`,
+        );
+        await this.emitLocalDecision(
+          conversationId,
+          {
+            kind: 'actions',
+            answer: buildDeleteSheetAnswer(sheetNames),
+            explanation: 'Removed the requested worksheet tab(s).',
+            actions: deleteActions,
+          },
+          emit,
+        );
+        endSseResponse(reply);
+        return;
+      }
+
+      const classifiedTier = (routerDecision.complexity ?? 3) as 0 | 1 | 2 | 3;
+      const tieringMode = getComplexityTieringMode();
+      const complexity = resolveExecutableTier(classifiedTier, tieringMode);
+      const actionHint = routerDecision.actionHint;
+      const agentContext = buildAgentWorkbookContext(
+        richWorkbookContext,
+        routedRequest.sheetData,
+        analysis,
+      );
+
+      if (complexity <= 1) {
+        if (complexity === 0 && actionHint) {
+          const tier0Result = this.tier0Direct.resolve(
+            actionHint,
+            routedRequest.message,
+            agentContext,
+          );
+          if (tier0Result) {
+            outcome.tier = 0;
+            outcome.llmCallCount = 0;
+            this.logger.log(
+              `Tier 0 direct trace=${traceId} conversation=${conversationId} actionHint=${actionHint} actions=${tier0Result.actions.map((a) => a.type).join(',')}`,
+            );
+            await this.streamTier0Result(
+              conversationId,
+              traceId,
+              routedRequest.message,
+              tier0Result,
+              emit,
+            );
+            endSseResponse(reply);
+            return;
+          }
+
+          this.logger.warn(
+            `[${traceId}] Tier 0 downgrade reason=implicit_target actionHint=${actionHint}`,
+          );
+        }
+
+        if (actionHint) {
+          try {
+            const tier1Result = await this.tier1SingleAction.execute(
+              routedRequest.message,
+              actionHint,
+              agentContext,
+            );
+            if (tier1Result.actions.length > 0) {
+              outcome.tier = 1;
+              outcome.llmCallCount = 1;
+              this.logger.log(
+                `Tier 1 single-action trace=${traceId} conversation=${conversationId} actionHint=${actionHint} action=${tier1Result.actions[0].type}`,
+              );
+              await this.streamTier1Result(conversationId, tier1Result, actionHint, emit);
+              endSseResponse(reply);
+              return;
+            }
+          } catch (error) {
+            if (
+              error instanceof Error &&
+              error.message === 'numeric_find_replace_escalation_required'
+            ) {
+              this.logger.warn(
+                `[${traceId}] Tier 1 blocked numeric FIND_REPLACE — falling through to orchestrator`,
+              );
+            } else {
+              throw error;
+            }
+          }
+        }
+      } else if (complexity === 2 && actionHint) {
+        const basePrompt =
+          routedRequest.promptContext ?? richWorkbookContext.prompt_context ?? undefined;
+        const { enrichedContext } = this.enrichAgentContext(agentContext, basePrompt);
+        const tier2Result = await this.tier2GenerateVerify.execute(
+          routedRequest.message,
+          actionHint,
+          enrichedContext,
+          traceId,
+        );
+        outcome.tier = 2;
+        outcome.llmCallCount = 2;
+        await this.streamTier2Result(
+          routedRequest,
+          conversationId,
+          traceId,
+          analysis,
+          richWorkbookContext,
+          enrichedContext,
+          tier2Result,
+          reply,
+          emit,
+        );
+        return;
+      }
+
+      outcome.tier = 3;
+      outcome.llmCallCount = 3;
+      await this.streamWithOrchestrator(
+        {
+          ...routedRequest,
+          message: stripSheetMentions(routedRequest.message),
+        },
+        reply,
+        conversationId,
+        traceId,
+        history,
+        analysis,
+        emit,
+        routerDecision.assumption,
+      );
+    } finally {
+      const classifiedTier = (routerDecision.complexity ?? 3) as 0 | 1 | 2 | 3;
+      const tieringMode = getComplexityTieringMode();
+      this.structuredLogger.logTierDecision({
+        traceId,
+        message: routedRequest.message,
+        tier: outcome.tier,
+        classifiedTier,
+        tieringMode,
+        shadowed: classifiedTier !== outcome.tier,
+        matchedBy: routerDecision.matchedBy ?? 'llm-fallback',
+        actionHint: routerDecision.actionHint ?? '',
+        llmCallCount: outcome.llmCallCount,
+        durationMs: Date.now() - startedAt,
+      });
+    }
+  }
+
+  private resolveInitialWriteOutcome(routerDecision: RouterDecision): {
+    tier: 0 | 1 | 2 | 3;
+    llmCallCount: number;
+  } {
+    const complexity = routerDecision.complexity ?? 3;
+    if (complexity === 0) {
+      return { tier: 0, llmCallCount: 0 };
+    }
+    if (complexity === 1) {
+      return { tier: 1, llmCallCount: 1 };
+    }
+    if (complexity === 2) {
+      return { tier: 2, llmCallCount: 2 };
+    }
+    return { tier: 3, llmCallCount: 3 };
+  }
+
+  /**
+   * Plan mode for write routes: describe or generate proposals without ChangeSet / apply.
+   */
+  private async streamPlanOnly(
+    routedRequest: ConversationRequestDto,
+    routerDecision: RouterDecision,
+    conversationId: string,
+    traceId: string,
+    reply: FastifyReply,
+    history: ConversationMessageEntry[],
+    analysis: ReturnType<SheetAnalyzerService['analyze']>,
+    emit: (event: string, data: Record<string, unknown>) => void,
+  ): Promise<void> {
+    const startedAt = Date.now();
+    const complexity = routerDecision.complexity ?? 3;
+    const actionHint = routerDecision.actionHint ?? '';
+    let llmCallCount = 0;
+
+    emit('status', { message: 'Building a plan without applying changes…' });
+
+    try {
+      const richWorkbookContext = resolveWorkbookContext(
+        routedRequest,
+        analysis,
+        routedRequest.sheetData,
+      );
+      const agentContext = buildAgentWorkbookContext(
+        richWorkbookContext,
+        routedRequest.sheetData,
+        analysis,
+      );
+      const basePrompt =
+        routedRequest.promptContext ?? richWorkbookContext.prompt_context ?? undefined;
+      const { enrichedContext, promptContext } = this.enrichAgentContext(agentContext, basePrompt);
+      const conversationHistory = resolveConversationHistory(routedRequest, history).map(
+        (entry) => ({
+          role: entry.role as 'user' | 'assistant',
+          content: entry.content,
+        }),
+      );
+
+      if (complexity <= 1) {
+        const description = this.describeIntendedAction(
+          routedRequest.message,
+          routerDecision,
+          agentContext,
+        );
+        await this.emitPlanOnly({
+          conversationId,
+          prompt: routedRequest.message,
+          summary: 'Single-step action preview',
+          steps: [{ title: description }],
+          tier: complexity === 0 ? 0 : 1,
+          answer: `Here's what would happen in Action mode:\n\n${description}`,
+          emit,
+        });
+        endSseResponse(reply);
+        return;
+      }
+
+      if (complexity === 2 && actionHint) {
+        llmCallCount = 1;
+        emit('thinking', { message: '🔍 Generating a proposed change (no verification yet)…' });
+        const generateResult = await this.tier2GenerateVerify.generateOnly(
+          routedRequest.message,
+          actionHint,
+          enrichedContext,
+          traceId,
+        );
+        const steps =
+          generateResult.actions.length > 0
+            ? generateResult.actions.map((action) => ({
+                title: this.describeProposedSheetAction(action),
+                detail: actionHint,
+              }))
+            : [{ title: generateResult.answer }];
+
+        await this.emitPlanOnly({
+          conversationId,
+          prompt: routedRequest.message,
+          summary: `Proposed ${actionHint.replace(/_/g, ' ').toLowerCase()}`,
+          steps,
+          proposedActions: generateResult.actions,
+          tier: 2,
+          answer: generateResult.answer,
+          emit,
+        });
+        endSseResponse(reply);
+        return;
+      }
+
+      llmCallCount = 1;
+      emit('thinking', { message: '🧠 Building a step-by-step plan across your workbook…' });
+
+      const plan = await this.orchestrator.planOnly({
+        prompt: routedRequest.message,
+        context: enrichedContext,
+        conversationHistory,
+        promptContext,
+        conversationId,
+        correlationId: traceId,
+      });
+
+      if (plan.clarificationsNeeded.length > 0) {
+        const question = plan.clarificationsNeeded.join(' ');
+        await this.saveMessage(conversationId, {
+          id: `msg_${Date.now()}_assistant`,
+          role: 'assistant',
+          content: `[Clarification needed]: ${question}`,
+          type: 'clarification',
+          timestamp: new Date(),
+        });
+        emit('clarification', { question, suggestions: [], ambiguityScore: 0 });
+        emit('done', { message: 'awaiting_clarification' });
+        endSseResponse(reply);
+        return;
+      }
+
+      const planPayload = this.buildPlanPayload(plan, routedRequest.message, enrichedContext);
+      const answer =
+        planPayload.steps.length > 0
+          ? `Here's a ${planPayload.steps.length}-step plan. Review it, then run it as an action to preview and apply the changes.`
+          : 'I could not break this request into concrete steps. Try rephrasing, or switch to Action mode.';
+
+      await this.emitPlanOnly({
+        conversationId,
+        prompt: routedRequest.message,
+        summary: planPayload.summary,
+        steps: planPayload.steps,
+        affectedSheets: planPayload.affectedSheets,
+        estimatedRows: planPayload.estimatedRows,
+        safestApproach: planPayload.safestApproach,
+        tier: 3,
+        answer,
+        emit,
+      });
+      endSseResponse(reply);
+    } finally {
+      this.structuredLogger.logTierDecision({
+        traceId,
+        message: routedRequest.message,
+        tier: (complexity <= 1 ? complexity : complexity === 2 ? 2 : 3) as 0 | 1 | 2 | 3,
+        matchedBy: routerDecision.matchedBy ?? 'llm-fallback',
+        actionHint: routerDecision.actionHint ?? '',
+        llmCallCount,
+        durationMs: Date.now() - startedAt,
+      });
+    }
+  }
+
+  private describeIntendedAction(
+    message: string,
+    routerDecision: RouterDecision,
+    agentContext: AgentWorkbookContext,
+  ): string {
+    const actionHint = routerDecision.actionHint ?? '';
+    if (routerDecision.complexity === 0 && actionHint) {
+      const tier0Result = this.tier0Direct.resolve(actionHint, message, agentContext);
+      if (tier0Result) {
+        const summary = this.buildTier0Answer(tier0Result.actions);
+        return `${summary} (${actionHint.replace(/_/g, ' ').toLowerCase()})`;
+      }
+    }
+    return this.buildActionHintDescription(message, actionHint);
+  }
+
+  private buildActionHintDescription(message: string, actionHint: string): string {
+    const labels: Record<string, string> = {
+      CELL_FORMAT: 'Apply formatting to the specified cells',
+      FREEZE_PANES: 'Freeze the top row or panes on the active sheet',
+      VISIBILITY_TOGGLE: 'Change row, column, or sheet visibility',
+      ROW_COL_STRUCTURE: 'Insert or delete rows or columns',
+      SORT_OR_FILTER: 'Sort or filter data based on your criteria',
+      FIND_REPLACE: 'Find and replace matching values',
+      CONDITIONAL_FORMAT: 'Apply conditional formatting rules',
+      COPY_FILL: 'Copy formatting or fill values down a column',
+      FORMULA_GEN: 'Generate a formula for the requested calculation',
+      PIVOT_TABLE: 'Create or update a pivot table',
+      CHART: 'Create or update a chart',
+      DUPLICATE_CHECK: 'Identify duplicate values',
+      DATA_VALIDATION: 'Add data validation or dropdown rules',
+      ERROR_FIX: 'Fix formula errors in the affected cells',
+    };
+    const label =
+      labels[actionHint] ??
+      (actionHint
+        ? `Perform a ${actionHint.replace(/_/g, ' ').toLowerCase()} operation`
+        : 'Apply a single change to your workbook');
+    return `${label}: "${this.clipForLog(message, 200)}"`;
+  }
+
+  private describeProposedSheetAction(action: SheetAction): string {
+    if (action.type === 'SET_CELL' && action.row !== undefined && action.col !== undefined) {
+      const col = String.fromCharCode(65 + action.col);
+      return `Set cell ${col}${action.row + 1} to ${action.value ?? ''}`;
+    }
+    if (action.type === 'SET_FORMULA' && action.row !== undefined && action.col !== undefined) {
+      const col = String.fromCharCode(65 + action.col);
+      return `Set formula in ${col}${action.row + 1}${action.formula ? `: ${action.formula}` : ''}`;
+    }
+    if (action.type === 'FORMAT_RANGE') {
+      return 'Apply formatting to the target range';
+    }
+    return action.type.replace(/_/g, ' ').toLowerCase();
+  }
+
+  private async emitPlanOnly(params: {
+    conversationId: string;
+    prompt: string;
+    summary?: string;
+    steps: { title: string; detail?: string }[];
+    proposedActions?: SheetAction[];
+    affectedSheets?: string[];
+    estimatedRows?: number;
+    safestApproach?: string;
+    tier: 0 | 1 | 2 | 3;
+    answer: string;
+    emit: (event: string, data: Record<string, unknown>) => void;
+  }): Promise<void> {
+    await this.saveMessage(params.conversationId, {
+      id: `msg_${Date.now()}_assistant`,
+      role: 'assistant',
+      content: params.answer,
+      type: 'answer',
+      timestamp: new Date(),
+      metadata: params.proposedActions?.length
+        ? { actions: params.proposedActions }
+        : undefined,
+    });
+
+    params.emit('answer', { answer: params.answer, tier: params.tier });
+    params.emit('plan_only', {
+      prompt: params.prompt,
+      summary: params.summary,
+      steps: params.steps,
+      proposedActions: params.proposedActions,
+      affectedSheets: params.affectedSheets ?? [],
+      estimatedRows: params.estimatedRows,
+      safestApproach: params.safestApproach,
+      tier: params.tier,
+    });
+    params.emit('conversation_end', {
+      summary: 'Plan ready — run as action to apply.',
+      tier: params.tier,
+    });
+    await this.markCompleted(params.conversationId);
+  }
+
+  private async streamTier0Result(
+    conversationId: string,
+    traceId: string,
+    message: string,
+    result: Tier0Result,
+    emit: (event: string, data: Record<string, unknown>) => void,
+  ): Promise<void> {
+    const answer = this.buildTier0Answer(result.actions);
+    await this.emitTierActions(
+      conversationId,
+      0,
+      answer,
+      'Tier 0 direct resolution — no LLM calls.',
+      result.actions,
+      emit,
+    );
+    this.logger.debug(`[${traceId}] Tier 0 completed message="${this.clipForLog(message, 120)}"`);
+  }
+
+  private async streamTier1Result(
+    conversationId: string,
+    result: { actions: SheetAction[]; answer: string },
+    actionHint: string,
+    emit: (event: string, data: Record<string, unknown>) => void,
+  ): Promise<void> {
+    await this.emitTierActions(
+      conversationId,
+      1,
+      result.answer,
+      `Tier 1 single-action (${actionHint}) — one LLM call, no verification.`,
+      result.actions,
+      emit,
+    );
+  }
+
+  private async streamTier2Result(
+    request: ConversationRequestDto,
+    conversationId: string,
+    traceId: string,
+    analysis: ReturnType<SheetAnalyzerService['analyze']>,
+    richWorkbookContext: ReturnType<typeof resolveWorkbookContext>,
+    agentContext: AgentWorkbookContext,
+    result: Awaited<ReturnType<Tier2GenerateVerifyService['execute']>>,
+    reply: FastifyReply,
+    emit: (event: string, data: Record<string, unknown>) => void,
+  ): Promise<void> {
+    if (result.actions.length === 0) {
+      this.assertWriteRouteProducedActions({
+        conversationId,
+        message: request.message,
+        actionsLength: 0,
+      });
+    }
+
+    if (!result.verifierPassed) {
+      await this.saveMessage(conversationId, {
+        id: `msg_${Date.now()}_assistant`,
+        role: 'assistant',
+        content: result.answer,
+        type: 'answer',
+        timestamp: new Date(),
+      });
+      emit('answer', { answer: result.answer, tier: 2 });
+      emit('conversation_end', {
+        summary: 'Verification failed.',
+        tier: 2,
+      });
+      await this.markCompleted(conversationId);
+      endSseResponse(reply);
+      return;
+    }
+
+    const actions = this.engine.finalizeActions(
+      result.actions,
+      analysis,
+      richWorkbookContext,
+    );
+
+    this.assertWriteRouteProducedActions({
+      conversationId,
+      message: request.message,
+      actionsLength: actions.length,
+    });
+
+    const changeSet = await this.changeSetService.createPreview({
+      conversationId,
+      traceId,
+      prompt: request.message,
+      context: agentContext,
+      actions,
+      provenance: {
+        sourceRefs: result.sourceRefs,
+        workbookId: agentContext.activeSheetName || 'workbook',
+        activeSheetName: agentContext.activeSheetName,
+      },
+    });
+
+    await this.saveMessage(conversationId, {
+      id: `msg_${Date.now()}_assistant`,
+      role: 'assistant',
+      content: result.answer,
+      type: 'answer',
+      timestamp: new Date(),
+      metadata: { actions, changeSetId: changeSet.changeSetId },
+    });
+
+    emit('answer', { answer: result.answer, tier: 2 });
+    emit('actions', {
+      actions,
+      explanation: 'Tier 2 generate-verify: executed and verified (no Planner).',
+      changeSetId: changeSet.changeSetId,
+      changes: changeSet.changes,
+      tier: 2,
+      durationMs: result.durationMs,
+    });
+    emit('conversation_end', { summary: 'Review changes and accept or reject.', tier: 2 });
+    await this.markCompleted(conversationId);
+    endSseResponse(reply);
+  }
+
+  private buildTier0Answer(actions: SheetAction[]): string {
+    const first = actions[0];
+    if (!first) return 'Done.';
+    if (first.type === 'FORMAT_RANGE') {
+      const format = first.format;
+      if (format?.bold) return 'Applied bold formatting to the requested cells.';
+      if (format?.italic) return 'Applied italic formatting to the requested cells.';
+      if (format?.underline) return 'Applied underline formatting to the requested cells.';
+      return 'Applied formatting to the requested cells.';
+    }
+    return buildShortcutAnswer(actions);
+  }
+
+  private async emitTierActions(
+    conversationId: string,
+    tier: 0 | 1,
+    answer: string,
+    explanation: string,
+    actions: SheetAction[],
+    emit: (event: string, data: Record<string, unknown>) => void,
+  ): Promise<void> {
+    await this.saveMessage(conversationId, {
+      id: `msg_${Date.now()}_assistant`,
+      role: 'assistant',
+      content: answer,
+      type: 'answer',
+      timestamp: new Date(),
+      metadata: { actions },
+    });
+
+    emit('answer', { answer });
+    emit('actions', {
+      actions,
+      explanation,
+      tier,
+    });
+    emit('conversation_end', { summary: 'Changes applied.', tier });
     await this.markCompleted(conversationId);
   }
 
@@ -733,7 +1470,7 @@ export class ConversationService {
     const sseEmitter = new SseEmitter(emit);
 
     try {
-      const rawActions = await this.orchestrator.run(
+      const orchestratorResult = await this.orchestrator.runDetailed(
         {
           prompt: request.message,
           context: enrichedContext,
@@ -746,8 +1483,9 @@ export class ConversationService {
         },
         sseEmitter,
       );
+      const rawActions = orchestratorResult.actions;
 
-      if (rawActions.length === 0) {
+      if (orchestratorResult.clarificationRequested) {
         await this.saveMessage(conversationId, {
           id: `msg_${Date.now()}_assistant`,
           role: 'assistant',
@@ -761,24 +1499,102 @@ export class ConversationService {
         return;
       }
 
-      const actions = this.engine.finalizeActions(rawActions, analysis, richWorkbookContext);
-      actionsCount = actions.length;
+      if (!orchestratorResult.verifierPassed) {
+        if (orchestratorResult.partialProgress && rawActions.length > 0) {
+          const failedReason =
+            orchestratorResult.failedSubtask?.reason ??
+            'A later step could not be completed';
+          const actions = this.engine.finalizeActions(rawActions, analysis, richWorkbookContext);
+          actionsCount = actions.length;
 
-      if (actions.length === 0) {
-        const question =
-          'I understood your request but could not produce valid actions. Can you clarify what to change?';
+          const answer =
+            `I completed **${orchestratorResult.completedSubtasks.length}** step(s) and prepared **${actions.length}** change(s) for preview, ` +
+            `but could not finish the full request: ${failedReason}. ` +
+            `Want me to retry just that step?`;
+
+          const changeSet = await this.changeSetService.createPreview({
+            conversationId,
+            traceId,
+            prompt: request.message,
+            context: enrichedContext,
+            actions,
+            provenance: {
+              sourceRefs: buildWorkbookSourceRefsFromActions(
+                actions,
+                enrichedContext.activeSheetName || 'workbook',
+                enrichedContext.activeSheetName,
+              ),
+              workbookId: enrichedContext.activeSheetName || 'workbook',
+              activeSheetName: enrichedContext.activeSheetName,
+            },
+          });
+
+          await this.saveMessage(conversationId, {
+            id: `msg_${Date.now()}_assistant`,
+            role: 'assistant',
+            content: answer,
+            type: 'answer',
+            timestamp: new Date(),
+            metadata: {
+              actions,
+              changeSetId: changeSet.changeSetId,
+              partialProgress: true,
+              failedSubtask: orchestratorResult.failedSubtask,
+            },
+          });
+
+          emit('answer', { answer });
+          emit('actions', {
+            actions,
+            explanation:
+              'Partial progress: earlier steps succeeded; a later step failed. Review and accept what is ready, or retry the failed step.',
+            changeSetId: changeSet.changeSetId,
+            changes: changeSet.changes,
+            partialProgress: true,
+            failedSubtask: orchestratorResult.failedSubtask,
+          });
+          emit('conversation_end', {
+            summary: 'Partial changes ready — review and accept, or retry the failed step.',
+          });
+          await this.markCompleted(conversationId);
+          endSseResponse(reply);
+          success = true;
+          return;
+        }
+
+        const answer =
+          'I could not complete and verify the full request, so no partial changes were sent to Excel. Please retry or split the request into smaller steps.';
         await this.saveMessage(conversationId, {
           id: `msg_${Date.now()}_assistant`,
           role: 'assistant',
-          content: question,
-          type: 'question',
+          content: answer,
+          type: 'answer',
           timestamp: new Date(),
         });
-        emit('question', { question });
+        emit('answer', { answer });
+        emit('conversation_end', { summary: 'No unverified changes were applied.' });
+        await this.markCompleted(conversationId);
         endSseResponse(reply);
         success = true;
         return;
       }
+
+      if (rawActions.length === 0) {
+        this.assertWriteRouteProducedActions({
+          conversationId,
+          message: request.message,
+          actionsLength: 0,
+        });
+      }
+
+      const actions = this.engine.finalizeActions(rawActions, analysis, richWorkbookContext);
+      actionsCount = actions.length;
+
+      this.assertWriteRouteProducedActions({
+        conversationId,
+        message: request.message,
+        actionsLength: actions.length,
+      });
 
       const answer = `Here are **${actions.length}** change(s) I will apply to your sheet.`;
 
@@ -788,6 +1604,15 @@ export class ConversationService {
         prompt: request.message,
         context: enrichedContext,
         actions,
+        provenance: {
+          sourceRefs: buildWorkbookSourceRefsFromActions(
+            actions,
+            enrichedContext.activeSheetName || 'workbook',
+            enrichedContext.activeSheetName,
+          ),
+          workbookId: enrichedContext.activeSheetName || 'workbook',
+          activeSheetName: enrichedContext.activeSheetName,
+        },
       });
 
       await this.saveMessage(conversationId, {
@@ -819,7 +1644,15 @@ export class ConversationService {
       this.logger.warn(
         `Orchestrator failed trace=${traceId} conversation=${conversationId} durationMs=${Date.now() - startedAt} error="${this.clipForLog(message, 300)}"`,
       );
-      throw error;
+      // End the SSE stream cleanly — do not rethrow. Rethrowing after parallel
+      // LLM aborts can surface as unhandled TypeError("terminated") and crash nodemon.
+      emit('error', {
+        message:
+          error instanceof LlmRequestError
+            ? `AI provider failed (${error.status}): ${message}`
+            : message,
+      });
+      endSseResponse(reply);
     } finally {
       await this.auditService.logLLMCall({
         traceId,
@@ -1400,7 +2233,7 @@ export class ConversationService {
 
     return {
       message: request.message,
-      mode: request.mode ?? 'action',
+      mode: normalizeAssistantMode(request.mode),
       sheetHeaders: headers,
       activeSheet,
       recentHistory,

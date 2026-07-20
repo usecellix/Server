@@ -270,13 +270,32 @@ export class AuditService {
     ];
 
     for (const changeSet of payload.changeSets) {
+      const citationSummary = changeSet.changes
+        .flatMap((c) => c.sourceRefs ?? [])
+        .map((r) => `${r.documentType}:${r.rowOrLine}`)
+        .slice(0, 5)
+        .join('; ');
+      const exceptionSummary = changeSet.changes
+        .flatMap((c) => c.exceptionFlags ?? [])
+        .map((e) => `${e.severity}:${e.code}`)
+        .slice(0, 5)
+        .join('; ');
+      const details = [
+        changeSet.prompt,
+        citationSummary ? `sourceRefs=${citationSummary}` : '',
+        exceptionSummary ? `exceptionFlags=${exceptionSummary}` : '',
+      ]
+        .filter(Boolean)
+        .join(' | ')
+        .replace(/"/g, '""');
+
       lines.push(
         [
           'change_set',
           changeSet.changeSetId,
           changeSet.traceId,
           new Date(changeSet.timestamp).toISOString(),
-          `"${changeSet.prompt.replace(/"/g, '""')}"`,
+          `"${details}"`,
           '',
           '',
           changeSet.status,

@@ -34,6 +34,12 @@ export class CellChangeSchema {
 
   @Prop({ type: Boolean, required: true })
   isHardcoded!: boolean;
+
+  @Prop({ type: [SchemaTypes.Mixed], required: false })
+  sourceRefs?: Record<string, unknown>[];
+
+  @Prop({ type: [SchemaTypes.Mixed], required: false })
+  exceptionFlags?: Record<string, unknown>[];
 }
 
 @Schema({
@@ -80,6 +86,9 @@ export class ChangeSet {
 
   @Prop({ type: Date })
   revertedAt?: Date;
+
+  @Prop({ type: Number, required: false })
+  provenanceConfidence?: number;
 }
 
 export const ChangeSetSchema = SchemaFactory.createForClass(ChangeSet);

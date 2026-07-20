@@ -5,15 +5,14 @@ alwaysApply: true
 
 # CELLIX Backend Core Rule
 
-- Treat `D:\cellix_backend\docs\cellix_technical_guide.md` and `D:\cellix_backend\docs\cellix_backend.md` as source-of-truth design docs.
-- Keep NestJS strictly modular under `src/` (`config`, `database`, `cache`, `queue`, `auth`, `analyse`, `classifier`, `rules-engine`, `llm`, `audit`, `pdf`, `health`).
-- Keep `app.module.ts` as wiring only; avoid business logic in root module.
-- Prefer deterministic-first flow: `intent-classifier -> rules-engine -> model-selector -> llm` for unresolved cases.
-- Preserve named-process semantics in code/logs (e.g., `PROMPT_CAPTURE`, `RANGE_READER`, `RULES_ENGINE`, `AUDIT_LOGGER`).
-- Enforce DTO validation and typed contracts for every external request/response.
-- Enforce fail-fast configuration validation (`@nestjs/config` + schema) for env keys.
-- Treat audit as append-only and traceable (`request -> decision -> patch -> audit entry`).
-- Prefer secure defaults for all APIs: auth guards, throttling, helmet, structured logging.
-- Optimize for cost/perf: cache reusable prompt layers, avoid unnecessary LLM calls, and track token-sensitive paths.
-- Keep compatibility with current project tooling/scripts in `package.json`; do not change package manager without user approval.
-- When adding features, include tests (unit/integration/e2e where relevant) and update docs for new modules/endpoints.
+- Treat `docs/CELLIX_TECHNICAL_DOCUMENTATION.md` (repo root) as the source-of-truth design doc. Legacy drafts under `cellix_backend/docs/` are superseded pointers only.
+- Keep NestJS modular under `src/` (`config`, `database`, `logging`, `excel-ai`, `agents`, `audit`, `formula`, `virtual`, `domain-tools`, `sheets`, `llm`, `health`). `app.module.ts` is wiring only.
+- Prefer deterministic-first routing: LlmRouter shortcuts / Tier 0 → Tier 1 → Tier 2 → Tier 3 (Planner→Executor→Verifier) gated by `ENABLE_COMPLEXITY_TIERING`.
+- Preserve typed SSE conversation contracts (`POST /excel-ai/conversation`) and ChangeSet audit provenance (`sourceRefs` / `exceptionFlags`).
+- Executor output: normalize A1 `range` → indices for FORMAT-class actions; do not loosen `sanitizeAction`'s row/col contract.
+- Enforce DTO validation and fail-fast `@nestjs/config` + Joi for env keys.
+- Treat audit / request / planner logs as append-only and traceable; dual-write file (24h) + Mongo TTL (3d).
+- Prefer secure defaults as features land (auth, throttling, helmet); do not invent secrets in the client.
+- Optimize for cost/perf: complexity tiers, TOON compression, context cache, avoid unnecessary LLM calls.
+- Keep compatibility with current `package.json` scripts (npm); do not change package manager without user approval.
+- When adding features, include tests and update `docs/CELLIX_TECHNICAL_DOCUMENTATION.md` / architecture diagrams for new modules/endpoints.

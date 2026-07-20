@@ -14,7 +14,11 @@ import { FindExportService } from './services/find-export.service';
 import { DataQueryService } from './services/data-query.service';
 import { IntentClassifierService } from './services/intent-classifier.service';
 import { LlmRouterService } from './services/llm-router.service';
+import { SheetAnalyzerService } from './services/sheet-analyzer.service';
 import { SmartDataQueryService } from './services/smart-data-query.service';
+import { Tier0DirectService } from './services/tier0-direct.service';
+import { Tier1SingleActionService } from './services/tier1-single-action.service';
+import { Tier2GenerateVerifyService } from './services/tier2-generate-verify.service';
 
 @Module({
   imports: [
@@ -36,6 +40,9 @@ import { SmartDataQueryService } from './services/smart-data-query.service';
     DataQueryService,
     FindExportService,
     SmartDataQueryService,
+    Tier0DirectService,
+    Tier1SingleActionService,
+    Tier2GenerateVerifyService,
   ],
 })
 export class ExcelAiModule {}

@@ -155,8 +155,8 @@ export class ConversationRequestDto {
   @IsString()
   refinementChangeSetId?: string;
 
-  /** Operational mode selected in the add-in: ask (read-only), action, or plan. */
+  /** Operational mode: ask (read-only), plan (preview only), act/action (default). */
   @IsOptional()
-  @IsIn(['ask', 'action', 'plan'])
-  mode?: AssistantMode;
+  @IsIn(['ask', 'action', 'act', 'plan'])
+  mode?: AssistantMode | 'act';
 }

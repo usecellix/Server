@@ -13,7 +13,7 @@ SET_FORMULA:  { type, row, col, formula, format? }
 ADD_ROW:      { type, data[], format? }
 INSERT_ROW:   { type, row, count?, position?, data?, format? }
 DELETE_ROW:   { type, row }
-INSERT_COLUMN:{ type, col, count?, position? }
+INSERT_COLUMN:{ type, columnName, position: "afterLastColumn" | { afterColumn }, formula? } OR legacy { type, col, count?, position? }
 DELETE_COLUMN:{ type, col }
 FORMAT_RANGE: { type, row, col, rowCount?, colCount?, format }
 WRITE_TABLE:  { type, headers[], rows[][] }
@@ -28,6 +28,7 @@ FILL_DOWN:    { type, col, row, endRow } OR { type, sheetName, sourceRange, targ
 FILL_RIGHT:   { type, row, col, endCol }
 BATCH_SET:    { type, sheetName, operations: [{ address, value?, formula?, format? }] }
 CREATE_TABLE: { type, sheetName, range, tableName, hasHeaders, style? }
+CREATE_CHART: { type, sheetName, sourceSheetName?, sourceRange, chartType, title?, startCell?, endCell? }
 DEFINE_NAMED_RANGE: { type, name, formula, comment? }
 AUTOFIT_COLUMNS: { type, sheetName, columns? }
 ADD_SHEET:    { type, name, position?, copyFrom? }

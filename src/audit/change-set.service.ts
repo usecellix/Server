@@ -13,6 +13,10 @@ import {
 } from './diff.engine';
 import { ChangeSet, ChangeSetDocument } from './schemas/change-set.schema';
 import { CellChange, ChangeSetRecord } from './types/change-set.types';
+import {
+  assertDomainToolProvenance,
+  ProvenanceContext,
+} from './utils/provenance.util';
 
 export interface CreatePreviewInput {
   conversationId: string;
@@ -20,6 +24,8 @@ export interface CreatePreviewInput {
   prompt: string;
   context: WorkbookContext;
   actions: Action[];
+  /** Optional citations / exception flags threaded from Tier 2/3 or domain tools */
+  provenance?: ProvenanceContext;
 }
 
 @Injectable()
@@ -32,10 +38,13 @@ export class ChangeSetService {
   ) {}
 
   async createPreview(input: CreatePreviewInput): Promise<ChangeSetRecord> {
+    assertDomainToolProvenance(input.provenance);
+
     const beforeShadow = buildShadowWorkbook(input.context);
     const beforeState = snapshotBeforeState(beforeShadow);
     const afterShadow = virtualApply(beforeShadow, input.actions);
-    const changes = generateDiff(beforeShadow, afterShadow);
+    const baseChanges = generateDiff(beforeShadow, afterShadow);
+    const changes = this.attachProvenance(baseChanges, input.provenance);
     const changeSetId = randomUUID();
 
     const doc = await this.changeSetModel.create({
@@ -45,13 +54,17 @@ export class ChangeSetService {
       timestamp: new Date(),
       prompt: input.prompt,
       beforeState,
-      changes,
+      changes: changes as unknown as ChangeSetDocument['changes'],
       actions: input.actions as unknown as Record<string, unknown>[],
       status: 'previewed',
+      provenanceConfidence: input.provenance?.confidence,
     });
 
     this.logger.log(
-      `Change set ${changeSetId} previewed: ${changes.length} cell(s) for conversation ${input.conversationId}`,
+      `Change set ${changeSetId} previewed: ${changes.length} cell(s) for conversation ${input.conversationId}` +
+        (input.provenance?.sourceRefs?.length
+          ? ` sourceRefs=${input.provenance.sourceRefs.length}`
+          : ''),
     );
 
     return this.toRecord(doc);
@@ -121,6 +134,24 @@ export class ChangeSetService {
     return docs.map((doc) => this.toRecord(doc));
   }
 
+  private attachProvenance(
+    changes: CellChange[],
+    provenance?: ProvenanceContext,
+  ): CellChange[] {
+    if (!provenance) return changes;
+    const sourceRefs = provenance.sourceRefs;
+    const exceptionFlags = provenance.exceptionFlags;
+    if (!sourceRefs?.length && !exceptionFlags?.length) {
+      return changes;
+    }
+
+    return changes.map((change) => ({
+      ...change,
+      ...(sourceRefs?.length ? { sourceRefs } : {}),
+      ...(exceptionFlags?.length ? { exceptionFlags } : {}),
+    }));
+  }
+
   private toRecord(doc: ChangeSetDocument): ChangeSetRecord {
     return {
       changeSetId: doc.changeSetId,
@@ -134,6 +165,8 @@ export class ChangeSetService {
       status: doc.status as ChangeSetRecord['status'],
       appliedAt: doc.appliedAt,
       revertedAt: doc.revertedAt,
+      provenanceConfidence: (doc as ChangeSetDocument & { provenanceConfidence?: number })
+        .provenanceConfidence,
     };
   }
 }

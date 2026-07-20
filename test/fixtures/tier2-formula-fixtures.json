@@ -1,0 +1,37 @@
+[
+  {
+    "message": "calculate GST at 18% for column D",
+    "actionHint": "FORMULA_GEN",
+    "expectedFormula": "=C2*0.18"
+  },
+  {
+    "message": "add SUMIFS total for Amount where Status is Paid",
+    "actionHint": "FORMULA_GEN",
+    "expectedFormula": "=B2*0.18"
+  },
+  {
+    "message": "create a pivot table by Region",
+    "actionHint": "PIVOT_TABLE",
+    "expectedActionType": "CREATE_TABLE"
+  },
+  {
+    "message": "create a chart from sales data",
+    "actionHint": "CHART",
+    "expectedActionType": "WRITE_TABLE"
+  },
+  {
+    "message": "find duplicate invoice numbers",
+    "actionHint": "DUPLICATE_CHECK",
+    "expectedActionType": "HIGHLIGHT_CELL"
+  },
+  {
+    "message": "add data validation dropdown in column B",
+    "actionHint": "DATA_VALIDATION",
+    "expectedActionType": "BATCH_SET"
+  },
+  {
+    "message": "fix #REF! error in cell G5",
+    "actionHint": "ERROR_FIX",
+    "expectedActionType": "SET_FORMULA"
+  }
+]
