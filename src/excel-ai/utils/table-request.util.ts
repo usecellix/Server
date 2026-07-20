@@ -157,12 +157,19 @@ export function buildNewSheetWithDummyDataActions(message: string): SheetActionP
 
 function extractHeaders(message: string): string[] {
   const patterns = [
+<<<<<<< HEAD
     // "add headers Job Title, Company, … and 3 sample rows"
     /\b(?:add|set|insert|create)\s+headers?\s+(.+?)(?=\s+and\s+\d|\s*,?\s*(?:give|and\s+give|for\s+this)\b|$)/i,
     /\bwith\s+headers?\s+(.+?)(?=\s+and\s+\d|\s*,?\s*(?:give|and\s+give|for\s+this)\b|$)/i,
     /\bheaders?\s*:\s*(.+?)(?=\s+and\s+\d|\s*,?\s*(?:give|for)\b|$)/i,
     /\bheaders?\s+(.+?)(?=\s+and\s+\d|\s*,?\s*(?:give|and\s+give|for\s+this)\b|$)/i,
     /\bcolumns?\s+(?:as\s+)?(.+?)(?=\s+and\s+\d|\s*,?\s*(?:give|for)\b|$)/i,
+=======
+    /\bwith\s+headers?\s+(.+?)(?=\s*,?\s*(?:give|and\s+give|for\s+this)\b|$)/i,
+    /\bheaders?\s*:\s*(.+?)(?=\s*,?\s*(?:give|for)\b|$)/i,
+    /\bcolumns?\s+(?:named|called)\s+(.+?)(?=\s*,?\s*(?:give|for)\b|$)/i,
+    /\bcolumns?\s+(?:as\s+)?(.+?)(?=\s*,?\s*(?:give|for)\b|$)/i,
+>>>>>>> 79b55a729d32439c8865d125c5c4c0c1a20e34a6
   ];
 
   for (const pattern of patterns) {
@@ -181,6 +188,7 @@ function splitHeaderList(raw: string): string[] {
     .trim();
   return trimmed
     .split(/,|\band\b/gi)
+<<<<<<< HEAD
     .map((part) => part.trim().replace(/^["']|["']$/g, ''))
     .filter(
       (part) =>
@@ -189,6 +197,16 @@ function splitHeaderList(raw: string): string[] {
         !/^\d+\s*(rows?|dummy|sample)/i.test(part) &&
         !/^(?:dummy|sample)\s+rows?$/i.test(part),
     );
+=======
+    .map((part) =>
+      part
+        .trim()
+        .replace(/^["']|["']$/g, '')
+        .replace(/^(?:named|called)\s+/i, '')
+        .trim(),
+    )
+    .filter((part) => part.length > 0 && part.length < 40 && !/^\d+\s*(rows?|dummy)/i.test(part));
+>>>>>>> 79b55a729d32439c8865d125c5c4c0c1a20e34a6
 }
 
 function buildDummyRows(headers: string[], rowCount: number): unknown[][] {

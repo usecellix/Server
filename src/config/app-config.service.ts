@@ -76,4 +76,40 @@ export class AppConfigService {
   get hasLlmProvider(): boolean {
     return Boolean(this.openRouterApiKey || this.openAiApiKey);
   }
+
+  get betterAuthSecret(): string | undefined {
+    return this.configService.get<string>('BETTER_AUTH_SECRET');
+  }
+
+  get betterAuthUrl(): string {
+    return this.configService.get<string>('BETTER_AUTH_URL', this.clientOrigin);
+  }
+
+  get clientOrigin(): string {
+    return this.configService.get<string>('CLIENT_ORIGIN', 'https://localhost:3000');
+  }
+
+  get googleClientId(): string | undefined {
+    const value = this.configService.get<string>('GOOGLE_CLIENT_ID', '');
+    return value?.trim() ? value.trim() : undefined;
+  }
+
+  get googleClientSecret(): string | undefined {
+    const value = this.configService.get<string>('GOOGLE_CLIENT_SECRET', '');
+    return value?.trim() ? value.trim() : undefined;
+  }
+
+  get microsoftClientId(): string | undefined {
+    const value = this.configService.get<string>('MICROSOFT_CLIENT_ID', '');
+    return value?.trim() ? value.trim() : undefined;
+  }
+
+  get microsoftClientSecret(): string | undefined {
+    const value = this.configService.get<string>('MICROSOFT_CLIENT_SECRET', '');
+    return value?.trim() ? value.trim() : undefined;
+  }
+
+  get microsoftTenantId(): string {
+    return this.configService.get<string>('MICROSOFT_TENANT_ID', 'common');
+  }
 }

@@ -116,13 +116,21 @@ async function bootstrap(): Promise<void> {
     }),
   );
   app.useGlobalFilters(new HttpExceptionFilter());
+<<<<<<< HEAD
   app.useGlobalInterceptors(
     new RequestResponseCaptureInterceptor(),
     new ResponseEnvelopeInterceptor(app.get(Reflector)),
   );
   app.enableCors();
+=======
+  app.useGlobalInterceptors(new ResponseEnvelopeInterceptor(app.get(Reflector)));
+  app.enableCors({
+    origin: config.clientOrigin,
+    credentials: true,
+  });
+>>>>>>> 79b55a729d32439c8865d125c5c4c0c1a20e34a6
 
-  await app.listen(port);
+  await app.listen(port, '0.0.0.0');
   logger.log(`Server started on http://localhost:${port} [${config.nodeEnv}]`);
 }
 
