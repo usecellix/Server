@@ -77,6 +77,8 @@ export class OpenRouterService {
     temperature?: number;
     maxTokens?: number;
     reasoningEffort?: ReasoningEffort;
+    /** Cap reasoning tokens independently when the provider supports it. */
+    reasoningMaxTokens?: number;
     responseFormat?: 'json_object' | 'text';
   }): Promise<string> {
     const apiKey = this.config.openRouterApiKey;
@@ -116,6 +118,7 @@ export class OpenRouterService {
         temperature: opts.temperature ?? 0.2,
         maxCompletionTokens: completionBudget,
         reasoningEffort: requestedEffort,
+        reasoningMaxTokens: opts.reasoningMaxTokens,
         responseFormat: opts.responseFormat ?? 'json_object',
       });
 
@@ -123,12 +126,15 @@ export class OpenRouterService {
       if (!text.trim()) {
         this.logEmptyCompletion(model, response, 'first attempt');
         // Prefer low over none — gpt-5 family rejects effort=none.
+        // Keep at least the requested budget; bump slightly if it was tiny.
+        const retryBudget = Math.min(Math.max(completionBudget, 1024), 8192);
         response = await this.requestChatCompletion(client, {
           model,
           messages: baseMessages,
           temperature: opts.temperature ?? 0.2,
-          maxCompletionTokens: Math.min(Math.max(completionBudget, 1024), 8192),
+          maxCompletionTokens: retryBudget,
           reasoningEffort: 'low',
+          reasoningMaxTokens: opts.reasoningMaxTokens,
           responseFormat: opts.responseFormat ?? 'json_object',
         });
         text = this.extractCompletionText(response);
@@ -248,6 +254,7 @@ export class OpenRouterService {
       temperature: number;
       maxCompletionTokens: number;
       reasoningEffort: ReasoningEffort;
+      reasoningMaxTokens?: number;
       responseFormat: 'json_object' | 'text';
     },
   ): Promise<ChatCompletionResult> {
@@ -282,9 +289,18 @@ export class OpenRouterService {
       temperature: number;
       maxCompletionTokens: number;
       reasoningEffort: ReasoningEffort;
+      reasoningMaxTokens?: number;
       responseFormat: 'json_object' | 'text';
     },
   ): Promise<ChatCompletionResult> {
+    const reasoning: { effort: ReasoningEffort; max_tokens?: number } = {
+      effort: opts.reasoningEffort,
+    };
+    if (typeof opts.reasoningMaxTokens === 'number' && opts.reasoningMaxTokens > 0) {
+      // OpenRouter / some models accept max_tokens on reasoning to leave room for output.
+      reasoning.max_tokens = opts.reasoningMaxTokens;
+    }
+
     const response = await client.chat.send({
       chatRequest: {
         model: opts.model,
@@ -295,7 +311,8 @@ export class OpenRouterService {
         stream: false,
         temperature: opts.temperature,
         maxCompletionTokens: opts.maxCompletionTokens,
-        reasoning: { effort: opts.reasoningEffort },
+        // SDK typings may omit max_tokens on reasoning — cast for providers that support it.
+        reasoning: reasoning as { effort: ReasoningEffort },
       },
     });
 
@@ -321,11 +338,19 @@ export class OpenRouterService {
   ): void {
     const finishReason = response.choices?.[0]?.finishReason ?? 'unknown';
     const usage = response.usage;
+    const completionTokens = usage?.completionTokens ?? 0;
     const reasoningTokens = usage?.completionTokensDetails?.reasoningTokens ?? 0;
     this.logger.warn(
       `OpenRouter empty content on ${attempt} (model=${model}, finishReason=${finishReason}, ` +
-        `completionTokens=${usage?.completionTokens ?? 0}, reasoningTokens=${reasoningTokens})`,
+        `completionTokens=${completionTokens}, reasoningTokens=${reasoningTokens})`,
     );
+    // Spec 16: full budget spent on reasoning with zero output — alertable production signal.
+    if (completionTokens > 0 && completionTokens === reasoningTokens) {
+      this.logger.error(
+        `ALERT reasoning_token_exhaustion model=${model} attempt=${attempt} ` +
+          `finishReason=${finishReason} completionTokens=${completionTokens} reasoningTokens=${reasoningTokens}`,
+      );
+    }
   }
 
   private extractStatus(error: unknown): number {

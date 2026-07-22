@@ -150,7 +150,6 @@ describe('AgenticLoopService verifier retry', () => {
         feedback: 'All good',
         issues: [],
         subtaskResults: [
-          { subtaskId: 's1', passed: true, feedback: 'OK', issues: [] },
           { subtaskId: 's2', passed: true, feedback: 'Fixed', issues: [] },
         ],
       });
@@ -168,6 +167,79 @@ describe('AgenticLoopService verifier retry', () => {
     expect(result.actions[1]).toEqual(s2ActionFixed);
     expect(executor.execute).toHaveBeenCalledTimes(3);
     expect(verifier.verify).toHaveBeenCalledTimes(2);
+    // Second verify only asks about the failed subtask (s1 is locked).
+    const secondVerifySubtasks = verifier.verify.mock.calls[1][1] as SubTask[];
+    expect(secondVerifySubtasks.map((s) => s.id)).toEqual(['s2']);
+  });
+
+  it('Spec 17: never re-executes s1–s8/s11/s12 when only s9/s10 fail', async () => {
+    const ids = Array.from({ length: 12 }, (_, i) => `s${i + 1}`);
+    const chain: SubTask[] = ids.map((id) => ({
+      id,
+      description:
+        id === 's1'
+          ? "Set label 'Total Purchases' in A1 on Dashboard"
+          : `Dashboard step ${id}`,
+      targetSheet: 'Dashboard',
+      dependsOn: [],
+      estimatedActions: 1,
+    }));
+
+    const actionFor = (id: string): Action =>
+      ({ type: 'SET_CELL', sheetName: 'Dashboard', row: 0, col: 0, value: id }) as Action;
+
+    executor.execute.mockImplementation(async (subtask: SubTask) => ({
+      subtaskId: subtask.id,
+      actions: [actionFor(subtask.id)],
+      isDone: true,
+    }));
+
+    verifier.verify
+      .mockResolvedValueOnce({
+        passed: false,
+        feedback: 's9 and s10 failed',
+        issues: [],
+        subtaskResults: ids.map((id) => ({
+          subtaskId: id,
+          passed: id !== 's9' && id !== 's10',
+          feedback: id === 's9' || id === 's10' ? 'Broken' : 'OK',
+          issues: [],
+        })),
+      })
+      .mockResolvedValueOnce({
+        passed: true,
+        feedback: 'Fixed',
+        issues: [],
+        subtaskResults: [
+          { subtaskId: 's9', passed: true, feedback: 'Fixed', issues: [] },
+          { subtaskId: 's10', passed: true, feedback: 'Fixed', issues: [] },
+        ],
+      });
+
+    const result = await service.run(
+      'In dashboard create a chart, and analysis for purchase register a summary for purchase register',
+      chain,
+      baseContext,
+      new SseEmitter(emit),
+    );
+
+    expect(result.verifierPassed).toBe(true);
+
+    const executedIds = executor.execute.mock.calls.map((call) => (call[0] as SubTask).id);
+    const neverRetry = ['s1', 's2', 's3', 's4', 's5', 's6', 's7', 's8', 's11', 's12'];
+    for (const id of neverRetry) {
+      expect(executedIds.filter((x) => x === id)).toHaveLength(1);
+    }
+    expect(executedIds.filter((x) => x === 's9')).toHaveLength(2);
+    expect(executedIds.filter((x) => x === 's10')).toHaveLength(2);
+    expect(executor.execute).toHaveBeenCalledTimes(14);
+
+    const secondVerifyIds = (verifier.verify.mock.calls[1][1] as SubTask[]).map((s) => s.id);
+    expect(secondVerifyIds).toEqual(['s9', 's10']);
+
+    for (const id of neverRetry) {
+      expect(result.actions.some((a) => (a as { value?: string }).value === id)).toBe(true);
+    }
   });
 
   it('does not wipe all actions when LLM verifier fails', async () => {

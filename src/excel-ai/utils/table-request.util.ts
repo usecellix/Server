@@ -1,4 +1,9 @@
 import { SheetActionPayload } from '../types/sheet-actions.types';
+import {
+  detectCompoundSheetFollowUp,
+  extractSheetNameFromPrompt,
+  sanitizeExcelSheetName,
+} from './sheet-name.util';
 
 export interface TablePlan {
   headers: string[];
@@ -27,6 +32,7 @@ export function detectCreateNewSheetIntent(message: string): boolean {
 /** Prompts that need LLM planning (data, copy, sort, etc.) — not empty-sheet-only. */
 export function detectSheetDataGenerationIntent(message: string): boolean {
   const lower = message.toLowerCase();
+  if (detectCompoundSheetFollowUp(message)) return true;
   if (/\b(as\s+a\s+copy|copy\s+of|duplicate|clone)\b/i.test(message)) return true;
   if (
     /\bsort(?:\s+the\s+values?\s+of|\s+(?:the\s+)?(?:sheet\s+)?(?:based\s+on|by|on)|\s+based\s+on|\s+by|\s+on|\s+column\b)/i.test(
@@ -44,6 +50,8 @@ export function detectSheetDataGenerationIntent(message: string): boolean {
   const hasCreateKeyword = /\b(create|add|generate|populate|fill|make|build|give|insert)\b/i.test(
     lower,
   );
+
+  if (/\bchart\b/i.test(message) && /\banaly(?:sis|ze|se)\b/i.test(message)) return true;
 
   return hasDataKeyword && hasCreateKeyword;
 }
@@ -103,16 +111,7 @@ function extractRowCount(message: string): number | null {
   return null;
 }
 
-/** Extract sheet name from "named Cellix" or `named "Cellix"`. */
-export function extractSheetNameFromPrompt(message: string): string | null {
-  const quoted = /(?:named|called)\s+["']([^"']+)["']/i.exec(message)?.[1];
-  if (quoted?.trim()) return quoted.trim();
-
-  const unquoted = /(?:named|called)\s+([A-Za-z][A-Za-z0-9 _-]*?)(?:\s+with|\s*$)/i.exec(message)?.[1];
-  if (unquoted?.trim()) return unquoted.trim();
-
-  return null;
-}
+export { extractSheetNameFromPrompt } from './sheet-name.util';
 
 /**
  * "Create a new sheet named Cellix with 5 dummy values" → empty sheet + WRITE_TABLE.
@@ -127,7 +126,7 @@ export function parseNewSheetWithDummyData(message: string): {
   if (!/\b(dummy|sample|values?|data|row)\b/i.test(lower)) return null;
 
   const explicitName = extractSheetNameFromPrompt(message);
-  const sheetName = explicitName ?? 'New Sheet';
+  const sheetName = sanitizeExcelSheetName(explicitName ?? 'New Sheet');
 
   let headers = extractHeaders(message);
   if (headers.length < 2) {
@@ -145,7 +144,7 @@ export function buildNewSheetWithDummyDataActions(message: string): SheetActionP
   if (!plan) return null;
 
   return [
-    { type: 'ADD_SHEET', name: plan.sheetName },
+    { type: 'ADD_SHEET', name: sanitizeExcelSheetName(plan.sheetName) },
     {
       type: 'WRITE_TABLE',
       sheetName: plan.sheetName,
@@ -157,19 +156,13 @@ export function buildNewSheetWithDummyDataActions(message: string): SheetActionP
 
 function extractHeaders(message: string): string[] {
   const patterns = [
-<<<<<<< HEAD
     // "add headers Job Title, Company, … and 3 sample rows"
     /\b(?:add|set|insert|create)\s+headers?\s+(.+?)(?=\s+and\s+\d|\s*,?\s*(?:give|and\s+give|for\s+this)\b|$)/i,
     /\bwith\s+headers?\s+(.+?)(?=\s+and\s+\d|\s*,?\s*(?:give|and\s+give|for\s+this)\b|$)/i,
     /\bheaders?\s*:\s*(.+?)(?=\s+and\s+\d|\s*,?\s*(?:give|for)\b|$)/i,
     /\bheaders?\s+(.+?)(?=\s+and\s+\d|\s*,?\s*(?:give|and\s+give|for\s+this)\b|$)/i,
+    /\bcolumns?\s+(?:named|called)\s+(.+?)(?=\s+and\s+\d|\s*,?\s*(?:give|for)\b|$)/i,
     /\bcolumns?\s+(?:as\s+)?(.+?)(?=\s+and\s+\d|\s*,?\s*(?:give|for)\b|$)/i,
-=======
-    /\bwith\s+headers?\s+(.+?)(?=\s*,?\s*(?:give|and\s+give|for\s+this)\b|$)/i,
-    /\bheaders?\s*:\s*(.+?)(?=\s*,?\s*(?:give|for)\b|$)/i,
-    /\bcolumns?\s+(?:named|called)\s+(.+?)(?=\s*,?\s*(?:give|for)\b|$)/i,
-    /\bcolumns?\s+(?:as\s+)?(.+?)(?=\s*,?\s*(?:give|for)\b|$)/i,
->>>>>>> 79b55a729d32439c8865d125c5c4c0c1a20e34a6
   ];
 
   for (const pattern of patterns) {
@@ -188,16 +181,6 @@ function splitHeaderList(raw: string): string[] {
     .trim();
   return trimmed
     .split(/,|\band\b/gi)
-<<<<<<< HEAD
-    .map((part) => part.trim().replace(/^["']|["']$/g, ''))
-    .filter(
-      (part) =>
-        part.length > 0 &&
-        part.length < 40 &&
-        !/^\d+\s*(rows?|dummy|sample)/i.test(part) &&
-        !/^(?:dummy|sample)\s+rows?$/i.test(part),
-    );
-=======
     .map((part) =>
       part
         .trim()
@@ -205,8 +188,13 @@ function splitHeaderList(raw: string): string[] {
         .replace(/^(?:named|called)\s+/i, '')
         .trim(),
     )
-    .filter((part) => part.length > 0 && part.length < 40 && !/^\d+\s*(rows?|dummy)/i.test(part));
->>>>>>> 79b55a729d32439c8865d125c5c4c0c1a20e34a6
+    .filter(
+      (part) =>
+        part.length > 0 &&
+        part.length < 40 &&
+        !/^\d+\s*(rows?|dummy|sample)/i.test(part) &&
+        !/^(?:dummy|sample)\s+rows?$/i.test(part),
+    );
 }
 
 function buildDummyRows(headers: string[], rowCount: number): unknown[][] {

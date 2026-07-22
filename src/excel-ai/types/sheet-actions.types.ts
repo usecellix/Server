@@ -183,6 +183,7 @@ export interface SheetActionPayload {
   mode?: 'copy' | 'move';
   /** AGGREGATE_TABLE */
   groupByColumn?: string;
+  groupByTransform?: 'none' | 'month' | 'year' | 'monthYear' | 'weekday' | 'quarter';
   aggregations?: Array<{
     column: string;
     fn: 'sum' | 'count' | 'average' | 'max' | 'min';
@@ -192,7 +193,7 @@ export interface SheetActionPayload {
   topN?: number;
   /** CREATE_CHART / UPDATE_CHART */
   destCell?: string;
-  colorScheme?: 'default' | 'blue' | 'grey' | 'blueGrey';
+  colorScheme?: 'default' | 'blue' | 'grey' | 'blueGrey' | 'green' | 'red' | 'orange' | 'purple' | 'yellow';
   chartId?: string;
   /**
    * When true, allow writing over non-empty cells.

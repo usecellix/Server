@@ -4,9 +4,18 @@ import { truncateForPlannerLog } from '../common/logging/planner-file-logger.uti
 import { AppConfigService } from '../config/app-config.service';
 import { PLANNER_RULES_ADDITION } from '../excel-ai/prompt/cellix-system-prompt';
 import { OpenRouterService } from '../excel-ai/services/openrouter.service';
+import {
+  PLANNER_EXHAUSTED_USER_MESSAGE,
+  PlannerExhaustedError,
+} from './errors';
 import { PLANNER_SYSTEM_PROMPT, buildPlannerUserMessage } from './prompts/planner.prompt';
 import { parseAgentJson } from './utils/parse-agent-json.util';
 import { buildCompoundFallbackSubtasks } from './utils/compound-action.util';
+import {
+  PLANNER_LAST_RESORT_MAX_TOKENS,
+  PLANNER_REASONING_MAX_TOKENS,
+  resolvePlannerMaxTokens,
+} from './utils/planner-token-budget.util';
 import { PlannerOutput, SubTask, WorkbookContext } from './types/agent.types';
 import { StructuredLogger } from './logging/structured-logger';
 
@@ -31,6 +40,7 @@ export class PlannerAgent {
     promptContext?: string,
     correlationId = `req_${Date.now()}`,
     routerAssumption?: string,
+    complexity?: 0 | 1 | 2 | 3,
   ): Promise<PlannerOutput> {
     const startedAt = Date.now();
     const model = this.config.openRouterModelHigh;
@@ -40,26 +50,48 @@ export class PlannerAgent {
       userMessage = `[Router assumption: ${routerAssumption}]\n\n${userMessage}`;
     }
 
-    let raw = await this.llm.complete({
+    const maxTokens = resolvePlannerMaxTokens(complexity);
+    const completeOpts = {
       systemPrompt,
-      userMessage,
       model,
+      maxTokens,
+      reasoningEffort: 'low' as const,
+      reasoningMaxTokens: PLANNER_REASONING_MAX_TOKENS,
+    };
+
+    let raw = await this.llm.complete({
+      ...completeOpts,
+      userMessage,
       temperature: 0.2,
-      maxTokens: 1000,
     });
     this.structuredLogger.debugRawResponse(correlationId, 'planner', model, raw);
 
     let retried = false;
+    let lastResort = false;
     let parsed = this.tryParsePlanner(raw, correlationId, model);
     if (!parsed) {
       retried = true;
       this.logger.warn(`Planner JSON parse failed — retrying once. Raw snippet: ${this.clip(raw)}`);
       raw = await this.llm.complete({
-        systemPrompt,
+        ...completeOpts,
         userMessage: userMessage + JSON_RETRY_SUFFIX,
-        model,
         temperature: 0.1,
-        maxTokens: 1000,
+      });
+      this.structuredLogger.debugRawResponse(correlationId, 'planner', model, raw);
+      parsed = this.tryParsePlanner(raw, correlationId, model);
+    }
+
+    if (!parsed) {
+      lastResort = true;
+      this.logger.warn(
+        `Planner still empty/unparseable — last-resort retry with maxTokens=${PLANNER_LAST_RESORT_MAX_TOKENS}`,
+      );
+      raw = await this.llm.complete({
+        ...completeOpts,
+        userMessage: userMessage + JSON_RETRY_SUFFIX,
+        temperature: 0.1,
+        maxTokens: PLANNER_LAST_RESORT_MAX_TOKENS,
+        reasoningMaxTokens: Math.min(PLANNER_REASONING_MAX_TOKENS, 768),
       });
       this.structuredLogger.debugRawResponse(correlationId, 'planner', model, raw);
       parsed = this.tryParsePlanner(raw, correlationId, model);
@@ -94,15 +126,52 @@ export class PlannerAgent {
         raw,
         parsed,
         fallback: false,
-        retried,
+        retried: retried || lastResort,
       });
       return parsed;
     }
 
-    this.logger.warn(
-      `Planner returned invalid JSON after retry — using fallback plan. Raw snippet: ${this.clip(raw)}`,
+    // Prefer useful structured fallbacks (empty sheet clarify / create+sort) over a stub.
+    const usefulFallback = this.tryUsefulFallbackPlan(prompt, context);
+    if (usefulFallback) {
+      this.logger.warn(
+        `Planner JSON failed after retries — using structured fallback (${usefulFallback.reasoning}). Raw snippet: ${this.clip(raw)}`,
+      );
+      this.structuredLogger.logAgentEvent({
+        correlationId,
+        agent: 'planner',
+        model,
+        durationMs: Date.now() - startedAt,
+        success: false,
+        tokenUsage: this.structuredLogger.estimateTokens(raw),
+        rawResponse: raw,
+        parsedResponse: usefulFallback,
+        error: 'Planner JSON parse failed after retry — structured fallback',
+      });
+      this.writePlannerFileLog({
+        correlationId,
+        model,
+        durationMs: Date.now() - startedAt,
+        success: false,
+        error: 'Planner JSON parse failed after retry — structured fallback',
+        prompt,
+        context,
+        history,
+        promptContext,
+        routerAssumption,
+        userMessage,
+        systemPrompt,
+        raw,
+        parsed: usefulFallback,
+        fallback: true,
+        retried: true,
+      });
+      return usefulFallback;
+    }
+
+    this.logger.error(
+      `Planner exhausted after retries — refusing stub plan. Raw snippet: ${this.clip(raw)}`,
     );
-    const fallback = this.buildFallbackPlan(prompt, context);
     this.structuredLogger.logAgentEvent({
       correlationId,
       agent: 'planner',
@@ -111,15 +180,14 @@ export class PlannerAgent {
       success: false,
       tokenUsage: this.structuredLogger.estimateTokens(raw),
       rawResponse: raw,
-      parsedResponse: fallback,
-      error: 'Planner JSON parse failed after retry',
+      error: 'PlannerExhaustedError',
     });
     this.writePlannerFileLog({
       correlationId,
       model,
       durationMs: Date.now() - startedAt,
       success: false,
-      error: 'Planner JSON parse failed after retry',
+      error: 'PlannerExhaustedError',
       prompt,
       context,
       history,
@@ -128,11 +196,19 @@ export class PlannerAgent {
       userMessage,
       systemPrompt,
       raw,
-      parsed: fallback,
-      fallback: true,
-      retried,
+      parsed: {
+        subtasks: [],
+        clarificationsNeeded: [],
+        confidence: 'low',
+        reasoning: 'PlannerExhaustedError',
+      },
+      fallback: false,
+      retried: true,
     });
-    return fallback;
+
+    throw new PlannerExhaustedError(PLANNER_EXHAUSTED_USER_MESSAGE, {
+      originalMessage: prompt,
+    });
   }
 
   private writePlannerFileLog(args: {
@@ -249,7 +325,11 @@ export class PlannerAgent {
     return this.normalizePlannerOutput(parsed);
   }
 
-  private buildFallbackPlan(prompt: string, context: WorkbookContext): PlannerOutput {
+  /**
+   * Only return fallbacks that are useful structured plans — never a single
+   * subtask whose description is the raw user message.
+   */
+  private tryUsefulFallbackPlan(prompt: string, context: WorkbookContext): PlannerOutput | null {
     const activeSheet = context.activeSheetName || 'Sheet1';
     const sheet = context.sheets.find((s) => s.name === activeSheet);
     const hasValues = sheet?.values.some((row) =>
@@ -281,20 +361,7 @@ export class PlannerAgent {
       };
     }
 
-    return {
-      subtasks: [
-        {
-          id: 's1',
-          description: prompt,
-          targetSheet: activeSheet,
-          dependsOn: [],
-          estimatedActions: 3,
-        },
-      ],
-      clarificationsNeeded: [],
-      confidence: 'low',
-      reasoning: 'Fallback single-step plan — planner JSON was not parseable',
-    };
+    return null;
   }
 
   private clip(value: string, max = 400): string {

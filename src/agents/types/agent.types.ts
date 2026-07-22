@@ -22,6 +22,22 @@ export interface WorkbookContext {
   verifierIssues?: VerifierIssue[];
   formulaValidationFeedback?: string;
   formulaValidationIssues?: FormulaValidationIssue[];
+  /**
+   * Spec 18 — structured prior CREATE_CHART / AGGREGATE_TABLE records for
+   * follow-ups like "along with the current".
+   */
+  priorTurnActions?: Array<{
+    actionType: string;
+    sheetName: string;
+    sourceRange?: string;
+    sourceSheetName?: string;
+    destStartCell?: string;
+    destSheet?: string;
+    chartId?: string;
+    chartType?: string;
+    groupByColumn?: string;
+  }>;
+  priorTurnActionsSummary?: string;
 }
 
 export interface SheetContext {
@@ -78,6 +94,11 @@ export interface VerifierSubtaskResult {
   passed: boolean;
   feedback: string;
   issues: VerifierIssue[];
+  /**
+   * True when the verifier response was truncated before this subtask —
+   * needs re-verification only, not re-execution of a prior pass.
+   */
+  inconclusive?: boolean;
 }
 
 export interface VerifierOutput {
@@ -99,4 +120,6 @@ export interface AgentRunOptions {
   correlationId?: string;
   toolEmit?: (event: string, data: Record<string, unknown>) => void;
   routerAssumption?: string;
+  /** Router complexity tier (0–3) — keys Planner max_tokens budget. */
+  complexity?: 0 | 1 | 2 | 3;
 }

@@ -66,12 +66,14 @@ CREATE_CHART schema:
 - Always set chartId so follow-up UPDATE_CHART can target it.
 
 UPDATE_CHART schema (edit an existing chart by chartId from a prior CREATE_CHART):
-{ "type": "UPDATE_CHART", "sheetName": "Dashboard", "chartId": "Chart_topSuppliers", "chartType": "BarClustered", "colorScheme": "blue" }
+{ "type": "UPDATE_CHART", "sheetName": "Dashboard", "chartId": "Chart_topSuppliers", "chartType": "BarClustered", "colorScheme": "green" }
+- colorScheme: default | blue | grey | blueGrey | green | red | orange | purple | yellow
 
 AGGREGATE_TABLE schema (group-by aggregate in Office.js — never SET_CELL each row):
 { "type": "AGGREGATE_TABLE", "sourceSheet": "Purchase Register", "sourceRange": "A1:L200", "groupByColumn": "Supplier", "aggregations": [{ "column": "Total Amount", "fn": "sum", "outputLabel": "Total Spend" }], "sortBy": { "column": "Total Spend", "direction": "desc" }, "topN": 5, "destSheet": "Dashboard", "destStartCell": "A4", "hasHeaders": true }
 - fn: sum | count | average | max | min
-- Use for "top N by spend", dashboard summary tables, chart source data
+- groupByTransform (optional): none | month | year | monthYear | weekday | quarter — when grouping by a date column use e.g. "groupByColumn":"Date","groupByTransform":"month". Office.js computes the key; do NOT invent a helper column or call get_range_data.
+- Use for "top N by spend", dashboard summary tables, chart source data, monthly rollups
 
 INSERT_COLUMN schema (add a NEW named column — NEVER guess a column index and SET_CELL/SET_FORMULA into it):
 { "type": "INSERT_COLUMN", "sheetName": "Purchase Register", "columnName": "Net of Tax", "position": "afterLastColumn", "formula": "=J{row}-I{row}" }
@@ -145,6 +147,9 @@ export function buildExecutorUserMessage(
       : '',
     context.formulaValidationFeedback
       ? `Formula validator feedback: ${context.formulaValidationFeedback}\nFormula issues: ${JSON.stringify(context.formulaValidationIssues ?? [])}`
+      : '',
+    context.priorTurnActionsSummary
+      ? context.priorTurnActionsSummary
       : '',
   ]
     .filter(Boolean)

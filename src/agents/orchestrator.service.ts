@@ -28,8 +28,15 @@ export class OrchestratorService {
    * executing any actions against the workbook.
    */
   async planOnly(opts: AgentRunOptions): Promise<PlannerOutput> {
-    const { prompt, context, conversationHistory = [], promptContext, correlationId, routerAssumption } =
-      opts;
+    const {
+      prompt,
+      context,
+      conversationHistory = [],
+      promptContext,
+      correlationId,
+      routerAssumption,
+      complexity,
+    } = opts;
     const resolvedCorrelationId = this.resolveCorrelationId(correlationId);
     return this.planner.plan(
       prompt,
@@ -38,6 +45,7 @@ export class OrchestratorService {
       promptContext,
       resolvedCorrelationId,
       routerAssumption,
+      complexity,
     );
   }
 
@@ -59,6 +67,7 @@ export class OrchestratorService {
       correlationId,
       toolEmit,
       routerAssumption,
+      complexity,
     } = opts;
     const resolvedCorrelationId = this.resolveCorrelationId(correlationId);
 
@@ -70,6 +79,7 @@ export class OrchestratorService {
       promptContext,
       resolvedCorrelationId,
       routerAssumption,
+      complexity,
     );
 
     if (plan.clarificationsNeeded.length > 0) {

@@ -51,4 +51,29 @@ describe('buildAggregateTable', () => {
       }),
     ).toThrow(/not found/);
   });
+
+  it('groups by month transform from a date column', () => {
+    const dated = [
+      ['Date', 'Amount'],
+      ['2024-01-15', 10],
+      ['2024-01-20', 5],
+      ['2024-02-01', 20],
+      ['2024-03-10', 7],
+    ];
+    const table = buildAggregateTable({
+      rows: dated,
+      hasHeaders: true,
+      groupByColumn: 'Date',
+      groupByTransform: 'month',
+      aggregations: [{ column: 'Amount', fn: 'sum', outputLabel: 'Total' }],
+    });
+
+    expect(table[0]).toEqual(['Month', 'Total']);
+    const jan = table.find((r) => r[0] === 'Jan');
+    const feb = table.find((r) => r[0] === 'Feb');
+    const mar = table.find((r) => r[0] === 'Mar');
+    expect(jan?.[1]).toBe(15);
+    expect(feb?.[1]).toBe(20);
+    expect(mar?.[1]).toBe(7);
+  });
 });

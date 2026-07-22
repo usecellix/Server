@@ -62,6 +62,12 @@ import {
   resolveWorkbookContext,
 } from '../utils/workbook-context-resolver.util';
 import { buildRefinementContext } from '../utils/refinement-context.util';
+import {
+  collectRecentTurnActionRecords,
+  extractTurnActionRecords,
+  formatTurnActionRecordsForExecutor,
+  referencesPriorChartOrTable,
+} from '../utils/turn-action-history.util';
 import { buildEnrichedPromptContext } from '../../formula/enrich-context.util';
 import { FormulaAnalyzer } from '../../formula/formula.analyzer';
 import { SmartDataQueryService } from './smart-data-query.service';
@@ -73,6 +79,11 @@ import { StructuredLogger } from '../../agents/logging/structured-logger';
 import { WorkbookContext as AgentWorkbookContext } from '../../agents/types/agent.types';
 import { SheetAction } from '../types/sheet-actions.types';
 import { isFindLookupMessage } from '../utils/find-query-parser.util';
+import {
+  buildInternalDetails,
+  buildUserFacingSummary,
+  tierProcessingLabel,
+} from '../utils/user-facing-response.util';
 
 const MAX_MESSAGES = 50;
 const CONVERSATION_TTL_MS = Number(process.env.CONVERSATION_TTL_HOURS ?? 168) * 60 * 60 * 1000;
@@ -106,14 +117,46 @@ export class ConversationService {
   private enrichAgentContext(
     context: AgentWorkbookContext,
     basePromptContext?: string,
+    history?: ConversationMessageEntry[],
+    userMessage?: string,
   ): { enrichedContext: AgentWorkbookContext; promptContext: string } {
     const enrichedSheets = context.sheets.map((sheet) => ({
       ...sheet,
       formulaInsights: this.formulaAnalyzer.analyzeSheet(sheet),
     }));
-    const enrichedContext: AgentWorkbookContext = { ...context, sheets: enrichedSheets };
+    let enrichedContext: AgentWorkbookContext = { ...context, sheets: enrichedSheets };
+
+    if (history?.length) {
+      const priorTurnActions = collectRecentTurnActionRecords(history);
+      if (priorTurnActions.length > 0) {
+        const summary = formatTurnActionRecordsForExecutor(priorTurnActions);
+        enrichedContext = {
+          ...enrichedContext,
+          priorTurnActions,
+          priorTurnActionsSummary:
+            userMessage && referencesPriorChartOrTable(userMessage)
+              ? `${summary}\nThis follow-up references prior chart/table context — reuse the sourceRange/chartId above for "the current" / "same data"; do not invent a different range.`
+              : summary,
+        };
+      }
+    }
+
     const promptContext = buildEnrichedPromptContext(basePromptContext, enrichedSheets);
     return { enrichedContext, promptContext };
+  }
+
+  private buildWriteMetadata(
+    actions: SheetAction[],
+    changeSetId?: string,
+    extra?: ConversationMessageEntry['metadata'],
+  ): ConversationMessageEntry['metadata'] {
+    const turnActionRecords = extractTurnActionRecords(actions);
+    return {
+      actions,
+      ...(changeSetId ? { changeSetId } : {}),
+      ...(turnActionRecords.length > 0 ? { turnActionRecords } : {}),
+      ...extra,
+    };
   }
 
   async handleConversation(
@@ -786,7 +829,7 @@ export class ConversationService {
         content: decision.answer,
         type: 'answer',
         timestamp: new Date(),
-        metadata: { actions: decision.actions },
+        metadata: this.buildWriteMetadata(decision.actions),
       });
 
       emit('answer', { answer: decision.answer });
@@ -911,6 +954,8 @@ export class ConversationService {
               traceId,
               routedRequest.message,
               tier0Result,
+              agentContext,
+              routerDecision.assumption,
               emit,
             );
             endSseResponse(reply);
@@ -935,7 +980,16 @@ export class ConversationService {
               this.logger.log(
                 `Tier 1 single-action trace=${traceId} conversation=${conversationId} actionHint=${actionHint} action=${tier1Result.actions[0].type}`,
               );
-              await this.streamTier1Result(conversationId, tier1Result, actionHint, emit);
+              await this.streamTier1Result(
+                conversationId,
+                traceId,
+                routedRequest.message,
+                tier1Result,
+                actionHint,
+                agentContext,
+                routerDecision.assumption,
+                emit,
+              );
               endSseResponse(reply);
               return;
             }
@@ -955,15 +1009,26 @@ export class ConversationService {
       } else if (complexity === 2 && actionHint) {
         const basePrompt =
           routedRequest.promptContext ?? richWorkbookContext.prompt_context ?? undefined;
-        const { enrichedContext } = this.enrichAgentContext(agentContext, basePrompt);
+        const { enrichedContext } = this.enrichAgentContext(
+          agentContext,
+          basePrompt,
+          history,
+          routedRequest.message,
+        );
         const tier2Result = await this.tier2GenerateVerify.execute(
           routedRequest.message,
           actionHint,
           enrichedContext,
           traceId,
+          { conversationId, toolEmit: emit },
         );
         outcome.tier = 2;
-        outcome.llmCallCount = 2;
+        // Executor+Verifier, plus optional Bug 1 retry (+ verify) and Bug 4 tool follow-up.
+        outcome.llmCallCount = tier2Result.toolFollowUp
+          ? 5
+          : tier2Result.retried
+            ? 4
+            : 2;
         await this.streamTier2Result(
           routedRequest,
           conversationId,
@@ -974,6 +1039,7 @@ export class ConversationService {
           tier2Result,
           reply,
           emit,
+          routerDecision.assumption,
         );
         return;
       }
@@ -992,6 +1058,7 @@ export class ConversationService {
         analysis,
         emit,
         routerDecision.assumption,
+        (routerDecision.complexity ?? 3) as 0 | 1 | 2 | 3,
       );
     } finally {
       const classifiedTier = (routerDecision.complexity ?? 3) as 0 | 1 | 2 | 3;
@@ -1061,7 +1128,12 @@ export class ConversationService {
       );
       const basePrompt =
         routedRequest.promptContext ?? richWorkbookContext.prompt_context ?? undefined;
-      const { enrichedContext, promptContext } = this.enrichAgentContext(agentContext, basePrompt);
+      const { enrichedContext, promptContext } = this.enrichAgentContext(
+        agentContext,
+        basePrompt,
+        history,
+        routedRequest.message,
+      );
       const conversationHistory = resolveConversationHistory(routedRequest, history).map(
         (entry) => ({
           role: entry.role as 'user' | 'assistant',
@@ -1129,6 +1201,7 @@ export class ConversationService {
         promptContext,
         conversationId,
         correlationId: traceId,
+        complexity: (complexity ?? 3) as 0 | 1 | 2 | 3,
       });
 
       if (plan.clarificationsNeeded.length > 0) {
@@ -1281,34 +1354,49 @@ export class ConversationService {
     traceId: string,
     message: string,
     result: Tier0Result,
+    agentContext: AgentWorkbookContext,
+    assumption: string | undefined,
     emit: (event: string, data: Record<string, unknown>) => void,
   ): Promise<void> {
     const answer = this.buildTier0Answer(result.actions);
-    await this.emitTierActions(
+    await this.emitTierActions({
       conversationId,
-      0,
+      tier: 0,
       answer,
-      'Tier 0 direct resolution — no LLM calls.',
-      result.actions,
+      processingLabel: tierProcessingLabel(0),
+      actions: result.actions,
       emit,
-    );
+      traceId,
+      prompt: message,
+      agentContext,
+      assumption,
+    });
     this.logger.debug(`[${traceId}] Tier 0 completed message="${this.clipForLog(message, 120)}"`);
   }
 
   private async streamTier1Result(
     conversationId: string,
-    result: { actions: SheetAction[]; answer: string },
+    traceId: string,
+    message: string,
+    result: { actions: SheetAction[]; answer: string; model?: string },
     actionHint: string,
+    agentContext: AgentWorkbookContext,
+    assumption: string | undefined,
     emit: (event: string, data: Record<string, unknown>) => void,
   ): Promise<void> {
-    await this.emitTierActions(
+    await this.emitTierActions({
       conversationId,
-      1,
-      result.answer,
-      `Tier 1 single-action (${actionHint}) — one LLM call, no verification.`,
-      result.actions,
+      tier: 1,
+      answer: result.answer,
+      processingLabel: tierProcessingLabel(1, actionHint),
+      actions: result.actions,
       emit,
-    );
+      traceId,
+      prompt: message,
+      agentContext,
+      assumption,
+      model: result.model,
+    });
   }
 
   private async streamTier2Result(
@@ -1321,6 +1409,7 @@ export class ConversationService {
     result: Awaited<ReturnType<Tier2GenerateVerifyService['execute']>>,
     reply: FastifyReply,
     emit: (event: string, data: Record<string, unknown>) => void,
+    assumption?: string,
   ): Promise<void> {
     if (result.actions.length === 0) {
       this.assertWriteRouteProducedActions({
@@ -1373,19 +1462,37 @@ export class ConversationService {
       },
     });
 
+    const processingLabel = tierProcessingLabel(2);
+    const userFacingSummary = buildUserFacingSummary({
+      answer: result.answer,
+      actions,
+      changes: changeSet.changes,
+      assumption,
+      activeSheetName: agentContext.activeSheetName,
+    });
+    const internalDetails = buildInternalDetails({
+      tier: 2,
+      processingLabel,
+      assumption,
+      actions,
+      legacyExplanation: processingLabel,
+    });
+
     await this.saveMessage(conversationId, {
       id: `msg_${Date.now()}_assistant`,
       role: 'assistant',
       content: result.answer,
       type: 'answer',
       timestamp: new Date(),
-      metadata: { actions, changeSetId: changeSet.changeSetId },
+      metadata: this.buildWriteMetadata(actions, changeSet.changeSetId),
     });
 
     emit('answer', { answer: result.answer, tier: 2 });
     emit('actions', {
       actions,
-      explanation: 'Tier 2 generate-verify: executed and verified (no Planner).',
+      explanation: processingLabel,
+      userFacingSummary,
+      internalDetails,
       changeSetId: changeSet.changeSetId,
       changes: changeSet.changes,
       tier: 2,
@@ -1409,30 +1516,86 @@ export class ConversationService {
     return buildShortcutAnswer(actions);
   }
 
-  private async emitTierActions(
-    conversationId: string,
-    tier: 0 | 1,
-    answer: string,
-    explanation: string,
-    actions: SheetAction[],
-    emit: (event: string, data: Record<string, unknown>) => void,
-  ): Promise<void> {
+  private async emitTierActions(params: {
+    conversationId: string;
+    tier: 0 | 1;
+    answer: string;
+    processingLabel: string;
+    actions: SheetAction[];
+    emit: (event: string, data: Record<string, unknown>) => void;
+    traceId: string;
+    prompt: string;
+    agentContext: AgentWorkbookContext;
+    assumption?: string;
+    model?: string;
+  }): Promise<void> {
+    const {
+      conversationId,
+      tier,
+      answer,
+      processingLabel,
+      actions,
+      emit,
+      traceId,
+      prompt,
+      agentContext,
+      assumption,
+      model,
+    } = params;
+
+    const changeSet = await this.changeSetService.createPreview({
+      conversationId,
+      traceId,
+      prompt,
+      context: agentContext,
+      actions,
+      provenance: {
+        sourceRefs: buildWorkbookSourceRefsFromActions(
+          actions,
+          agentContext.activeSheetName || 'workbook',
+          agentContext.activeSheetName,
+        ),
+        workbookId: agentContext.activeSheetName || 'workbook',
+        activeSheetName: agentContext.activeSheetName,
+      },
+    });
+
+    const userFacingSummary = buildUserFacingSummary({
+      answer,
+      actions,
+      changes: changeSet.changes,
+      assumption,
+      activeSheetName: agentContext.activeSheetName,
+    });
+    const internalDetails = buildInternalDetails({
+      tier,
+      model,
+      processingLabel,
+      assumption,
+      actions,
+      legacyExplanation: processingLabel,
+    });
+
     await this.saveMessage(conversationId, {
       id: `msg_${Date.now()}_assistant`,
       role: 'assistant',
       content: answer,
       type: 'answer',
       timestamp: new Date(),
-      metadata: { actions },
+      metadata: this.buildWriteMetadata(actions, changeSet.changeSetId),
     });
 
-    emit('answer', { answer });
+    emit('answer', { answer, tier });
     emit('actions', {
       actions,
-      explanation,
+      explanation: processingLabel,
+      userFacingSummary,
+      internalDetails,
+      changeSetId: changeSet.changeSetId,
+      changes: changeSet.changes,
       tier,
     });
-    emit('conversation_end', { summary: 'Changes applied.', tier });
+    emit('conversation_end', { summary: 'Review changes and accept or reject.', tier });
     await this.markCompleted(conversationId);
   }
 
@@ -1445,6 +1608,7 @@ export class ConversationService {
     analysis: ReturnType<SheetAnalyzerService['analyze']>,
     emit: (event: string, data: Record<string, unknown>) => void,
     routerAssumption?: string,
+    complexity?: 0 | 1 | 2 | 3,
   ): Promise<void> {
     const startedAt = Date.now();
     const intent = classifyIntent(request.message);
@@ -1460,7 +1624,12 @@ export class ConversationService {
     );
     const basePrompt =
       request.promptContext ?? richWorkbookContext.prompt_context ?? undefined;
-    const { enrichedContext, promptContext } = this.enrichAgentContext(agentContext, basePrompt);
+    const { enrichedContext, promptContext } = this.enrichAgentContext(
+      agentContext,
+      basePrompt,
+      history,
+      request.message,
+    );
 
     const conversationHistory = resolveConversationHistory(request, history).map((entry) => ({
       role: entry.role as 'user' | 'assistant',
@@ -1480,6 +1649,7 @@ export class ConversationService {
           correlationId: traceId,
           toolEmit: emit,
           routerAssumption,
+          complexity: complexity ?? 3,
         },
         sseEmitter,
       );
@@ -1529,6 +1699,24 @@ export class ConversationService {
             },
           });
 
+          const processingLabel =
+            'Partial progress: earlier steps succeeded; a later step failed. Review and accept what is ready, or retry the failed step.';
+          const userFacingSummary = buildUserFacingSummary({
+            answer,
+            actions,
+            changes: changeSet.changes,
+            assumption: routerAssumption,
+            activeSheetName: enrichedContext.activeSheetName,
+          });
+          const internalDetails = buildInternalDetails({
+            tier: 3,
+            model: telemetry.model,
+            processingLabel,
+            assumption: routerAssumption,
+            actions,
+            legacyExplanation: processingLabel,
+          });
+
           await this.saveMessage(conversationId, {
             id: `msg_${Date.now()}_assistant`,
             role: 'assistant',
@@ -1546,12 +1734,14 @@ export class ConversationService {
           emit('answer', { answer });
           emit('actions', {
             actions,
-            explanation:
-              'Partial progress: earlier steps succeeded; a later step failed. Review and accept what is ready, or retry the failed step.',
+            explanation: processingLabel,
+            userFacingSummary,
+            internalDetails,
             changeSetId: changeSet.changeSetId,
             changes: changeSet.changes,
             partialProgress: true,
             failedSubtask: orchestratorResult.failedSubtask,
+            tier: 3,
           });
           emit('conversation_end', {
             summary: 'Partial changes ready — review and accept, or retry the failed step.',
@@ -1596,7 +1786,7 @@ export class ConversationService {
         actionsLength: actions.length,
       });
 
-      const answer = `Here are **${actions.length}** change(s) I will apply to your sheet.`;
+      const answer = `I'll apply the prepared changes to your sheet.`;
 
       const changeSet = await this.changeSetService.createPreview({
         conversationId,
@@ -1615,23 +1805,43 @@ export class ConversationService {
         },
       });
 
+      const processingLabel = tierProcessingLabel(3);
+      const userFacingSummary = buildUserFacingSummary({
+        answer,
+        actions,
+        changes: changeSet.changes,
+        assumption: routerAssumption,
+        activeSheetName: enrichedContext.activeSheetName,
+      });
+      const internalDetails = buildInternalDetails({
+        tier: 3,
+        model: telemetry.model,
+        processingLabel,
+        assumption: routerAssumption,
+        actions,
+        legacyExplanation: processingLabel,
+      });
+
       await this.saveMessage(conversationId, {
         id: `msg_${Date.now()}_assistant`,
         role: 'assistant',
         content: answer,
         type: 'answer',
         timestamp: new Date(),
-        metadata: { actions, changeSetId: changeSet.changeSetId },
+        metadata: this.buildWriteMetadata(actions, changeSet.changeSetId),
       });
 
-      emit('answer', { answer });
+      emit('answer', { answer, tier: 3 });
       emit('actions', {
         actions,
-        explanation: 'Multi-agent pipeline: planned, executed, and verified.',
+        explanation: processingLabel,
+        userFacingSummary,
+        internalDetails,
         changeSetId: changeSet.changeSetId,
         changes: changeSet.changes,
+        tier: 3,
       });
-      emit('conversation_end', { summary: 'Review changes and accept or reject.' });
+      emit('conversation_end', { summary: 'Review changes and accept or reject.', tier: 3 });
       await this.markCompleted(conversationId);
       endSseResponse(reply);
       success = true;
@@ -1676,6 +1886,7 @@ export class ConversationService {
     history: ConversationMessageEntry[],
     analysis: ReturnType<SheetAnalyzerService['analyze']>,
     emit: (event: string, data: Record<string, unknown>) => void,
+    complexity: 0 | 1 | 2 | 3 = 3,
   ): Promise<void> {
     const startedAt = Date.now();
     const intent = classifyIntent(request.message);
@@ -1685,7 +1896,12 @@ export class ConversationService {
     const richWorkbookContext = resolveWorkbookContext(request, analysis, request.sheetData);
     const agentContext = buildAgentWorkbookContext(richWorkbookContext, request.sheetData, analysis);
     const basePrompt = request.promptContext ?? richWorkbookContext.prompt_context ?? undefined;
-    const { enrichedContext, promptContext } = this.enrichAgentContext(agentContext, basePrompt);
+    const { enrichedContext, promptContext } = this.enrichAgentContext(
+      agentContext,
+      basePrompt,
+      history,
+      request.message,
+    );
     const conversationHistory = resolveConversationHistory(request, history).map((entry) => ({
       role: entry.role as 'user' | 'assistant',
       content: entry.content,
@@ -1701,6 +1917,7 @@ export class ConversationService {
         promptContext,
         conversationId,
         correlationId: traceId,
+        complexity,
       });
 
       if (plan.clarificationsNeeded.length > 0) {
@@ -1748,7 +1965,8 @@ export class ConversationService {
       this.logger.warn(
         `Planner failed trace=${traceId} conversation=${conversationId} durationMs=${Date.now() - startedAt} error="${this.clipForLog(message, 300)}"`,
       );
-      throw error;
+      emit('error', { message });
+      endSseResponse(reply);
     } finally {
       await this.auditService.logLLMCall({
         traceId,

@@ -13,6 +13,7 @@ import { Action, ExecutorOutput, SubTask, WorkbookContext } from './types/agent.
 import { StepRetryContext } from './types/verifier.types';
 import { StepRetryExhaustedError } from './errors';
 import { StructuredLogger } from './logging/structured-logger';
+import { isExecutorBlockedSignal } from './utils/verifier-partial-parse.util';
 
 const JSON_RETRY_SUFFIX =
   '\n\nIMPORTANT: Your previous response was not valid JSON. Reply with ONLY a single JSON object matching the schema — no markdown fences, no commentary.';
@@ -76,6 +77,24 @@ export class ExecutorAgent {
 
     if (result) {
       if (result.actions.length === 0 && !result.isDone) {
+        // Spec 17 Bug C: never paper over an honest block with SORT_RANGE.
+        if (isExecutorBlockedSignal(result.nextStep)) {
+          this.logger.warn(
+            `Executor blocked (no sort fallback): ${this.clip(result.nextStep ?? '', 300)}`,
+          );
+          this.structuredLogger.logAgentEvent({
+            correlationId,
+            agent: 'executor',
+            model,
+            durationMs: Date.now() - startedAt,
+            success: false,
+            tokenUsage: this.structuredLogger.estimateTokens(raw),
+            rawResponse: raw,
+            parsedResponse: result,
+            error: 'Executor blocked',
+          });
+          return { ...result, parsedOnFirstAttempt };
+        }
         return { ...this.applySortFallback(subtask, context, result), parsedOnFirstAttempt };
       }
       result = maybeMarkSubtaskComplete(result, subtask);

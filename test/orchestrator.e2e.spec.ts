@@ -85,6 +85,7 @@ describe('OrchestratorService SSE write path', () => {
       undefined,
       expect.any(String),
       undefined,
+      undefined,
     );
     expect(agenticLoop.run).toHaveBeenCalledTimes(1);
     expect(actions).toEqual(expectedActions);

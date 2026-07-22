@@ -708,6 +708,7 @@ function virtualAggregateTable(wb: ShadowWorkbook, action: Action): void {
     rows,
     hasHeaders: action.hasHeaders !== false,
     groupByColumn: action.groupByColumn,
+    groupByTransform: action.groupByTransform,
     aggregations: action.aggregations,
     sortBy: action.sortBy,
     topN: action.topN,

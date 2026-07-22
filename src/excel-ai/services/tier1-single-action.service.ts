@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { WorkbookContext } from '../../agents/types/agent.types';
+import { AppConfigService } from '../../config/app-config.service';
 import { parseExecutorPayload } from '../../agents/utils/parse-agent-json.util';
 import { buildTier1SystemPrompt, buildTier1UserMessage } from '../prompts/tier1-action-prompt';
 import { SheetAction } from '../types/sheet-actions.types';
@@ -11,13 +12,17 @@ import { OpenRouterService } from './openrouter.service';
 export interface Tier1ExecuteResult {
   actions: SheetAction[];
   answer: string;
+  model?: string;
 }
 
 @Injectable()
 export class Tier1SingleActionService {
   private readonly logger = new Logger(Tier1SingleActionService.name);
 
-  constructor(private readonly openRouter: OpenRouterService) {}
+  constructor(
+    private readonly openRouter: OpenRouterService,
+    private readonly config: AppConfigService,
+  ) {}
 
   async execute(
     message: string,
@@ -31,10 +36,12 @@ export class Tier1SingleActionService {
       throw new Error('numeric_find_replace_escalation_required');
     }
 
+    const model = this.config.openRouterModelLow;
     const raw = await this.openRouter.complete({
       systemPrompt: buildTier1SystemPrompt(actionHint),
       userMessage: buildTier1UserMessage(message, actionHint, workbookContext),
       tier: 'low',
+      model,
       temperature: 0,
       maxTokens: 512,
       reasoningEffort: 'none',
@@ -62,6 +69,7 @@ export class Tier1SingleActionService {
     return {
       actions,
       answer,
+      model,
     };
   }
 }

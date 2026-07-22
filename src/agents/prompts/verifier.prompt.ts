@@ -114,36 +114,52 @@ export function normalizeVerifierOutput(
     subtaskResults: VerifierSubtaskResult[];
   }>,
   subtaskIds: string[],
+  options?: { fillMissingAsInconclusive?: boolean },
 ): {
   passed: boolean;
   feedback: string;
   issues: VerifierSubtaskResult['issues'];
   subtaskResults: VerifierSubtaskResult[];
 } {
+  const fillMissingAsInconclusive = options?.fillMissingAsInconclusive ?? false;
+
   const subtaskResults: VerifierSubtaskResult[] = Array.isArray(parsed.subtaskResults)
-    ? parsed.subtaskResults.map((r) => ({
-        subtaskId: String(r.subtaskId),
-        passed: Boolean(r.passed),
-        feedback: String(r.feedback ?? ''),
-        issues: Array.isArray(r.issues) ? r.issues : [],
-      }))
+    ? parsed.subtaskResults
+        .filter((r) => r && typeof r.subtaskId === 'string' && r.subtaskId.trim())
+        .map((r) => ({
+          subtaskId: String(r.subtaskId),
+          passed: Boolean(r.passed),
+          feedback: String(r.feedback ?? ''),
+          issues: Array.isArray(r.issues) ? r.issues : [],
+          ...(r.inconclusive ? { inconclusive: true } : {}),
+        }))
     : [];
 
   for (const id of subtaskIds) {
     if (!subtaskResults.some((r) => r.subtaskId === id)) {
-      subtaskResults.push({
-        subtaskId: id,
-        passed: Boolean(parsed.passed),
-        feedback: String(parsed.feedback ?? ''),
-        issues: [],
-      });
+      if (fillMissingAsInconclusive) {
+        // Spec 17 Bug A: truncated tail must not inherit top-level passed:false.
+        subtaskResults.push({
+          subtaskId: id,
+          passed: false,
+          feedback: 'Inconclusive — truncated or incomplete verifier response',
+          issues: [],
+          inconclusive: true,
+        });
+      } else {
+        subtaskResults.push({
+          subtaskId: id,
+          passed: Boolean(parsed.passed),
+          feedback: String(parsed.feedback ?? ''),
+          issues: [],
+        });
+      }
     }
   }
 
-  const passed =
-    subtaskResults.length > 0
-      ? subtaskResults.every((r) => r.passed)
-      : Boolean(parsed.passed);
+  const allResolvedPass =
+    subtaskResults.length > 0 &&
+    subtaskResults.every((r) => r.passed && !r.inconclusive);
 
   const issues =
     Array.isArray(parsed.issues) && parsed.issues.length > 0
@@ -153,7 +169,7 @@ export function normalizeVerifierOutput(
         );
 
   return {
-    passed,
+    passed: allResolvedPass,
     feedback: String(parsed.feedback ?? ''),
     issues,
     subtaskResults,

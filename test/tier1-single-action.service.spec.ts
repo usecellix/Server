@@ -1,5 +1,6 @@
 import { Tier1SingleActionService } from '../src/excel-ai/services/tier1-single-action.service';
 import { OpenRouterService } from '../src/excel-ai/services/openrouter.service';
+import { AppConfigService } from '../src/config/app-config.service';
 import { classifyComplexity } from '../src/excel-ai/utils/complexity-classifier.util';
 import { WorkbookContext } from '../src/agents/types/agent.types';
 
@@ -31,7 +32,13 @@ describe('Tier1SingleActionService', () => {
 
   beforeEach(() => {
     openRouter = { complete: jest.fn() };
-    service = new Tier1SingleActionService(openRouter as unknown as OpenRouterService);
+    const config = {
+      openRouterModelLow: 'openai/gpt-5-mini',
+    } as unknown as AppConfigService;
+    service = new Tier1SingleActionService(
+      openRouter as unknown as OpenRouterService,
+      config,
+    );
   });
 
   it('makes exactly one LLM call per request', async () => {

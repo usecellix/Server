@@ -28,6 +28,7 @@ import { StepRetryExhaustedError } from './errors';
 import { StepRetryContext } from './types/verifier.types';
 import { StructuredLogger } from './logging/structured-logger';
 import { shouldSkipVerifier } from './verifier-skip.policy';
+import { isExecutorBlockedSignal } from './utils/verifier-partial-parse.util';
 
 export interface AgenticLoopOptions {
   conversationId?: string;
@@ -205,8 +206,14 @@ export class AgenticLoopService {
     let retryExhaustedMessage: string | null = null;
     const validatorSummary = this.formulaValidator.summarizeForVerifier(formulaValidationLog);
     loopOptions.parseFailureTracker ??= { hadFailure: false };
-    let lastSubtaskVerifyResults: Array<{ subtaskId: string; passed: boolean; feedback: string }> =
-      [];
+    let lastSubtaskVerifyResults: Array<{
+      subtaskId: string;
+      passed: boolean;
+      feedback: string;
+      inconclusive?: boolean;
+    }> = [];
+    /** Spec 17 Bug B: once a subtask passes verification, never re-execute it. */
+    const lockedPassIds = new Set<string>();
 
     while (!verifierPassed && verifierCycle < maxVerifierCycles && !timedOut) {
       if (Date.now() - startedAt > this.TIMEOUT_MS) {
@@ -234,6 +241,7 @@ export class AgenticLoopService {
           passed: true,
           feedback: 'Deterministic checks passed',
         }));
+        for (const subtask of ordered) lockedPassIds.add(subtask.id);
         emitter.send({ type: 'VERIFY_PASS' });
         this.logger.log('Skipped LLM verifier — deterministic checks passed cleanly');
         break;
@@ -253,9 +261,11 @@ export class AgenticLoopService {
           passed: result.passed,
           feedback: result.feedback,
         }));
+        this.lockPassedSubtasks(lastSubtaskVerifyResults, lockedPassIds);
 
-        const failingIds = new Set(
-          cheapChecks.subtaskResults.filter((result) => !result.passed).map((result) => result.subtaskId),
+        const failingIds = this.collectFailingIdsForRetry(
+          cheapChecks.subtaskResults,
+          lockedPassIds,
         );
         if (failingIds.size === 0) {
           break;
@@ -276,6 +286,9 @@ export class AgenticLoopService {
         }
 
         const toRetry = ordered.filter((subtask) => failingIds.has(subtask.id));
+        this.logger.log(
+          `Selective retry (deterministic): re-executing [${[...failingIds].join(', ')}] — locked passes: [${[...lockedPassIds].join(', ')}]`,
+        );
 
         iterationsRun += await this.retrySubtasks(
           toRetry,
@@ -329,14 +342,31 @@ export class AgenticLoopService {
         this.logger.log(
           `[${loopOptions.correlationId ?? '-'}] Running Verifier: ${skipDecision.reason}`,
         );
-        verification = await this.verifier.verify(
-          originalPrompt,
-          ordered,
-          this.actionsBySubtaskMap(subtaskStates),
-          verifyContext,
-          validatorSummary,
-          loopOptions.correlationId,
-        );
+        // Spec 17: only verify subtasks that are not already locked as passed.
+        const toVerify = ordered.filter((subtask) => !lockedPassIds.has(subtask.id));
+        if (toVerify.length === 0) {
+          verification = {
+            passed: true,
+            feedback: 'All subtasks already verified',
+            issues: [],
+            subtaskResults: ordered.map((subtask) => ({
+              subtaskId: subtask.id,
+              passed: true,
+              feedback: 'Previously verified',
+              issues: [],
+            })),
+          };
+        } else {
+          const partial = await this.verifier.verify(
+            originalPrompt,
+            toVerify,
+            this.actionsBySubtaskMap(subtaskStates),
+            verifyContext,
+            validatorSummary,
+            loopOptions.correlationId,
+          );
+          verification = this.mergeWithLockedPasses(partial, ordered, lockedPassIds, lastSubtaskVerifyResults);
+        }
       }
 
       if (verification.passed) {
@@ -345,7 +375,9 @@ export class AgenticLoopService {
           subtaskId: result.subtaskId,
           passed: result.passed,
           feedback: result.feedback,
+          inconclusive: result.inconclusive,
         }));
+        this.lockPassedSubtasks(lastSubtaskVerifyResults, lockedPassIds);
         emitter.send({ type: 'VERIFY_PASS' });
         break;
       }
@@ -360,11 +392,25 @@ export class AgenticLoopService {
         subtaskId: result.subtaskId,
         passed: result.passed,
         feedback: result.feedback,
+        inconclusive: result.inconclusive,
       }));
+      this.lockPassedSubtasks(lastSubtaskVerifyResults, lockedPassIds);
 
-      const failingIds = new Set(
-        verification.subtaskResults.filter((r) => !r.passed).map((r) => r.subtaskId),
+      const failingIds = this.collectFailingIdsForRetry(
+        verification.subtaskResults,
+        lockedPassIds,
       );
+
+      // Inconclusive-only: re-verify without re-executing (next loop cycle).
+      const inconclusiveOnly =
+        failingIds.size === 0 &&
+        verification.subtaskResults.some((r) => r.inconclusive && !lockedPassIds.has(r.subtaskId));
+      if (inconclusiveOnly) {
+        this.logger.warn(
+          'Verifier had inconclusive (truncated) results — re-verifying without re-execution',
+        );
+        continue;
+      }
 
       if (failingIds.size === 0) {
         break;
@@ -385,6 +431,9 @@ export class AgenticLoopService {
       }
 
       const toRetry = ordered.filter((subtask) => failingIds.has(subtask.id));
+      this.logger.log(
+        `Selective retry: re-executing [${[...failingIds].join(', ')}] — locked passes: [${[...lockedPassIds].join(', ')}]`,
+      );
 
       iterationsRun += await this.retrySubtasks(
         toRetry,
@@ -697,6 +746,22 @@ export class AgenticLoopService {
       }
 
       subtaskDone = validatedBatch.isDone;
+
+      if (
+        !subtaskDone &&
+        validatedBatch.actions.length === 0 &&
+        isExecutorBlockedSignal(validatedBatch.nextStep)
+      ) {
+        state.failedReason = validatedBatch.nextStep;
+        this.logger.warn(
+          `Executor blocked on "${subtask.description}": ${validatedBatch.nextStep}`,
+        );
+        emitter.send({
+          type: 'THINKING',
+          message: validatedBatch.nextStep ?? 'Blocked — cannot complete this step',
+        });
+        break;
+      }
 
       if (!subtaskDone && validatedBatch.nextStep) {
         emitter.send({ type: 'THINKING', message: validatedBatch.nextStep });
@@ -1074,6 +1139,71 @@ export class AgenticLoopService {
     }
 
     return downstream;
+  }
+
+  private lockPassedSubtasks(
+    results: Array<{ subtaskId: string; passed: boolean; inconclusive?: boolean }>,
+    lockedPassIds: Set<string>,
+  ): void {
+    for (const result of results) {
+      if (result.passed && !result.inconclusive) {
+        lockedPassIds.add(result.subtaskId);
+      }
+    }
+  }
+
+  /**
+   * Spec 17 Bug B: only genuinely failed (not inconclusive, not already locked)
+   * subtasks are re-executed.
+   */
+  private collectFailingIdsForRetry(
+    results: Array<{ subtaskId: string; passed: boolean; inconclusive?: boolean }>,
+    lockedPassIds: Set<string>,
+  ): Set<string> {
+    const failing = new Set<string>();
+    for (const result of results) {
+      if (lockedPassIds.has(result.subtaskId)) continue;
+      if (result.inconclusive) continue;
+      if (!result.passed) failing.add(result.subtaskId);
+    }
+    return failing;
+  }
+
+  private mergeWithLockedPasses(
+    partial: VerifierOutput,
+    ordered: SubTask[],
+    lockedPassIds: Set<string>,
+    previous: Array<{ subtaskId: string; passed: boolean; feedback: string; inconclusive?: boolean }>,
+  ): VerifierOutput {
+    const byId = new Map(partial.subtaskResults.map((r) => [r.subtaskId, r]));
+    const subtaskResults = ordered.map((subtask) => {
+      if (lockedPassIds.has(subtask.id)) {
+        const prev = previous.find((r) => r.subtaskId === subtask.id);
+        return {
+          subtaskId: subtask.id,
+          passed: true,
+          feedback: prev?.feedback ?? 'Previously verified',
+          issues: [],
+        };
+      }
+      return (
+        byId.get(subtask.id) ?? {
+          subtaskId: subtask.id,
+          passed: false,
+          feedback: 'Missing verifier result',
+          issues: [],
+          inconclusive: true,
+        }
+      );
+    });
+
+    const passed = subtaskResults.every((r) => r.passed && !r.inconclusive);
+    return {
+      passed,
+      feedback: partial.feedback,
+      issues: partial.issues,
+      subtaskResults,
+    };
   }
 
   private findExhaustedSubtasks(

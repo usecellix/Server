@@ -2,6 +2,7 @@ import { SheetActionPayload, SheetActionType } from '../../excel-ai/types/sheet-
 import { Action, ExecutorOutput, SubTask } from '../types/agent.types';
 import { stripSheetPrefix } from './range-address.util';
 import { parseA1Range } from './range-merge.util';
+import { normalizeChartColorScheme } from './chart-color-scheme.util';
 
 /** Action types that sanitizeAction requires integer row/col for. */
 const INDEX_RANGE_ACTION_TYPES = new Set<SheetActionType>([
@@ -104,7 +105,7 @@ function normalizeActionType(raw: unknown): SheetActionType | null {
   return null;
 }
 
-function normalizeSingleAction(
+export function normalizeSingleAction(
   raw: unknown,
   defaultSheetName: string,
 ): SheetActionPayload | null {
@@ -149,6 +150,37 @@ function normalizeSingleAction(
   if (typeof record.afterRow === 'number') action.afterRow = record.afterRow;
   if (record.explicitOverwriteConfirmed === true) {
     action.explicitOverwriteConfirmed = true;
+  }
+
+  // Generic optional scalars — must not be silently dropped (Spec 18 Bug 3 audit).
+  if (typeof record.color === 'string') action.color = record.color;
+  if (record.count !== undefined) action.count = Number(record.count);
+  if (record.height !== undefined) action.height = Number(record.height);
+  if (record.width !== undefined) action.width = Number(record.width);
+  if (record.freezeRows !== undefined) action.freezeRows = Number(record.freezeRows);
+  if (record.freezeColumns !== undefined) action.freezeColumns = Number(record.freezeColumns);
+  if (record.mergeAcross !== undefined) action.mergeAcross = Boolean(record.mergeAcross);
+  if (record.endRow !== undefined) action.endRow = Number(record.endRow);
+  if (record.endCol !== undefined) action.endCol = Number(record.endCol);
+  if (typeof record.relativeTo === 'string') action.relativeTo = record.relativeTo;
+  if (typeof record.comment === 'string') action.comment = record.comment;
+  if (typeof record.style === 'string') action.style = record.style;
+  if (typeof record.sourceName === 'string') action.sourceName = record.sourceName;
+  if (typeof record.copyFrom === 'string') action.copyFrom = record.copyFrom;
+  if (typeof record.newSheetName === 'string') action.newSheetName = record.newSheetName;
+  if (
+    record.position === 'above' ||
+    record.position === 'below' ||
+    record.position === 'left' ||
+    record.position === 'right' ||
+    record.position === 'before' ||
+    record.position === 'after' ||
+    record.position === 'afterLastColumn'
+  ) {
+    action.position = record.position;
+  } else if (typeof record.position === 'number') {
+    // ADD_SHEET / CREATE_SHEET sometimes emit numeric tab index
+    (action as SheetActionPayload & { position?: number | string }).position = record.position as never;
   }
 
   if (type === 'INSERT_COLUMN') {
@@ -294,6 +326,10 @@ function normalizeSingleAction(
     if (typeof record.sourceRange === 'string') action.sourceRange = record.sourceRange;
     else if (typeof record.range === 'string') action.sourceRange = record.range;
     if (typeof record.groupByColumn === 'string') action.groupByColumn = record.groupByColumn;
+    const transform = String(record.groupByTransform ?? '').trim();
+    if (['none', 'month', 'year', 'monthYear', 'weekday', 'quarter'].includes(transform)) {
+      action.groupByTransform = transform as NonNullable<SheetActionPayload['groupByTransform']>;
+    }
     if (typeof record.destSheet === 'string') action.destSheet = record.destSheet;
     if (typeof record.destStartCell === 'string') action.destStartCell = record.destStartCell;
     else if (typeof record.startCell === 'string') action.destStartCell = record.startCell;
@@ -335,27 +371,15 @@ function normalizeSingleAction(
     if (typeof record.destCell === 'string') action.destCell = record.destCell;
     if (typeof record.chartId === 'string') action.chartId = record.chartId;
     else action.chartId = `Chart_${Date.now().toString(36)}`;
-    if (
-      record.colorScheme === 'default' ||
-      record.colorScheme === 'blue' ||
-      record.colorScheme === 'grey' ||
-      record.colorScheme === 'blueGrey'
-    ) {
-      action.colorScheme = record.colorScheme;
-    }
+    const colorScheme = normalizeChartColorScheme(record.colorScheme);
+    if (colorScheme) action.colorScheme = colorScheme;
   }
 
   if (type === 'UPDATE_CHART') {
     if (typeof record.chartId === 'string') action.chartId = record.chartId;
     if (typeof record.chartType === 'string') action.chartType = record.chartType;
-    if (
-      record.colorScheme === 'default' ||
-      record.colorScheme === 'blue' ||
-      record.colorScheme === 'grey' ||
-      record.colorScheme === 'blueGrey'
-    ) {
-      action.colorScheme = record.colorScheme;
-    }
+    const colorScheme = normalizeChartColorScheme(record.colorScheme);
+    if (colorScheme) action.colorScheme = colorScheme;
   }
 
   if (record.format && typeof record.format === 'object') {

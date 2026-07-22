@@ -1,5 +1,6 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { Document } from 'mongoose';
+import type { TurnActionRecord } from '../utils/turn-action-history.util';
 
 export type ConversationDocument = Conversation & Document;
 
@@ -33,6 +34,8 @@ export class ConversationMessageEntry {
     /** Spec 12 — successful early subtasks delivered when a later step fails */
     partialProgress?: boolean;
     failedSubtask?: { subtaskId: string; reason: string } | null;
+    /** Spec 18 — structured chart/table range identity for follow-up turns */
+    turnActionRecords?: TurnActionRecord[];
   };
 }
 
