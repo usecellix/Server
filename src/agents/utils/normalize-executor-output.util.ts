@@ -1,5 +1,7 @@
 import { SheetActionPayload, SheetActionType } from '../../excel-ai/types/sheet-actions.types';
 import { Action, ExecutorOutput, SubTask } from '../types/agent.types';
+import { resolveRemarkValue, stripCalledLabel } from './called-value.util';
+import { annotateClearIntentOverwrite } from './clear-intent-overwrite.util';
 import { stripSheetPrefix } from './range-address.util';
 import { parseA1Range } from './range-merge.util';
 import { normalizeChartColorScheme } from './chart-color-scheme.util';
@@ -68,6 +70,7 @@ const KNOWN_TYPES = new Set<string>([
   'SORT_RANGE',
   'COPY_FILTERED_RANGE',
   'FORMAT_MATCHING_ROWS',
+  'SET_MATCHING_ROWS',
   'MOVE_RANGE',
   'AGGREGATE_TABLE',
   'UPDATE_CHART',
@@ -98,6 +101,15 @@ function normalizeActionType(raw: unknown): SheetActionType | null {
     upper === 'CONDITIONAL_FORMAT'
   ) {
     return 'FORMAT_MATCHING_ROWS';
+  }
+  if (
+    upper === 'SET_MATCHING' ||
+    upper === 'SET_MATCHING_ROWS' ||
+    upper === 'FILL_MATCHING' ||
+    upper === 'FILL_MATCHING_ROWS' ||
+    upper === 'UPDATE_MATCHING_ROWS'
+  ) {
+    return 'SET_MATCHING_ROWS';
   }
   if (KNOWN_TYPES.has(upper)) {
     return upper as SheetActionType;
@@ -320,6 +332,39 @@ export function normalizeSingleAction(
     }
   }
 
+  if (type === 'SET_MATCHING_ROWS') {
+    if (typeof record.sheetName === 'string') action.sheetName = record.sheetName;
+    if (typeof record.range === 'string') action.range = stripSheetPrefix(record.range);
+    else if (typeof record.sourceRange === 'string') {
+      action.range = stripSheetPrefix(record.sourceRange);
+    }
+    if (record.hasHeaders !== undefined) action.hasHeaders = Boolean(record.hasHeaders);
+    else action.hasHeaders = true;
+    if (typeof record.targetColumn === 'string') action.targetColumn = record.targetColumn;
+    else if (typeof record.columnName === 'string') action.targetColumn = record.columnName;
+    // Allow clearing a column: value may be "" / null.
+    if (record.value !== undefined) {
+      action.value = resolveRemarkValue(record.value);
+    } else if (record.clear === true || record.empty === true) {
+      action.value = '';
+    }
+    if (record.filter && typeof record.filter === 'object') {
+      const filter = record.filter as Record<string, unknown>;
+      if (
+        (typeof filter.column === 'string' || typeof filter.column === 'number') &&
+        typeof filter.operator === 'string' &&
+        (typeof filter.value === 'string' || typeof filter.value === 'number')
+      ) {
+        action.filter = {
+          column: String(filter.column),
+          operator: filter.operator as NonNullable<SheetActionPayload['filter']>['operator'],
+          value: filter.value,
+        };
+      }
+    }
+    // Whole-column clear: omit filter → update every data row in targetColumn.
+  }
+
   if (type === 'AGGREGATE_TABLE') {
     if (typeof record.sourceSheet === 'string') action.sourceSheet = record.sourceSheet;
     else if (typeof record.sheetName === 'string') action.sourceSheet = record.sheetName;
@@ -429,7 +474,10 @@ export function normalizeExecutorOutput(
   const rawActions = Array.isArray(parsed.actions) ? parsed.actions : [];
   const actions: Action[] = rawActions
     .map((a) => normalizeSingleAction(a, subtask.targetSheet))
-    .filter((a): a is Action => a !== null);
+    .filter((a): a is Action => a !== null)
+    .map((action) => applyCalledValueHints(action, subtask.description));
+
+  const cleared = annotateClearIntentOverwrite(actions, subtask.description);
 
   const isDone =
     parsed.isDone === true ||
@@ -450,11 +498,40 @@ export function normalizeExecutorOutput(
     // The executor is invoked for one known subtask. Canonicalize the ID instead
     // of letting an omitted, empty, or invented model value break loop progress.
     subtaskId: subtask.id,
-    actions,
+    actions: cleared,
     isDone,
     nextStep,
     toolRequest,
   };
+}
+
+function applyCalledValueHints(action: Action, message: string): Action {
+  if (action.type === 'SET_MATCHING_ROWS' && action.value !== undefined) {
+    return {
+      ...action,
+      value: resolveRemarkValue(action.value, message) as typeof action.value,
+    };
+  }
+  if (action.type === 'SET_CELL' && action.value !== undefined) {
+    return {
+      ...action,
+      value: resolveRemarkValue(action.value, message),
+    };
+  }
+  if (action.type === 'BATCH_SET' && Array.isArray(action.operations)) {
+    return {
+      ...action,
+      operations: action.operations.map((op) =>
+        op.value !== undefined
+          ? { ...op, value: resolveRemarkValue(op.value, message) }
+          : op,
+      ),
+    };
+  }
+  if (typeof action.value === 'string') {
+    return { ...action, value: stripCalledLabel(action.value) };
+  }
+  return action;
 }
 
 function parseToolRequest(raw: unknown): ExecutorOutput['toolRequest'] {

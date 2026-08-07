@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { MongooseModule } from '@nestjs/mongoose';
 import { AgentsModule } from '../agents/agents.module';
 import { AuditModule } from '../audit/audit.module';
+import { LoggingModule } from '../common/logging/logging.module';
 import { AppConfigModule } from '../config/app-config.module';
 import { FormulaModule } from '../formula/formula.module';
 import { LlmModule } from '../llm/llm.module';
@@ -24,6 +25,7 @@ import { Tier2GenerateVerifyService } from './services/tier2-generate-verify.ser
   imports: [
     AppConfigModule,
     AuditModule,
+    LoggingModule,
     LlmModule,
     FormulaModule,
     AgentsModule,

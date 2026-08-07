@@ -6,6 +6,7 @@ import { FormulaValidatorService } from '../src/formula/formula-validator.servic
 import { ToolBridgeService } from '../src/agents/tool-bridge.service';
 import { CompletenessChecker } from '../src/agents/checkers/completeness.checker';
 import { FormattingChecker } from '../src/agents/checkers/formatting.checker';
+import { OverwriteOccupancyChecker } from '../src/agents/checkers/overwrite-occupancy.checker';
 import { SseEmitter } from '../src/agents/sse.emitter';
 import { Action, SubTask, WorkbookContext } from '../src/agents/types/agent.types';
 
@@ -61,6 +62,7 @@ describe('AgenticLoopService verifier retry', () => {
   let toolBridge: jest.Mocked<Pick<ToolBridgeService, 'waitForRangeData'>>;
   let completenessChecker: CompletenessChecker;
   let formattingChecker: FormattingChecker;
+  let overwriteOccupancyChecker: OverwriteOccupancyChecker;
   let service: AgenticLoopService;
   let events: string[];
 
@@ -87,6 +89,7 @@ describe('AgenticLoopService verifier retry', () => {
     };
     completenessChecker = new CompletenessChecker();
     formattingChecker = new FormattingChecker();
+    overwriteOccupancyChecker = new OverwriteOccupancyChecker();
     service = new AgenticLoopService(
       executor as unknown as ExecutorAgent,
       verifier as unknown as VerifierAgent,
@@ -95,6 +98,7 @@ describe('AgenticLoopService verifier retry', () => {
       toolBridge as unknown as ToolBridgeService,
       completenessChecker,
       formattingChecker,
+      overwriteOccupancyChecker,
     );
     events = [];
   });
@@ -557,6 +561,73 @@ describe('AgenticLoopService verifier retry', () => {
     expect(toolBridge.waitForRangeData).not.toHaveBeenCalled();
   });
 
+  it('Spec 22: withholds DELETE_COLUMN from partial delivery when a sibling failed', async () => {
+    const deleteAction: Action = {
+      type: 'DELETE_COLUMN',
+      sheetName: 'Sheet1',
+      columns: ['Payment Status'],
+    } as Action;
+
+    const compoundSubtasks: SubTask[] = [
+      {
+        id: 's1',
+        description: 'Delete the Payment Status column',
+        targetSheet: 'Sheet1',
+        dependsOn: [],
+        estimatedActions: 1,
+        suggestedActionType: 'DELETE_COLUMN',
+      },
+      {
+        id: 's2',
+        description: 'Set Remarks to Priority for unpaid invoices',
+        targetSheet: 'Sheet1',
+        dependsOn: [],
+        estimatedActions: 1,
+        suggestedActionType: 'SET_MATCHING_ROWS',
+      },
+    ];
+
+    executor.execute.mockImplementation(async (subtask: SubTask) => {
+      if (subtask.id === 's1') {
+        return { subtaskId: 's1', actions: [deleteAction], isDone: true };
+      }
+      return {
+        subtaskId: 's2',
+        actions: [],
+        isDone: false,
+        nextStep: 'still working',
+      };
+    });
+
+    verifier.verify.mockResolvedValue({
+      passed: false,
+      feedback:
+        'The deletion is present but the Remarks priority step is missing. Deleting Payment Status before annotating would lose unpaid info.',
+      issues: [],
+      subtaskResults: [
+        { subtaskId: 's1', passed: true, feedback: 'ok', issues: [] },
+        {
+          subtaskId: 's2',
+          passed: false,
+          feedback: 'Remarks priority missing',
+          issues: [],
+        },
+      ],
+    });
+
+    const result = await service.run(
+      'delete the column payment status and in remarks add priority to unpaid invoices',
+      compoundSubtasks,
+      baseContext,
+      new SseEmitter(emit),
+    );
+
+    expect(result.verifierPassed).toBe(false);
+    expect(result.actions.some((a) => a.type === 'DELETE_COLUMN')).toBe(false);
+    expect(result.partialProgress).toBe(false);
+    expect(result.failedSubtask?.reason).toMatch(/withheld destructive/i);
+  });
+
   it('does not call get_range_data when COPY_FILTERED_RANGE is emitted on first turn', async () => {
     const copyAction: Action = {
       type: 'COPY_FILTERED_RANGE',
@@ -598,5 +669,109 @@ describe('AgenticLoopService verifier retry', () => {
     expect(toolBridge.waitForRangeData).not.toHaveBeenCalled();
     expect(result.actions).toEqual([copyAction]);
     expect(executor.execute).toHaveBeenCalledTimes(1);
+  });
+
+  it('Spec 19 Bug 1: overwrite occupancy triggers retry with INSERT_COLUMN feedback', async () => {
+    const badOverwrite: Action = {
+      type: 'SET_FORMULA',
+      sheetName: 'Purchase Register',
+      row: 1, // Excel row 2 (header row is row 0)
+      col: 10, // K
+      formula: '=J2-I2',
+    } as Action;
+
+    const insertColumnAction: Action = {
+      type: 'INSERT_COLUMN',
+      sheetName: 'Purchase Register',
+      columnName: 'Net of Tax',
+      position: 'afterLastColumn',
+      formula: '=J{row}-I{row}',
+    } as Action;
+
+    const netOfTaxContext: WorkbookContext = {
+      activeSheetName: 'Purchase Register',
+      sheets: [
+        {
+          name: 'Purchase Register',
+          usedRange: 'A1:L3',
+          rowCount: 3,
+          columnCount: 12,
+          structure: 'data_table',
+          values: [
+            [
+              'Date',
+              'Invoice No',
+              'Supplier',
+              'GSTIN',
+              'Item',
+              'Qty',
+              'Unit Price',
+              'Tax %',
+              'Tax Amount',
+              'Total Amount',
+              'Payment Status',
+              'Remarks',
+            ],
+            [null, null, null, null, null, null, null, null, 10, 110, 'Paid', null],
+            [null, null, null, null, null, null, null, null, 11, 111, 'Pending', null],
+          ],
+          formulas: [[], [], []] as unknown as string[][],
+          numberFormats: [
+            Array.from({ length: 12 }, () => 'General'),
+            Array.from({ length: 12 }, () => 'General'),
+            Array.from({ length: 12 }, () => 'General'),
+          ],
+        },
+      ],
+      namedRanges: [],
+      tables: [],
+    };
+
+    const step: SubTask = {
+      id: 's1',
+      description: 'Add a column called "Net of Tax" that subtracts Tax Amount from Total Amount',
+      targetSheet: 'Purchase Register',
+      dependsOn: [],
+      estimatedActions: 1,
+    };
+
+    executor.execute.mockResolvedValueOnce({
+      subtaskId: 's1',
+      actions: [badOverwrite],
+      isDone: true,
+    });
+
+    executor.retryStep.mockImplementationOnce(async (retryContext) => {
+      expect(retryContext.verifierFeedback).toContain('Write blocked:');
+      expect(retryContext.verifierFeedback).toContain('INSERT_COLUMN');
+      expect(retryContext.verifierFeedback).toContain('afterLastColumn');
+      expect(retryContext.verifierFeedback).toContain('K2');
+      return {
+        subtaskId: 's1',
+        actions: [insertColumnAction],
+        isDone: true,
+      };
+    });
+
+    verifier.verify.mockResolvedValueOnce({
+      passed: true,
+      feedback: 'OK',
+      issues: [],
+      subtaskResults: [
+        { subtaskId: 's1', passed: true, feedback: 'OK', issues: [] },
+      ],
+    });
+
+    const result = await service.run(
+      step.description,
+      [step],
+      netOfTaxContext,
+      new SseEmitter(emit),
+    );
+
+    expect(executor.execute).toHaveBeenCalledTimes(1);
+    expect(executor.retryStep).toHaveBeenCalledTimes(1);
+    expect(result.actions).toEqual([insertColumnAction]);
+    expect(verifier.verify).toHaveBeenCalledTimes(0);
   });
 });

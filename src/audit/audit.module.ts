@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { MongooseModule } from '@nestjs/mongoose';
+import { LoggingModule } from '../common/logging/logging.module';
 import { AuditController } from './audit.controller';
 import { AuditService } from './audit.service';
 import { ChangeSetController } from './change-set.controller';
@@ -10,6 +11,7 @@ import { ChangeSet, ChangeSetSchema } from './schemas/change-set.schema';
 
 @Module({
   imports: [
+    LoggingModule,
     MongooseModule.forFeature([
       { name: AuditEntry.name, schema: AuditEntrySchema },
       { name: AuditLog.name, schema: AuditLogSchema },

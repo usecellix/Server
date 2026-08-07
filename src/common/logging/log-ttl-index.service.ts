@@ -17,6 +17,7 @@ export class LogTtlIndexService implements OnModuleInit {
     await this.ensureTtl('request_logs');
     await this.ensureTtl('planner_logs');
     await this.ensureTtl('frontend_logs');
+    await this.ensureTtl('workflow_traces');
   }
 
   private async ensureTtl(collectionName: string): Promise<void> {

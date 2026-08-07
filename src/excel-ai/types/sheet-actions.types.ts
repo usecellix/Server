@@ -88,6 +88,7 @@ export type SheetActionType =
   | 'SORT_RANGE'
   | 'COPY_FILTERED_RANGE'
   | 'FORMAT_MATCHING_ROWS'
+  | 'SET_MATCHING_ROWS'
   | 'MOVE_RANGE'
   | 'AGGREGATE_TABLE'
   | 'UPDATE_CHART';
@@ -175,7 +176,9 @@ export interface SheetActionPayload {
   key?: number;
   ascending?: boolean;
   columnName?: string;
-  /** COPY_FILTERED_RANGE / MOVE_RANGE / FORMAT_MATCHING_ROWS */
+  /** SET_MATCHING_ROWS — column to write into */
+  targetColumn?: string;
+  /** COPY_FILTERED_RANGE / MOVE_RANGE / FORMAT_MATCHING_ROWS / SET_MATCHING_ROWS */
   sourceSheet?: string;
   destSheet?: string;
   destStartCell?: string;

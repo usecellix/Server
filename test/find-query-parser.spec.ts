@@ -30,6 +30,14 @@ describe('find-query-parser', () => {
     ).toEqual(['Applied']);
   });
 
+  it('extracts only terminal filter term from create/copy instruction-style prompts', () => {
+    expect(
+      parseFindSearchTerms(
+        'find the paid data from purchase register to that new sheet only paid',
+      ),
+    ).toEqual(['paid']);
+  });
+
   it('strips trailing export clauses before parsing search terms', () => {
     const prompt =
       'Find all the rows Deva steels and create a new sheet with all that value';

@@ -22,12 +22,14 @@ import { computeExecutionWaves } from './utils/task-graph.util';
 import { CompletenessChecker } from './checkers/completeness.checker';
 import { FormattingChecker } from './checkers/formatting.checker';
 import { SemanticFormulaChecker } from './checkers/semantic-formula.checker';
+import { OverwriteOccupancyChecker } from './checkers/overwrite-occupancy.checker';
 import { CheckerResult, mergeCheckerResults } from './checkers/checker.types';
 import { buildDeterministicSubtaskActions } from './utils/compound-action.util';
 import { StepRetryExhaustedError } from './errors';
 import { StepRetryContext } from './types/verifier.types';
 import { StructuredLogger } from './logging/structured-logger';
 import { shouldSkipVerifier } from './verifier-skip.policy';
+import { isDestructiveActionType } from './verifier-skip.policy';
 import { isExecutorBlockedSignal } from './utils/verifier-partial-parse.util';
 
 export interface AgenticLoopOptions {
@@ -88,6 +90,7 @@ export class AgenticLoopService {
     private readonly toolBridge: ToolBridgeService,
     private readonly completenessChecker: CompletenessChecker,
     private readonly formattingChecker: FormattingChecker,
+    private readonly overwriteOccupancyChecker: OverwriteOccupancyChecker,
     private readonly semanticFormulaChecker: SemanticFormulaChecker = new SemanticFormulaChecker(),
     private readonly structuredLogger: StructuredLogger = new StructuredLogger(),
   ) {}
@@ -520,7 +523,7 @@ export class AgenticLoopService {
       timedOut?: boolean;
     },
   ): AgenticLoopResult {
-    const completedSubtasks: CompletedSubtaskResult[] = subtaskStates
+    const candidateCompleted: CompletedSubtaskResult[] = subtaskStates
       .filter((state) => {
         if (!state.completed || state.actions.length === 0) return false;
         if (verifierPassed) return true;
@@ -540,7 +543,7 @@ export class AgenticLoopService {
           subtaskStates.find((state) => !state.completed)
         : undefined);
 
-    const failedSubtask: FailedSubtaskResult | null =
+    let failedSubtask: FailedSubtaskResult | null =
       !verifierPassed && failedState
         ? {
             subtaskId: failedState.subtask.id,
@@ -552,13 +555,52 @@ export class AgenticLoopService {
           }
         : null;
 
+    // Spec 22 Bug 2: never ship destructive actions as partial progress when
+    // dependencies failed or the full chain did not verify.
+    const completedSubtasks = verifierPassed
+      ? candidateCompleted
+      : this.filterSafePartialDelivery(candidateCompleted, subtaskStates, failedSubtask);
+
+    const withheldDestructive =
+      !verifierPassed &&
+      candidateCompleted.some((entry) =>
+        entry.actions.some((action) => isDestructiveActionType(action.type)),
+      ) &&
+      !completedSubtasks.some((entry) =>
+        entry.actions.some((action) => isDestructiveActionType(action.type)),
+      );
+
+    if (withheldDestructive && failedSubtask) {
+      failedSubtask = {
+        ...failedSubtask,
+        reason: `${failedSubtask.reason} — withheld destructive change(s) until prerequisites succeed`,
+      };
+    } else if (withheldDestructive && !failedSubtask) {
+      failedSubtask = {
+        subtaskId: candidateCompleted.find((e) =>
+          e.actions.some((a) => isDestructiveActionType(a.type)),
+        )?.subtaskId ?? 'destructive',
+        reason:
+          'Withheld destructive change(s) because the full request could not be verified safely',
+      };
+    }
+
     const partialProgress =
       !verifierPassed && completedSubtasks.length > 0 && failedSubtask !== null;
 
-    const actions =
-      options.preferCompletedOnly && partialProgress
-        ? completedSubtasks.flatMap((entry) => entry.actions)
-        : this.flattenActions(subtaskStates);
+    let actions: Action[];
+    if (verifierPassed) {
+      actions = this.flattenActions(subtaskStates);
+    } else if (
+      options.preferCompletedOnly &&
+      (partialProgress || withheldDestructive)
+    ) {
+      // Spec 22: filtered list — empty when only unsafe destructive actions were withheld.
+      actions = completedSubtasks.flatMap((entry) => entry.actions);
+    } else {
+      // Legacy: no completed-only candidates → keep prior flatten behavior for tests / single-step fails.
+      actions = this.flattenActions(subtaskStates);
+    }
 
     return {
       actions,
@@ -568,6 +610,56 @@ export class AgenticLoopService {
       failedSubtask,
       partialProgress,
     };
+  }
+
+  /**
+   * Spec 22: use Planner dependsOn + destructive-type policy so partial delivery
+   * never surfaces DELETE_COLUMN / CLEAR_* alone when a prerequisite failed.
+   */
+  private filterSafePartialDelivery(
+    candidates: CompletedSubtaskResult[],
+    subtaskStates: SubtaskActionState[],
+    failedSubtask: FailedSubtaskResult | null,
+  ): CompletedSubtaskResult[] {
+    const byId = new Map(subtaskStates.map((s) => [s.subtask.id, s]));
+    const passedIds = new Set(
+      candidates.filter((c) => c.verified).map((c) => c.subtaskId),
+    );
+    // Treat cleanly completed (no fail reason) as available deps for non-destructive siblings.
+    for (const c of candidates) {
+      const state = byId.get(c.subtaskId);
+      if (state && state.completed && !state.failedReason) {
+        passedIds.add(c.subtaskId);
+      }
+    }
+
+    const hasUnmetFailure = failedSubtask !== null;
+
+    return candidates.filter((entry) => {
+      const state = byId.get(entry.subtaskId);
+      const dependsOn = state?.subtask.dependsOn ?? [];
+      const depsMet = dependsOn.every((depId) => passedIds.has(depId));
+      if (!depsMet) {
+        return false;
+      }
+
+      const hasDestructive = entry.actions.some((action) =>
+        isDestructiveActionType(action.type),
+      );
+      if (!hasDestructive) {
+        return true;
+      }
+
+      // Destructive: only deliver when every dependsOn passed AND no peer
+      // failure remains (order-dependent compound requests).
+      if (hasUnmetFailure) {
+        return false;
+      }
+      return depsMet && dependsOn.every((depId) => {
+        const dep = byId.get(depId);
+        return dep?.verified === true || (dep?.completed && !dep.failedReason);
+      });
+    });
   }
 
   private runDeterministicChecks(
@@ -584,7 +676,8 @@ export class AgenticLoopService {
       subtaskStates,
       context,
     );
-    const merged = mergeCheckerResults([completeness, formatting, semantic]);
+    const overwriteOccupancy = this.overwriteOccupancyChecker.check(subtaskStates, context);
+    const merged = mergeCheckerResults([completeness, formatting, semantic, overwriteOccupancy]);
 
     const needsSemanticReview =
       subtaskStates.some((state) =>

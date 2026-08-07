@@ -14,7 +14,7 @@ Available action types (0-based row/col in JSON; row 0 = Excel row 1 = header):
 SET_CELL, SET_FORMULA, ADD_ROW, DELETE_ROW, INSERT_ROW, INSERT_COLUMN, DELETE_COLUMN,
 FORMAT_RANGE, FILL_DOWN, FILL_RIGHT, WRITE_TABLE, CREATE_SHEET, DELETE_SHEET, RENAME_SHEET, COPY_SHEET,
 BATCH_SET, CREATE_TABLE, CREATE_CHART, UPDATE_CHART, DEFINE_NAMED_RANGE, AUTOFIT_COLUMNS, ADD_SHEET,
-MERGE_CELLS, CLEAR_CONTENT, HIGHLIGHT_CELL, SORT_RANGE, COPY_FILTERED_RANGE, FORMAT_MATCHING_ROWS, MOVE_RANGE, AGGREGATE_TABLE
+MERGE_CELLS, CLEAR_CONTENT, HIGHLIGHT_CELL, SORT_RANGE, COPY_FILTERED_RANGE, FORMAT_MATCHING_ROWS, SET_MATCHING_ROWS, MOVE_RANGE, AGGREGATE_TABLE
 
 On-demand data tool — use when sheet data is truncated or you need rows not in context:
 {
@@ -46,6 +46,17 @@ Clear/remove fill: { "type": "FORMAT_MATCHING_ROWS", "sheetName": "Purchase Regi
 - filter.column MUST be the header name, never a numeric index
 - To clear highlights use format.clearFill true — never white (#FFFFFF) and never per-row FORMAT_RANGE chains
 - Light red → "#FFC7CE"; light yellow → "#FFF2CC"; light green → "#C6EFCE"
+
+SET_MATCHING_ROWS schema (set a column value on rows matching a filter — Office.js scans the FULL used range; NEVER enumerate SET_CELL/BATCH_SET from the sample):
+{ "type": "SET_MATCHING_ROWS", "sheetName": "Purchase Register", "range": "A1:L51", "hasHeaders": true, "filter": { "column": "Payment Status", "operator": "equals", "value": "Paid" }, "targetColumn": "Remarks", "value": "Cleared" }
+- Use for "add remarks to paid invoices", "set Status to X where Y", "mark matching rows as Z"
+- filter selects WHICH rows; targetColumn + value is WHAT to write
+- Omit filter to update EVERY data row in targetColumn (e.g. clear a whole column)
+- Clear/empty a column: { "type": "SET_MATCHING_ROWS", "sheetName": "Purchase Register", "range": "A1:L51", "hasHeaders": true, "targetColumn": "Remarks", "value": "" }
+- Resolve range from the sheet's usedRange / dimensions (e.g. A1:L{rowCount}) — do not limit to sampled rows
+- VALUE PHRASING: "Called Cleared" / "call it Cleared" / ", Called Cleared" means value "Cleared" — never write the literal "Called Cleared"
+- Do NOT emit SET_CELL lists for each matching row. Compressed context may show only ~10 sample rows; SET_MATCHING_ROWS updates every match on the sheet.
+- Clear/empty/wipe/blank intents are overwrite-confirmed by the pipeline — still emit SET_MATCHING_ROWS with value "" (do not invent INSERT_COLUMN)
 
 MOVE_RANGE schema (relocate an entire range without filtering):
 { "type": "MOVE_RANGE", "sourceSheet": "Sheet1", "sourceRange": "A1:D20", "destSheet": "Archive", "destStartCell": "A1" }
@@ -105,7 +116,7 @@ Rules:
 - Set sheetName on actions when targeting a non-active sheet
 - For large sheets: check dimensions vs visible rows — use toolRequest before SORT_RANGE or row-specific edits
 - suggestedActionType is a HINT only: if it does not fit the subtask (e.g. AGGREGATE_TABLE for a single KPI label + SUM formula in A1:B1), IGNORE it and emit the correct actions (ADD_SHEET / SET_CELL / SET_FORMULA / etc.)
-- NATIVE RANGE ACTIONS (critical): When suggestedActionType is COPY_FILTERED_RANGE, FORMAT_MATCHING_ROWS, MOVE_RANGE, or AGGREGATE_TABLE AND the subtask clearly matches that operation, emit exactly ONE action of that type with resolved parameters. Do NOT enumerate rows as SET_CELL. Do NOT call get_range_data to re-transcribe source values — Office.js reads and writes the data directly.
+- NATIVE RANGE ACTIONS (critical): When suggestedActionType is COPY_FILTERED_RANGE, FORMAT_MATCHING_ROWS, SET_MATCHING_ROWS, MOVE_RANGE, or AGGREGATE_TABLE AND the subtask clearly matches that operation, emit exactly ONE action of that type with resolved parameters. Do NOT enumerate rows as SET_CELL. Do NOT call get_range_data to re-transcribe source values — Office.js reads and writes the data directly.
 - When suggestedActionType is CREATE_CHART or UPDATE_CHART, emit exactly one such action. For UPDATE_CHART, use chartId from a prior CREATE_CHART in previous actions / conversation — do not recreate the chart.
 - ADD COLUMN (critical): For any "add a new column" / "insert a column called …" request, emit exactly one INSERT_COLUMN with columnName + position ("afterLastColumn" or { afterColumn }). NEVER target an existing column with SET_CELL / SET_FORMULA — writing into occupied cells is blocked and destroys data.
 - If context includes sheetDataFormat/sheetDataHeadFormat as TOON, interpret it as compact tabular data and never return TOON in output

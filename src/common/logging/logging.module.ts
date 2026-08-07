@@ -12,6 +12,11 @@ import { RequestFileLoggerService } from './request-file-logger.service';
 import { FrontendLog, FrontendLogSchema } from './schemas/frontend-log.schema';
 import { PlannerLog, PlannerLogSchema } from './schemas/planner-log.schema';
 import { RequestLog, RequestLogSchema } from './schemas/request-log.schema';
+import {
+  WorkflowTrace,
+  WorkflowTraceSchema,
+} from './schemas/workflow-trace.schema';
+import { WorkflowTraceService } from './workflow-trace.service';
 
 @Module({
   imports: [
@@ -24,6 +29,7 @@ import { RequestLog, RequestLogSchema } from './schemas/request-log.schema';
       { name: RequestLog.name, schema: RequestLogSchema },
       { name: PlannerLog.name, schema: PlannerLogSchema },
       { name: FrontendLog.name, schema: FrontendLogSchema },
+      { name: WorkflowTrace.name, schema: WorkflowTraceSchema },
     ]),
   ],
   controllers: [FrontendLogController],
@@ -31,6 +37,7 @@ import { RequestLog, RequestLogSchema } from './schemas/request-log.schema';
     RequestFileLoggerService,
     PlannerFileLoggerService,
     FrontendFileLoggerService,
+    WorkflowTraceService,
     LogTtlIndexService,
   ],
   exports: [
@@ -38,6 +45,7 @@ import { RequestLog, RequestLogSchema } from './schemas/request-log.schema';
     RequestFileLoggerService,
     PlannerFileLoggerService,
     FrontendFileLoggerService,
+    WorkflowTraceService,
     MongooseModule,
   ],
 })

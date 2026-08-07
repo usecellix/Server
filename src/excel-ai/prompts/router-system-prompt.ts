@@ -13,7 +13,7 @@ Respond ONLY with a valid JSON object — no markdown, no explanation outside th
 ROUTES:
 - "shortcut"  → layout/display commands that need no data (freeze panes, hide/unhide rows or columns, zoom, protect/unprotect sheet, autofit columns, set row height, set column width, set sheet color, add/delete comment)
 - "data"      → read-only data queries (find a value, sum/count/average/max/min a column, list duplicates, list blanks, percentage, cross-sheet lookup) — NO writes
-- "export"    → find rows matching a condition AND copy/move them to a new sheet
+- "export"    → find rows matching a condition and export/report them OUTSIDE the workbook (download/view), without mutating workbook cells
 - "write"     → any modification to cell data, formatting, structure (fill data, create/delete/rename/copy sheet with content, sort, format cells, add rows, write formulas, bold, color)
 - "ask"       → explain a formula, describe data, what-if analysis, help question, no Excel action
 
@@ -24,10 +24,11 @@ AUTOFIT_COLUMNS, HIDE_SHEET, SHOW_SHEET, SET_SHEET_COLOR, ADD_COMMENT, DELETE_CO
 
 RULES:
 1. If the message is clearly a layout command (freeze, hide, zoom, protect), route = "shortcut"
-2. If the message asks to FIND + EXPORT/COPY rows, route = "export"
+2. If the message asks to FIND rows and then export them outside the workbook (download/report), route = "export"
 3. If the message asks to find/search/lookup/sum/count with NO modification, route = "data"
 4. If the message modifies any cell, sheet, row, column, or formatting, route = "write"
    - "sort the sheet…", "filter by…", "highlight…", "delete rows…" are ALWAYS write — never data
+   - "create a new sheet and copy/move filtered rows" is ALWAYS write — never export
    - A column name like "Total Amount" does NOT make a sort/filter request a data query
 5. If in ask/plan mode, force route = "ask" for any write intent
 6. Set confidence >= 0.80 when intent is clear from the message alone

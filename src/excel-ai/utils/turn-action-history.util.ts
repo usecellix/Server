@@ -1,13 +1,19 @@
 import { SheetAction } from '../types/sheet-actions.types';
+import { resolveActionWriteTarget } from './overwrite-confirmation.util';
 
 /**
- * Spec 18 / Spec 13 chart-identity extension: structured record of successful
- * CREATE_CHART / AGGREGATE_TABLE (and UPDATE_CHART) so follow-ups can resolve
- * "the current" / "same data" without re-guessing ranges from a compressed sample.
+ * Spec 18 / Spec 13 chart-identity extension + Spec 21 overwrite-refinement:
+ * structured record of successful writes / charts so follow-ups can resolve
+ * "the current" ranges and recognize refinements of this conversation's own edits.
  */
 export interface TurnActionRecord {
-  actionType: 'CREATE_CHART' | 'UPDATE_CHART' | 'AGGREGATE_TABLE';
+  actionType: string;
   sheetName: string;
+  /** Spec 21 — range this turn wrote into (sheet-qualified when known). */
+  affectedRange?: string;
+  /** Spec 21 — named column for SET_MATCHING_ROWS-style writes. */
+  targetColumn?: string;
+  turnIndex?: number;
   sourceRange?: string;
   sourceSheetName?: string;
   destStartCell?: string;
@@ -17,7 +23,23 @@ export interface TurnActionRecord {
   groupByColumn?: string;
 }
 
-const TRACKED_TYPES = new Set(['CREATE_CHART', 'UPDATE_CHART', 'AGGREGATE_TABLE']);
+const CHART_TABLE_TYPES = new Set(['CREATE_CHART', 'UPDATE_CHART', 'AGGREGATE_TABLE']);
+
+const WRITE_TRACKED_TYPES = new Set([
+  'SET_CELL',
+  'SET_FORMULA',
+  'BATCH_SET',
+  'WRITE_TABLE',
+  'FILL_DOWN',
+  'FILL_RIGHT',
+  'AUTO_FILL',
+  'SET_MATCHING_ROWS',
+  'COPY_FILTERED_RANGE',
+  'MOVE_RANGE',
+  'AGGREGATE_TABLE',
+]);
+
+const TRACKED_TYPES = new Set([...CHART_TABLE_TYPES, ...WRITE_TRACKED_TYPES]);
 
 export function extractTurnActionRecords(actions: unknown[] | undefined | null): TurnActionRecord[] {
   if (!Array.isArray(actions)) return [];
@@ -33,10 +55,14 @@ export function extractTurnActionRecords(actions: unknown[] | undefined | null):
         action.sheetName ?? action.sourceSheetName ?? action.sourceSheet ?? '',
       ).trim();
       if (!sheetName && !action.chartId) continue;
+      const sourceRange = optionalString(action.sourceRange ?? action.range);
       records.push({
         actionType: action.type,
         sheetName: sheetName || 'Sheet1',
-        sourceRange: optionalString(action.sourceRange ?? action.range),
+        affectedRange: sourceRange
+          ? qualify(sheetName || 'Sheet1', sourceRange)
+          : undefined,
+        sourceRange,
         sourceSheetName: optionalString(action.sourceSheetName ?? action.sourceSheet),
         destStartCell: optionalString(action.destCell ?? action.destStartCell),
         chartId: optionalString(action.chartId),
@@ -46,17 +72,33 @@ export function extractTurnActionRecords(actions: unknown[] | undefined | null):
     }
 
     if (action.type === 'AGGREGATE_TABLE') {
+      const writeTarget = resolveActionWriteTarget(action as never);
       const sheetName = String(action.destSheet ?? action.sheetName ?? '').trim();
       records.push({
         actionType: 'AGGREGATE_TABLE',
         sheetName: sheetName || String(action.sourceSheet ?? 'Sheet1'),
+        affectedRange: writeTarget?.affectedRange,
         sourceRange: optionalString(action.sourceRange ?? action.range),
         sourceSheetName: optionalString(action.sourceSheet),
         destStartCell: optionalString(action.destStartCell),
         destSheet: optionalString(action.destSheet),
         groupByColumn: optionalString(action.groupByColumn),
       });
+      continue;
     }
+
+    // Spec 21 write tracking
+    const writeTarget = resolveActionWriteTarget(action as never);
+    if (!writeTarget) continue;
+    records.push({
+      actionType: action.type,
+      sheetName: writeTarget.sheetName,
+      affectedRange: writeTarget.affectedRange,
+      targetColumn: writeTarget.targetColumn,
+      sourceRange: optionalString(action.sourceRange ?? action.range),
+      destSheet: optionalString(action.destSheet),
+      destStartCell: optionalString(action.destStartCell),
+    });
   }
 
   return records;
@@ -70,7 +112,7 @@ function coerceTurnActionRecord(raw: StoredTurnActionRecord): TurnActionRecord |
   if (!TRACKED_TYPES.has(raw.actionType) || typeof raw.sheetName !== 'string') return null;
   return {
     ...raw,
-    actionType: raw.actionType as TurnActionRecord['actionType'],
+    actionType: raw.actionType,
   };
 }
 
@@ -88,13 +130,15 @@ export function collectRecentTurnActionRecords(
     if (msg.role !== 'assistant') continue;
 
     const fromMeta = Array.isArray(msg.metadata?.turnActionRecords)
-      ? msg.metadata!.turnActionRecords!.map(coerceTurnActionRecord).filter((r): r is TurnActionRecord => r != null)
+      ? msg.metadata!.turnActionRecords!
+          .map(coerceTurnActionRecord)
+          .filter((r): r is TurnActionRecord => r != null)
       : [];
     const fromActions = extractTurnActionRecords(msg.metadata?.actions);
     const batch = fromMeta.length > 0 ? fromMeta : fromActions;
 
     for (const record of batch) {
-      collected.push(record);
+      collected.push({ ...record, turnIndex: i });
       if (collected.length >= limit) break;
     }
   }
@@ -120,6 +164,8 @@ export function formatTurnActionRecordsForExecutor(records: TurnActionRecord[]):
     if (r.chartType) bits.push(`chartType=${r.chartType}`);
     if (r.sourceSheetName) bits.push(`sourceSheet=${r.sourceSheetName}`);
     if (r.sourceRange) bits.push(`sourceRange=${r.sourceRange}`);
+    if (r.affectedRange) bits.push(`affectedRange=${r.affectedRange}`);
+    if (r.targetColumn) bits.push(`targetColumn=${r.targetColumn}`);
     if (r.destSheet) bits.push(`destSheet=${r.destSheet}`);
     if (r.destStartCell) bits.push(`destStartCell=${r.destStartCell}`);
     if (r.groupByColumn) bits.push(`groupBy=${r.groupByColumn}`);
@@ -128,7 +174,7 @@ export function formatTurnActionRecordsForExecutor(records: TurnActionRecord[]):
   });
 
   return [
-    'Prior turn chart/table actions (authoritative — use these ranges for "the current" / "same data" / "along with the current"; do NOT re-guess from a sampled preview):',
+    'Prior turn actions (authoritative — reuse ranges for "the current" / "same data"; refinements of affectedRange may overwrite with confirmation):',
     ...lines,
   ].join('\n');
 }
@@ -175,4 +221,11 @@ function optionalString(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined;
   const trimmed = value.trim();
   return trimmed || undefined;
+}
+
+function qualify(sheetName: string, local: string): string {
+  const sheet = sheetName.trim();
+  const range = local.trim();
+  if (!range) return '';
+  return sheet ? `${sheet}!${range}` : range;
 }

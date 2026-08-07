@@ -1,5 +1,6 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { AppConfigService } from '../config/app-config.service';
+import { WorkflowTraceService } from '../common/logging/workflow-trace.service';
 import { OpenRouterService } from '../excel-ai/services/openrouter.service';
 import {
   VERIFIER_SYSTEM_PROMPT,
@@ -24,6 +25,7 @@ export class VerifierAgent {
     private readonly llm: OpenRouterService,
     private readonly config: AppConfigService,
     private readonly structuredLogger: StructuredLogger = new StructuredLogger(),
+    @Optional() private readonly workflowTrace?: WorkflowTraceService,
   ) {}
 
   async verify(
@@ -97,6 +99,15 @@ export class VerifierAgent {
         rawResponse: raw,
         parsedResponse: normalized,
       });
+      this.recordWorkflowNode(
+        correlationId,
+        startedAt,
+        subtasks,
+        actionsBySubtask,
+        normalized,
+        true,
+        model,
+      );
       return normalized;
     }
 
@@ -124,7 +135,52 @@ export class VerifierAgent {
       parsedResponse: fallback,
       error: 'Verifier JSON parse failed',
     });
+    this.recordWorkflowNode(
+      correlationId,
+      startedAt,
+      subtasks,
+      actionsBySubtask,
+      fallback,
+      false,
+      model,
+      'Verifier JSON parse failed',
+    );
     return fallback;
+  }
+
+  private recordWorkflowNode(
+    correlationId: string,
+    startedAt: number,
+    subtasks: SubTask[],
+    actionsBySubtask: Record<string, Action[]>,
+    result: VerifierOutput,
+    success: boolean,
+    model: string,
+    error?: string,
+  ): void {
+    this.workflowTrace?.appendNode(correlationId, {
+      id: `verifier:${startedAt}`,
+      type: 'verifier',
+      label: `Verifier · ${result.passed ? 'PASS' : 'FAIL'}`,
+      status: success && result.passed ? 'success' : success ? 'failed' : 'failed',
+      startedAt: new Date(startedAt),
+      endedAt: new Date(),
+      durationMs: Date.now() - startedAt,
+      input: {
+        subtaskIds: subtasks.map((s) => s.id),
+        actionCounts: Object.fromEntries(
+          Object.entries(actionsBySubtask).map(([id, actions]) => [id, actions.length]),
+        ),
+      },
+      output: {
+        passed: result.passed,
+        feedback: result.feedback,
+        issues: result.issues,
+        subtaskResults: result.subtaskResults,
+        ...(error ? { error } : {}),
+      },
+      meta: { model, agent: 'verifier' },
+    });
   }
 
   private tryNormalize(

@@ -4,6 +4,7 @@ import { randomUUID } from 'crypto';
 import { Model } from 'mongoose';
 import { Action } from '../agents/types/agent.types';
 import { WorkbookContext } from '../agents/types/agent.types';
+import { WorkflowTraceService } from '../common/logging/workflow-trace.service';
 import { buildShadowWorkbook } from '../virtual/shadowWorkbook';
 import { virtualApply } from '../virtual/virtualApply';
 import {
@@ -35,6 +36,7 @@ export class ChangeSetService {
   constructor(
     @InjectModel(ChangeSet.name)
     private readonly changeSetModel: Model<ChangeSetDocument>,
+    private readonly workflowTrace: WorkflowTraceService,
   ) {}
 
   async createPreview(input: CreatePreviewInput): Promise<ChangeSetRecord> {
@@ -85,6 +87,18 @@ export class ChangeSetService {
       throw new NotFoundException(`Change set ${changeSetId} not found or not previewed`);
     }
     this.logger.log(`Change set ${changeSetId} marked applied`);
+    this.workflowTrace.appendTerminalByChangeSet(
+      changeSetId,
+      {
+        id: `accept:${Date.now()}`,
+        type: 'accept',
+        label: 'Accept / Apply',
+        status: 'success',
+        input: { changeSetId },
+        output: { status: 'applied', appliedAt: doc.appliedAt },
+      },
+      'accepted',
+    );
     return this.toRecord(doc);
   }
 
@@ -108,6 +122,18 @@ export class ChangeSetService {
     await doc.save();
 
     this.logger.log(`Change set ${changeSetId} reverted with ${inverseActions.length} inverse action(s)`);
+    this.workflowTrace.appendTerminalByChangeSet(
+      changeSetId,
+      {
+        id: `reject:${Date.now()}`,
+        type: 'reject',
+        label: 'Revert',
+        status: 'success',
+        input: { changeSetId },
+        output: { status: 'reverted', inverseActionCount: inverseActions.length },
+      },
+      'rejected',
+    );
     return { changeSet: this.toRecord(doc), inverseActions };
   }
 

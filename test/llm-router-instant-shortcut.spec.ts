@@ -41,7 +41,7 @@ describe('LlmRouterService.find+export routing', () => {
       activeSheet: 'DemoApps',
       sheetHeaders: ['Job Title', 'Company', 'Student Name', 'Student Email', 'Status'],
     });
-    expect(decision.route).toBe('export');
+    expect(decision.route).toBe('write');
   });
 
   it('still routes pure find as data', async () => {

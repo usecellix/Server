@@ -23,12 +23,15 @@ export interface WorkbookContext {
   formulaValidationFeedback?: string;
   formulaValidationIssues?: FormulaValidationIssue[];
   /**
-   * Spec 18 — structured prior CREATE_CHART / AGGREGATE_TABLE records for
-   * follow-ups like "along with the current".
+   * Spec 18 / Spec 21 — structured prior turn writes (charts + cell ranges)
+   * for "along with the current" and overwrite-refinement recognition.
    */
   priorTurnActions?: Array<{
     actionType: string;
     sheetName: string;
+    affectedRange?: string;
+    targetColumn?: string;
+    turnIndex?: number;
     sourceRange?: string;
     sourceSheetName?: string;
     destStartCell?: string;

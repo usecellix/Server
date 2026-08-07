@@ -1,5 +1,6 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { AppConfigService } from '../config/app-config.service';
+import { WorkflowTraceService } from '../common/logging/workflow-trace.service';
 import { OpenRouterService } from '../excel-ai/services/openrouter.service';
 import { EXECUTOR_SYSTEM_PROMPT, buildExecutorUserMessage } from './prompts/executor.prompt';
 import { normalizeExecutorOutput } from './utils/normalize-executor-output.util';
@@ -26,6 +27,7 @@ export class ExecutorAgent {
     private readonly llm: OpenRouterService,
     private readonly config: AppConfigService,
     private readonly structuredLogger: StructuredLogger = new StructuredLogger(),
+    @Optional() private readonly workflowTrace?: WorkflowTraceService,
   ) {}
 
   get modelName(): string {
@@ -93,6 +95,7 @@ export class ExecutorAgent {
             parsedResponse: result,
             error: 'Executor blocked',
           });
+          this.recordWorkflowNode(correlationId, startedAt, subtask, result, false, model, 'Executor blocked');
           return { ...result, parsedOnFirstAttempt };
         }
         return { ...this.applySortFallback(subtask, context, result), parsedOnFirstAttempt };
@@ -111,6 +114,7 @@ export class ExecutorAgent {
         rawResponse: raw,
         parsedResponse: result,
       });
+      this.recordWorkflowNode(correlationId, startedAt, subtask, result, true, model);
       return { ...result, parsedOnFirstAttempt };
     }
 
@@ -136,6 +140,15 @@ export class ExecutorAgent {
       parsedResponse: fallback,
       error: 'Executor JSON parse failed after retry',
     });
+    this.recordWorkflowNode(
+      correlationId,
+      startedAt,
+      subtask,
+      fallback,
+      false,
+      model,
+      'Executor JSON parse failed after retry',
+    );
     return { ...fallback, parsedOnFirstAttempt: false };
   }
 
@@ -164,6 +177,43 @@ export class ExecutorAgent {
     };
 
     return this.execute(originalStep, retryAwareContext, previousActions, correlationId);
+  }
+
+  private recordWorkflowNode(
+    correlationId: string,
+    startedAt: number,
+    subtask: SubTask,
+    result: ExecutorOutput,
+    success: boolean,
+    model: string,
+    error?: string,
+  ): void {
+    this.workflowTrace?.appendNode(correlationId, {
+      id: `executor:${subtask.id}:${startedAt}`,
+      type: 'executor',
+      label: `Executor · ${subtask.id}`,
+      status: success ? 'success' : 'failed',
+      startedAt: new Date(startedAt),
+      endedAt: new Date(),
+      durationMs: Date.now() - startedAt,
+      input: {
+        subtaskId: subtask.id,
+        description: subtask.description,
+        targetSheet: subtask.targetSheet,
+        dependsOn: subtask.dependsOn,
+      },
+      output: {
+        actions: result.actions.map((a) => ({
+          type: a.type,
+          sheetName: (a as { sheetName?: string }).sheetName,
+        })),
+        isDone: result.isDone,
+        nextStep: result.nextStep,
+        toolRequest: result.toolRequest,
+        ...(error ? { error } : {}),
+      },
+      meta: { model, agent: 'executor', subtaskId: subtask.id },
+    });
   }
 
   private tryParseExecutor(raw: string, subtask: SubTask): ExecutorOutput | null {

@@ -395,9 +395,35 @@ function virtualDeleteColumnLegacy(wb: ShadowWorkbook, action: Action): void {
   const sheet = getSheet(wb, sheetName);
   if (!sheet) return;
 
-  const cols =
-    action.columns?.map((c) => letterToColIndex(c)).sort((a, b) => b - a) ??
-    (action.col !== undefined ? [action.col] : []);
+  const rawColumns = Array.isArray(action.columns) ? action.columns : [];
+  const resolvedIndices = new Set<number>();
+
+  for (const raw of rawColumns) {
+    const token = String(raw ?? '').trim();
+    if (!token) continue;
+    // Pure column letter(s) e.g. K, AA
+    if (/^[A-Za-z]{1,3}$/.test(token)) {
+      resolvedIndices.add(letterToColIndex(token));
+      continue;
+    }
+    // Semantic header name e.g. "Payment Status"
+    const headerIdx = findHeaderColumnIndex(sheet, token);
+    if (headerIdx >= 0) {
+      resolvedIndices.add(headerIdx);
+    }
+  }
+
+  if (action.col !== undefined && Number.isFinite(action.col)) {
+    resolvedIndices.add(action.col);
+  }
+
+  const cols = [...resolvedIndices].sort((a, b) => b - a);
+  if (cols.length === 0) {
+    logger.warn(
+      `VirtualApply: DELETE_COLUMN had no resolvable columns (columns=${JSON.stringify(rawColumns)})`,
+    );
+    return;
+  }
 
   for (const colIndex of cols) {
     const newCells = new Map<string, ShadowCell>();
@@ -405,14 +431,36 @@ function virtualDeleteColumnLegacy(wb: ShadowWorkbook, action: Action): void {
       const col = letterToColIndex(addr.replace(/\d+/g, ''));
       const row = addr.replace(/[A-Z]+/i, '');
       if (col > colIndex) {
-        newCells.set(`${colIndexToLetter(col - 1)}${row}`, cell);
+        const newAddr = `${colIndexToLetter(col - 1)}${row}`;
+        newCells.set(newAddr, cell);
+        wb.changedCells.add(`${sheetName}!${newAddr}`);
       } else if (col < colIndex) {
         newCells.set(addr, cell);
+      } else {
+        // Deleted cell — mark old address so diff can see the removal
+        wb.changedCells.add(`${sheetName}!${addr}`);
       }
     }
     sheet.cells = newCells;
     sheet.columnCount = Math.max(0, sheet.columnCount - 1);
   }
+}
+
+function findHeaderColumnIndex(sheet: ShadowSheet, headerName: string): number {
+  const target = headerName.trim().toLowerCase();
+  for (let c = 0; c < sheet.columnCount; c += 1) {
+    const addr = `${colIndexToLetter(c)}1`;
+    const cell = sheet.cells.get(addr);
+    if (
+      cell &&
+      String(cell.value ?? '')
+        .trim()
+        .toLowerCase() === target
+    ) {
+      return c;
+    }
+  }
+  return -1;
 }
 
 function virtualAddSheet(wb: ShadowWorkbook, name: string, copyFrom?: string): void {

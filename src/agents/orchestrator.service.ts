@@ -3,6 +3,9 @@ import { PlannerAgent } from './planner.agent';
 import { AgenticLoopService } from './agenticLoop.service';
 import { SseEmitter } from './sse.emitter';
 import { Action, AgentRunOptions, PlannerOutput } from './types/agent.types';
+import { annotateExplicitOverwriteConfirmation } from '../excel-ai/utils/overwrite-confirmation.util';
+import { annotateClearIntentOverwrite } from './utils/clear-intent-overwrite.util';
+import { pruneSpuriousAddSheetActions } from './utils/compound-action.util';
 
 export interface OrchestratorRunResult {
   actions: Action[];
@@ -142,8 +145,16 @@ export class OrchestratorService {
       step: `${allActions.length} actions ready for preview`,
     });
 
+    const pruned = pruneSpuriousAddSheetActions(allActions);
+    const clearAnnotated = annotateClearIntentOverwrite(pruned, prompt);
+    const overwriteAnnotated = annotateExplicitOverwriteConfirmation(
+      clearAnnotated,
+      prompt,
+      context.priorTurnActions ?? [],
+    );
+
     return {
-      actions: allActions,
+      actions: overwriteAnnotated,
       iterationsRun,
       verifierPassed,
       clarificationRequested: false,

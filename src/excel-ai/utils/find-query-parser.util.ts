@@ -58,6 +58,14 @@ function extractTextFindPhrase(message: string): string | null {
   const withoutVerb = message.replace(FIND_VERB_CAPTURE, '').trim();
   if (!withoutVerb) return null;
 
+  // Instruction-style prompts can contain write/copy structure after the "find" verb
+  // (e.g. "find ... to a new sheet only paid"). In those cases, extract a concrete
+  // terminal filter term rather than returning the entire clause.
+  const onlyMatch = withoutVerb.match(
+    /\bonly\s+([A-Za-z0-9][A-Za-z0-9 _-]{0,30})(?:\s+(?:rows?|records?|entries?))?\s*$/i,
+  );
+  if (onlyMatch?.[1]) return onlyMatch[1].trim();
+
   const match = withoutVerb.match(
     /^(?:all\s+)?(?:the\s+)?(?:rows?\s+)?(?:with|where|containing|matching|for|having)?\s*(.+?)\s*$/i,
   );
@@ -65,7 +73,17 @@ function extractTextFindPhrase(message: string): string | null {
 
   let phrase = match[1].trim();
   phrase = phrase.replace(/\s+(?:rows?|records?|entries?)\s*$/i, '').trim();
-  return phrase || null;
+
+  // Safety: do not treat write-intent clauses as the search phrase.
+  if (
+    !phrase ||
+    /\b(create|copy|move|sheet|export|transfer|new\s+sheet)\b/i.test(phrase) ||
+    (/\b(from|to|into|with)\b/i.test(phrase) && phrase.length > 45)
+  ) {
+    return null;
+  }
+
+  return phrase;
 }
 
 /** Aggregation prompts (total/sum/average) are not cell lookup searches. */

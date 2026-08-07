@@ -23,6 +23,12 @@ import { DataQueryService, FindMatch } from './data-query.service';
 import { IntentClassifierService, intentIsReadOnly } from './intent-classifier.service';
 import { LlmCallTelemetry, LlmUsage, OpenRouterChatMessage, OpenRouterService } from './openrouter.service';
 import { SheetAnalysis, SheetAnalyzerService } from './sheet-analyzer.service';
+import { pruneSpuriousAddSheetActions } from '../../agents/utils/compound-action.util';
+import { annotateClearIntentOverwrite } from '../../agents/utils/clear-intent-overwrite.util';
+import {
+  annotateExplicitOverwriteConfirmation,
+  type OverwriteTurnActionRecord,
+} from '../utils/overwrite-confirmation.util';
 
 export { LlmRequestError, LlmRequestError as OpenAiRequestError } from '../errors/llm-request.error';
 export type { SheetActionPayload };
@@ -421,8 +427,19 @@ Sheet has ${analysis.rowCount} rows, ${analysis.columnCount} columns. Next appen
     actions: SheetActionPayload[],
     analysis: SheetAnalysis,
     richWorkbookContext?: RichWorkbookContext,
+    userMessage?: string,
+    priorTurnActions?: OverwriteTurnActionRecord[],
   ): SheetActionPayload[] {
-    let finalActions = actions;
+    let finalActions = pruneSpuriousAddSheetActions(actions as never[]) as SheetActionPayload[];
+    if (userMessage) {
+      finalActions = annotateClearIntentOverwrite(finalActions, userMessage);
+      // Spec 21: confirm overwrite for explicit change-language or prior-turn overlap.
+      finalActions = annotateExplicitOverwriteConfirmation(
+        finalActions,
+        userMessage,
+        priorTurnActions ?? [],
+      );
+    }
     if (richWorkbookContext) {
       finalActions = injectMissingFormats(finalActions, richWorkbookContext);
       const validation = validateCrossSheetActions(finalActions, richWorkbookContext);
@@ -602,6 +619,7 @@ Sheet has ${analysis.rowCount} rows, ${analysis.columnCount} columns. Next appen
       case 'SORT_RANGE':
       case 'COPY_FILTERED_RANGE':
       case 'FORMAT_MATCHING_ROWS':
+      case 'SET_MATCHING_ROWS':
       case 'MOVE_RANGE':
       case 'AGGREGATE_TABLE':
       case 'UPDATE_CHART':
@@ -620,6 +638,27 @@ Sheet has ${analysis.rowCount} rows, ${analysis.columnCount} columns. Next appen
             (!action.format?.fillColor && !action.format?.clearFill)
           ) {
             return null;
+          }
+          if (action.hasHeaders === undefined) action.hasHeaders = true;
+        }
+        if (action.type === 'SET_MATCHING_ROWS') {
+          if (
+            !action.sheetName ||
+            !action.range ||
+            !action.targetColumn ||
+            action.value === undefined
+          ) {
+            return null;
+          }
+          if (action.filter) {
+            if (
+              !action.filter.column ||
+              !action.filter.operator ||
+              (typeof action.filter.value !== 'string' &&
+                typeof action.filter.value !== 'number')
+            ) {
+              return null;
+            }
           }
           if (action.hasHeaders === undefined) action.hasHeaders = true;
         }

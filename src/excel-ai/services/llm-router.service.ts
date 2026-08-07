@@ -120,8 +120,7 @@ export class LlmRouterService {
   private applyWriteIntentGuard(decision: RouterDecision, message: string): RouterDecision {
     if (
       decision.route === 'write' ||
-      decision.route === 'shortcut' ||
-      decision.route === 'export'
+      decision.route === 'shortcut'
     ) {
       return decision;
     }

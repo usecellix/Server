@@ -15,7 +15,7 @@ import { SheetAction } from '../excel-ai/types/sheet-actions.types';
  */
 
 // Actions that are irreversible or high-risk — always run Verifier
-const ALWAYS_VERIFY_ACTION_TYPES = new Set([
+export const DESTRUCTIVE_ACTION_TYPES = new Set([
   'DELETE_SHEET',
   'CLEAR_RANGE',
   'CLEAR_ALL',
@@ -24,6 +24,11 @@ const ALWAYS_VERIFY_ACTION_TYPES = new Set([
   'DELETE_COLUMN',
   'PROTECT_SHEET',
 ]);
+
+/** Spec 22 — structural / irreversible action types unsafe to ship alone as partial progress. */
+export function isDestructiveActionType(type: string): boolean {
+  return DESTRUCTIVE_ACTION_TYPES.has(type);
+}
 
 // Max rows a DELETE_ROW action can touch before requiring Verifier
 const BULK_DELETE_ROW_THRESHOLD = 5;
@@ -60,7 +65,7 @@ export function shouldSkipVerifier(input: VerifierSkipInput): VerifierSkipDecisi
 
   // Check for destructive action types
   for (const action of actions) {
-    if (ALWAYS_VERIFY_ACTION_TYPES.has(action.type)) {
+    if (DESTRUCTIVE_ACTION_TYPES.has(action.type)) {
       // Special case: DELETE_ROW is OK for small counts
       if (action.type === 'DELETE_ROW') {
         const rowCount = getDeleteRowCount(action);

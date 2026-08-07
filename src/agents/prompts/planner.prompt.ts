@@ -50,6 +50,9 @@ Rules:
       { "id": "s2", "description": "Copy header + rows where Payment Status = Pending from 'Purchase Register' to 'Pending Payments' starting at A1", "targetSheet": "Pending Payments", "dependsOn": ["s1"], "estimatedActions": 1, "suggestedActionType": "COPY_FILTERED_RANGE" }
     ]
   }
+- SET VALUE ON MATCHING ROWS (critical): When the user asks to set/add/fill a column value for rows matching a condition — e.g. "add remarks to paid invoices called Cleared", "mark pending rows as Follow-up" — plan ONE subtask with suggestedActionType "SET_MATCHING_ROWS" and estimatedActions: 1. Do NOT plan per-row SET_CELL / BATCH_SET. "Called X" / "call it X" means the cell VALUE is X (without the word Called).
+  Example: { "id": "s1", "description": "Set Remarks to Cleared where Payment Status = Paid on Purchase Register", "targetSheet": "Purchase Register", "dependsOn": [], "estimatedActions": 1, "suggestedActionType": "SET_MATCHING_ROWS" }
+- CLEAR / EMPTY COLUMN (critical): "make Remarks empty", "clear the remarks column", "no values in Remarks" → ONE SET_MATCHING_ROWS subtask with empty value (omit filter to clear the whole column). This is an intentional overwrite.
 - suggestedActionType is optional; set it when the native action type is clear so the Executor emits that action directly
 - DASHBOARD / multi-chart requests (critical): When the user asks to "build a dashboard", "summary sheet with charts", or similar — plan a BOUNDED set of subtasks, never an open-ended chain:
   1) Create destination sheet (if needed)
@@ -58,10 +61,19 @@ Rules:
   Layout policy (fixed — do not invent coordinates): KPI/summary formulas in rows 1–2; first aggregate table at A4; stack further tables with 2 blank rows between; place each chart to the right of its source table (e.g. table at A4 → chart startCell D4 / endCell K18).
 - KPI / single label+formula cells (e.g. "Total Eligible ITC" in A1 and =SUM(...) in B1): plan SET_CELL / SET_FORMULA (and ADD_SHEET if needed). Do NOT set suggestedActionType AGGREGATE_TABLE — that is only for group-by summary tables.
 - Chart follow-ups ("make it horizontal", "change colors"): single UPDATE_CHART subtask with suggestedActionType "UPDATE_CHART", using chartId from the prior CREATE_CHART in conversation/previous actions — never recreate the chart from scratch unless asked.
-- Large workbooks may send metadata only (dimensions, headers, named ranges) — plan subtasks that name the target sheet/range; executor can fetch data on demand (except COPY_FILTERED_RANGE / MOVE_RANGE / AGGREGATE_TABLE — those never need row-value fetches)
+- Large workbooks may send metadata only (dimensions, headers, named ranges) — plan subtasks that name the target sheet/range; executor can fetch data on demand (except COPY_FILTERED_RANGE / MOVE_RANGE / AGGREGATE_TABLE / SET_MATCHING_ROWS / FORMAT_MATCHING_ROWS — those never need row-value fetches)
 - If workbook context contains sheet data markers like sheetDataFormat/sheetDataHeadFormat with TOON, interpret those blocks as compact tabular data and do not return TOON
 - CROSS-SHEET AWARENESS: Consider the ENTIRE workbook, not just the active sheet. When the target entity (e.g. a customer or invoice) may exist in multiple sheets, plan subtasks per affected sheet and use dependsOn + named ranges/references to keep related sheets consistent.
 - If workbook context is empty, set clarificationsNeeded asking which sheet/column to use — do not return prose outside JSON
+- MULTI-CLAUSE REQUESTS (critical): When the user joins two write intents with "and" / "then" / "also" — e.g. "delete the Payment Status column and in Remarks add priority to unpaid invoices" — you MUST emit a separate subtask for EVERY clause. Never drop a clause.
+  Ordering for delete+annotate compounds (critical): If one clause deletes or clears a column that another clause uses as a filter/condition (Payment Status, Status, etc.), the annotate/filter/SET_MATCHING_ROWS subtask MUST come FIRST, and the DELETE_COLUMN / CLEAR subtask MUST list it in dependsOn. Never plan the destructive half first.
+  Example for "delete Payment Status and in Remarks add priority to unpaid invoices":
+  {
+    "subtasks": [
+      { "id": "s1", "description": "Set Remarks to Priority where Payment Status indicates unpaid", "targetSheet": "Purchase Register", "dependsOn": [], "estimatedActions": 1, "suggestedActionType": "SET_MATCHING_ROWS" },
+      { "id": "s2", "description": "Delete the Payment Status column", "targetSheet": "Purchase Register", "dependsOn": ["s1"], "estimatedActions": 1, "suggestedActionType": "DELETE_COLUMN" }
+    ]
+  }
 `;
 
 export function buildPlannerUserMessage(

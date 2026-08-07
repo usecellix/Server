@@ -68,6 +68,7 @@ import {
   formatTurnActionRecordsForExecutor,
   referencesPriorChartOrTable,
 } from '../utils/turn-action-history.util';
+import { annotateExplicitOverwriteConfirmation } from '../utils/overwrite-confirmation.util';
 import { buildEnrichedPromptContext } from '../../formula/enrich-context.util';
 import { FormulaAnalyzer } from '../../formula/formula.analyzer';
 import { SmartDataQueryService } from './smart-data-query.service';
@@ -84,6 +85,8 @@ import {
   buildUserFacingSummary,
   tierProcessingLabel,
 } from '../utils/user-facing-response.util';
+import { WorkflowTraceService } from '../../common/logging/workflow-trace.service';
+import type { WorkflowTraceStatus } from '../../common/logging/schemas/workflow-trace.schema';
 
 const MAX_MESSAGES = 50;
 const CONVERSATION_TTL_MS = Number(process.env.CONVERSATION_TTL_HOURS ?? 168) * 60 * 60 * 1000;
@@ -112,6 +115,7 @@ export class ConversationService {
     private readonly tier1SingleAction: Tier1SingleActionService,
     private readonly tier2GenerateVerify: Tier2GenerateVerifyService,
     private readonly structuredLogger: StructuredLogger,
+    private readonly workflowTrace: WorkflowTraceService,
   ) {}
 
   private enrichAgentContext(
@@ -159,6 +163,120 @@ export class ConversationService {
     };
   }
 
+  private startWorkflowTrace(params: {
+    traceId: string;
+    conversationId: string;
+    message: string;
+    mode?: string;
+    request: ConversationRequestDto;
+  }): void {
+    this.workflowTrace.startTrace({
+      traceId: params.traceId,
+      conversationId: params.conversationId,
+      message: params.message,
+      mode: params.mode,
+      requestInput: {
+        message: params.request.message,
+        mode: params.mode,
+        conversationId: params.conversationId,
+        sheetData: params.request.sheetData,
+        hasWorkbookContext: Boolean(params.request.workbookContext),
+        hasPromptContext: Boolean(params.request.promptContext),
+      },
+    });
+  }
+
+  private logWorkflowRouter(
+    traceId: string,
+    decision: RouterDecision,
+  ): void {
+    this.workflowTrace.appendNode(traceId, {
+      id: 'router',
+      type: 'router',
+      label: `Router → ${decision.route}`,
+      status: 'success',
+      input: { message: decision.reasoning },
+      output: {
+        route: decision.route,
+        confidence: decision.confidence,
+        reasoning: decision.reasoning,
+        complexity: decision.complexity,
+        actionHint: decision.actionHint,
+        matchedBy: decision.matchedBy,
+        assumption: decision.assumption,
+      },
+      meta: { route: decision.route },
+    });
+    this.workflowTrace.setMeta(traceId, {
+      route: decision.route,
+      ...(decision.complexity !== undefined ? { tier: decision.complexity } : {}),
+    });
+  }
+
+  private logWorkflowTier(
+    traceId: string,
+    tier: number,
+    actionHint?: string,
+    extra?: Record<string, unknown>,
+  ): void {
+    this.workflowTrace.appendNode(traceId, {
+      id: `tier_${tier}`,
+      type: 'tier',
+      label: `Tier ${tier}`,
+      status: 'success',
+      input: { actionHint, ...extra },
+      output: { tier, actionHint },
+      meta: { tier, actionHint },
+    });
+    this.workflowTrace.setMeta(traceId, { tier });
+  }
+
+  private logWorkflowChangeSet(
+    traceId: string,
+    changeSetId: string,
+    actions: SheetAction[],
+    changesLength?: number,
+  ): void {
+    this.workflowTrace.appendNode(traceId, {
+      id: 'changeset',
+      type: 'changeset',
+      label: 'ChangeSet Preview',
+      status: 'success',
+      input: {
+        actionCount: actions.length,
+        actionTypes: actions.map((a) => a.type),
+      },
+      output: {
+        changeSetId,
+        changesLength,
+        actions: actions.map((a) => ({ type: a.type, sheetName: (a as { sheetName?: string }).sheetName })),
+      },
+      meta: { changeSetId },
+    });
+    this.workflowTrace.setMeta(traceId, { changeSetId });
+  }
+
+  private finalizeWorkflow(
+    traceId: string,
+    status: WorkflowTraceStatus,
+    opts?: {
+      durationMs?: number;
+      changeSetId?: string;
+      route?: string;
+      tier?: number;
+      sseOutput?: unknown;
+    },
+  ): void {
+    this.workflowTrace.finalize(traceId, {
+      status,
+      durationMs: opts?.durationMs,
+      changeSetId: opts?.changeSetId,
+      route: opts?.route,
+      tier: opts?.tier,
+      sseOutput: opts?.sseOutput,
+    });
+  }
+
   async handleConversation(
     request: ConversationRequestDto,
     reply: FastifyReply,
@@ -186,6 +304,26 @@ export class ConversationService {
         const emit = (event: string, data: Record<string, unknown>) =>
           writeSseEvent(reply, event, { ...data, conversationId });
 
+        this.startWorkflowTrace({
+          traceId,
+          conversationId,
+          message: activeRequest.message,
+          mode: requestMode,
+          request: activeRequest,
+        });
+        this.workflowTrace.appendNode(traceId, {
+          id: 'router',
+          type: 'router',
+          label: 'Router → shortcut',
+          status: 'success',
+          output: {
+            route: 'shortcut',
+            confidence: 1,
+            reasoning: 'Matched instant shortcut regex — no LLM needed',
+          },
+        });
+        this.workflowTrace.setMeta(traceId, { route: 'shortcut', tier: 0 });
+
         await this.saveMessage(conversationId, {
           id: `msg_${Date.now()}`,
           role: 'user',
@@ -208,6 +346,7 @@ export class ConversationService {
             actions: shortcutActions,
           },
           emit,
+          { traceId, route: 'shortcut', tier: 0 },
         );
         endSseResponse(reply);
         return;
@@ -251,6 +390,14 @@ export class ConversationService {
       writeSseEvent(reply, event, { ...data, conversationId });
     let localReason = this.engine.hasOpenAi() ? 'llm_not_used' : 'no_llm_provider';
 
+    this.startWorkflowTrace({
+      traceId,
+      conversationId,
+      message: activeRequest.message,
+      mode: requestMode,
+      request: activeRequest,
+    });
+
     try {
       this.logger.log(
         `Conversation request trace=${traceId} conversation=${conversationId} message="${this.clipForLog(activeRequest.message)}" sheet=${analysis.rowCount}x${analysis.columnCount} history=${activeRequest.context?.previousMessages?.length ?? 0}${activeRequest.refinementChangeSetId ? ' quickEdit=true' : ''}`,
@@ -284,7 +431,11 @@ export class ConversationService {
           explanation: 'Wrote headers and all data rows to your sheet.',
           actions: tableActions,
         };
-        await this.emitLocalDecision(conversation.conversationId, decision, emit);
+        await this.emitLocalDecision(conversation.conversationId, decision, emit, {
+          traceId,
+          route: 'write',
+          tier: 0,
+        });
         endSseResponse(reply);
         return;
       }
@@ -301,6 +452,7 @@ export class ConversationService {
       this.logger.log(
         `[${traceId}] Router: route=${routerDecision.route} confidence=${routerDecision.confidence} "${routerDecision.reasoning}"`,
       );
+      this.logWorkflowRouter(traceId, routerDecision);
 
       const routedRequest = this.applyRoutedPromptContext(
         activeRequest,
@@ -330,6 +482,7 @@ export class ConversationService {
           analysis,
           conversationId,
           emit,
+          traceId,
         );
         endSseResponse(reply);
         return;
@@ -345,6 +498,7 @@ export class ConversationService {
                 `Copying matching rows to a new sheet requires **Action** mode. Switch to Action and send the same request again.`,
             },
             emit,
+            { traceId, route: 'export' },
           );
           endSseResponse(reply);
           return;
@@ -360,7 +514,10 @@ export class ConversationService {
           this.logger.log(
             `Find export (router) trace=${traceId} conversation=${conversationId} mode=${activeRequest.mode ?? 'default'}`,
           );
-          await this.emitLocalDecision(conversationId, exportDecision, emit);
+          await this.emitLocalDecision(conversationId, exportDecision, emit, {
+            traceId,
+            route: 'export',
+          });
           endSseResponse(reply);
           return;
         }
@@ -375,6 +532,7 @@ export class ConversationService {
               ambiguityOutcome.clarification,
               emit,
               reply,
+              traceId,
             );
             return;
           }
@@ -443,11 +601,25 @@ export class ConversationService {
       this.logger.log(
         `AI skipped trace=${traceId} conversation=${conversationId} provider=local reason=${localReason} result=${decision.kind} durationMs=${Date.now() - startedAt}`,
       );
-      await this.emitLocalDecision(conversation.conversationId, decision, emit);
+      await this.emitLocalDecision(conversation.conversationId, decision, emit, {
+        traceId,
+        route: 'local',
+      });
       endSseResponse(reply);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unable to process your request';
       this.logger.error(message, error instanceof Error ? error.stack : undefined);
+      this.workflowTrace.appendNode(traceId, {
+        id: 'error',
+        type: 'error',
+        label: 'Error',
+        status: 'failed',
+        output: { message },
+      });
+      this.finalizeWorkflow(traceId, 'failed', {
+        durationMs: Date.now() - startedAt,
+        sseOutput: { error: message },
+      });
       if (error instanceof WriteRouteNoActionError) {
         emit('error', {
           message: error.message,
@@ -509,6 +681,7 @@ export class ConversationService {
     },
     emit: (event: string, data: Record<string, unknown>) => void,
     reply: FastifyReply,
+    traceId?: string,
   ): Promise<void> {
     await this.saveMessage(conversationId, {
       id: `msg_${Date.now()}_assistant`,
@@ -528,6 +701,14 @@ export class ConversationService {
       ambiguityScore: clarification.ambiguityScore,
     });
     emit('done', { message: 'awaiting_clarification' });
+    if (traceId) {
+      this.finalizeWorkflow(traceId, 'clarifying', {
+        sseOutput: {
+          clarification: clarification.question,
+          suggestions: clarification.suggestions,
+        },
+      });
+    }
     endSseResponse(reply);
   }
 
@@ -648,6 +829,7 @@ export class ConversationService {
     analysis: ReturnType<SheetAnalyzerService['analyze']>,
     conversationId: string,
     emit: (event: string, data: Record<string, unknown>) => void,
+    traceId?: string,
   ): Promise<void> {
     emit('status', { message: 'Analyzing your sheet data…' });
 
@@ -684,6 +866,7 @@ export class ConversationService {
         selectCell: findPointers.selectCell,
       },
       emit,
+      traceId ? { traceId, route: 'data' } : undefined,
     );
   }
 
@@ -801,6 +984,13 @@ export class ConversationService {
     conversationId: string,
     decision: EngineResponse,
     emit: (event: string, data: Record<string, unknown>) => void,
+    workflow?: {
+      traceId: string;
+      route?: string;
+      tier?: number;
+      changeSetId?: string;
+      status?: WorkflowTraceStatus;
+    },
   ): Promise<void> {
     if (decision.kind === 'question') {
       await this.saveMessage(conversationId, {
@@ -819,6 +1009,13 @@ export class ConversationService {
         question: decision.question,
         options: decision.options,
       });
+      if (workflow?.traceId) {
+        this.finalizeWorkflow(workflow.traceId, 'clarifying', {
+          route: workflow.route,
+          tier: workflow.tier,
+          sseOutput: { question: decision.question, options: decision.options },
+        });
+      }
       return;
     }
 
@@ -829,7 +1026,7 @@ export class ConversationService {
         content: decision.answer,
         type: 'answer',
         timestamp: new Date(),
-        metadata: this.buildWriteMetadata(decision.actions),
+        metadata: this.buildWriteMetadata(decision.actions, workflow?.changeSetId),
       });
 
       emit('answer', { answer: decision.answer });
@@ -839,6 +1036,19 @@ export class ConversationService {
       });
       emit('conversation_end', { summary: 'Changes applied.' });
       await this.markCompleted(conversationId);
+      if (workflow?.traceId) {
+        this.finalizeWorkflow(workflow.traceId, workflow.status ?? 'completed', {
+          route: workflow.route,
+          tier: workflow.tier,
+          changeSetId: workflow.changeSetId,
+          sseOutput: {
+            kind: 'actions',
+            answer: decision.answer,
+            actionTypes: decision.actions.map((a) => a.type),
+            explanation: decision.explanation,
+          },
+        });
+      }
       return;
     }
 
@@ -875,6 +1085,17 @@ export class ConversationService {
     }
     emit('conversation_end', { summary: 'Ready for your next message.' });
     await this.markCompleted(conversationId);
+    if (workflow?.traceId) {
+      this.finalizeWorkflow(workflow.traceId, workflow.status ?? 'completed', {
+        route: workflow.route,
+        tier: workflow.tier,
+        sseOutput: {
+          kind: 'answer',
+          answer: decision.answer,
+          matchCount: matches?.length ?? 0,
+        },
+      });
+    }
   }
 
   /**
@@ -921,6 +1142,7 @@ export class ConversationService {
             actions: deleteActions,
           },
           emit,
+          { traceId, route: 'write', tier: 0 },
         );
         endSseResponse(reply);
         return;
@@ -930,6 +1152,10 @@ export class ConversationService {
       const tieringMode = getComplexityTieringMode();
       const complexity = resolveExecutableTier(classifiedTier, tieringMode);
       const actionHint = routerDecision.actionHint;
+      this.logWorkflowTier(traceId, complexity, actionHint, {
+        classifiedTier,
+        tieringMode,
+      });
       const agentContext = buildAgentWorkbookContext(
         richWorkbookContext,
         routedRequest.sheetData,
@@ -1433,6 +1659,12 @@ export class ConversationService {
         tier: 2,
       });
       await this.markCompleted(conversationId);
+      this.finalizeWorkflow(traceId, 'failed', {
+        route: 'write',
+        tier: 2,
+        durationMs: result.durationMs,
+        sseOutput: { answer: result.answer, verifierPassed: false },
+      });
       endSseResponse(reply);
       return;
     }
@@ -1441,6 +1673,8 @@ export class ConversationService {
       result.actions,
       analysis,
       richWorkbookContext,
+      request.message,
+      agentContext.priorTurnActions,
     );
 
     this.assertWriteRouteProducedActions({
@@ -1500,6 +1734,20 @@ export class ConversationService {
     });
     emit('conversation_end', { summary: 'Review changes and accept or reject.', tier: 2 });
     await this.markCompleted(conversationId);
+    this.logWorkflowChangeSet(traceId, changeSet.changeSetId, actions, changeSet.changes.length);
+    this.finalizeWorkflow(traceId, 'awaiting_accept', {
+      changeSetId: changeSet.changeSetId,
+      route: 'write',
+      tier: 2,
+      durationMs: result.durationMs,
+      sseOutput: {
+        answer: result.answer,
+        changeSetId: changeSet.changeSetId,
+        actionTypes: actions.map((a) => a.type),
+        changesLength: changeSet.changes.length,
+        userFacingSummary,
+      },
+    });
     endSseResponse(reply);
   }
 
@@ -1534,7 +1782,6 @@ export class ConversationService {
       tier,
       answer,
       processingLabel,
-      actions,
       emit,
       traceId,
       prompt,
@@ -1542,6 +1789,12 @@ export class ConversationService {
       assumption,
       model,
     } = params;
+
+    const actions = annotateExplicitOverwriteConfirmation(
+      params.actions,
+      prompt,
+      agentContext.priorTurnActions ?? [],
+    );
 
     const changeSet = await this.changeSetService.createPreview({
       conversationId,
@@ -1597,6 +1850,19 @@ export class ConversationService {
     });
     emit('conversation_end', { summary: 'Review changes and accept or reject.', tier });
     await this.markCompleted(conversationId);
+    this.logWorkflowChangeSet(traceId, changeSet.changeSetId, actions, changeSet.changes.length);
+    this.finalizeWorkflow(traceId, 'awaiting_accept', {
+      changeSetId: changeSet.changeSetId,
+      route: 'write',
+      tier,
+      sseOutput: {
+        answer,
+        changeSetId: changeSet.changeSetId,
+        actionTypes: actions.map((a) => a.type),
+        changesLength: changeSet.changes.length,
+        userFacingSummary,
+      },
+    });
   }
 
   private async streamWithOrchestrator(
@@ -1674,7 +1940,13 @@ export class ConversationService {
           const failedReason =
             orchestratorResult.failedSubtask?.reason ??
             'A later step could not be completed';
-          const actions = this.engine.finalizeActions(rawActions, analysis, richWorkbookContext);
+          const actions = this.engine.finalizeActions(
+            rawActions,
+            analysis,
+            richWorkbookContext,
+            request.message,
+            enrichedContext.priorTurnActions,
+          );
           actionsCount = actions.length;
 
           const answer =
@@ -1747,6 +2019,24 @@ export class ConversationService {
             summary: 'Partial changes ready — review and accept, or retry the failed step.',
           });
           await this.markCompleted(conversationId);
+          this.logWorkflowChangeSet(
+            traceId,
+            changeSet.changeSetId,
+            actions,
+            changeSet.changes.length,
+          );
+          this.finalizeWorkflow(traceId, 'awaiting_accept', {
+            changeSetId: changeSet.changeSetId,
+            route: 'write',
+            tier: 3,
+            durationMs: Date.now() - startedAt,
+            sseOutput: {
+              partialProgress: true,
+              changeSetId: changeSet.changeSetId,
+              failedSubtask: orchestratorResult.failedSubtask,
+              actionTypes: actions.map((a) => a.type),
+            },
+          });
           endSseResponse(reply);
           success = true;
           return;
@@ -1764,6 +2054,12 @@ export class ConversationService {
         emit('answer', { answer });
         emit('conversation_end', { summary: 'No unverified changes were applied.' });
         await this.markCompleted(conversationId);
+        this.finalizeWorkflow(traceId, 'failed', {
+          route: 'write',
+          tier: 3,
+          durationMs: Date.now() - startedAt,
+          sseOutput: { answer, verifierPassed: false },
+        });
         endSseResponse(reply);
         success = true;
         return;
@@ -1777,7 +2073,13 @@ export class ConversationService {
         });
       }
 
-      const actions = this.engine.finalizeActions(rawActions, analysis, richWorkbookContext);
+      const actions = this.engine.finalizeActions(
+        rawActions,
+        analysis,
+        richWorkbookContext,
+        request.message,
+        enrichedContext.priorTurnActions,
+      );
       actionsCount = actions.length;
 
       this.assertWriteRouteProducedActions({
@@ -1843,6 +2145,20 @@ export class ConversationService {
       });
       emit('conversation_end', { summary: 'Review changes and accept or reject.', tier: 3 });
       await this.markCompleted(conversationId);
+      this.logWorkflowChangeSet(traceId, changeSet.changeSetId, actions, changeSet.changes.length);
+      this.finalizeWorkflow(traceId, 'awaiting_accept', {
+        changeSetId: changeSet.changeSetId,
+        route: 'write',
+        tier: 3,
+        durationMs: Date.now() - startedAt,
+        sseOutput: {
+          answer,
+          changeSetId: changeSet.changeSetId,
+          actionTypes: actions.map((a) => a.type),
+          changesLength: changeSet.changes.length,
+          userFacingSummary,
+        },
+      });
       endSseResponse(reply);
       success = true;
 
@@ -1931,6 +2247,10 @@ export class ConversationService {
         });
         emit('clarification', { question, suggestions: [], ambiguityScore: 0 });
         emit('done', { message: 'awaiting_clarification' });
+        this.finalizeWorkflow(traceId, 'clarifying', {
+          route: 'write',
+          sseOutput: { clarification: question },
+        });
         endSseResponse(reply);
         success = true;
         return;
@@ -1954,6 +2274,15 @@ export class ConversationService {
       emit('plan', planPayload as unknown as Record<string, unknown>);
       emit('conversation_end', { summary: 'Plan ready — run as action to apply.' });
       await this.markCompleted(conversationId);
+      this.finalizeWorkflow(traceId, 'completed', {
+        route: 'write',
+        durationMs: Date.now() - startedAt,
+        sseOutput: {
+          kind: 'plan',
+          answer,
+          stepCount: planPayload.steps.length,
+        },
+      });
       endSseResponse(reply);
       success = true;
 
@@ -2112,6 +2441,15 @@ export class ConversationService {
           });
           emit('conversation_end', { summary: 'Changes applied.' });
           await this.markCompleted(conversationId);
+          this.finalizeWorkflow(traceId, 'completed', {
+            durationMs: Date.now() - startedAt,
+            sseOutput: {
+              kind: 'actions',
+              answer,
+              actionTypes: tableFallback.map((a) => a.type),
+              source: 'table_fallback',
+            },
+          });
           endSseResponse(reply);
           return;
         }
@@ -2133,6 +2471,10 @@ export class ConversationService {
         emit('answer', { answer });
         emit('conversation_end', { summary: 'Completed.' });
         await this.markCompleted(conversationId);
+        this.finalizeWorkflow(traceId, 'completed', {
+          durationMs: Date.now() - startedAt,
+          sseOutput: { kind: 'answer', answer, parseFailed: true },
+        });
         endSseResponse(reply);
         return;
       }
@@ -2149,6 +2491,10 @@ export class ConversationService {
       emit('question', {
         question: structured.question,
         options: structured.options,
+      });
+      this.finalizeWorkflow(traceId, 'clarifying', {
+        durationMs: Date.now() - startedAt,
+        sseOutput: { question: structured.question, options: structured.options },
       });
       endSseResponse(reply);
       return;
@@ -2175,6 +2521,11 @@ export class ConversationService {
         emit('answer', { answer });
         emit('conversation_end', { summary: 'Read-only response.' });
         await this.markCompleted(conversationId);
+        this.finalizeWorkflow(traceId, 'completed', {
+          route: 'ask',
+          durationMs: Date.now() - startedAt,
+          sseOutput: { kind: 'answer', answer, readOnly: true },
+        });
         endSseResponse(reply);
         return;
       }
@@ -2194,6 +2545,14 @@ export class ConversationService {
       });
       emit('conversation_end', { summary: 'Changes applied.' });
       await this.markCompleted(conversationId);
+      this.finalizeWorkflow(traceId, 'completed', {
+        durationMs: Date.now() - startedAt,
+        sseOutput: {
+          kind: 'actions',
+          answer: structured.answer,
+          actionTypes: structured.actions.map((a) => a.type),
+        },
+      });
       endSseResponse(reply);
       return;
     }
@@ -2208,6 +2567,10 @@ export class ConversationService {
     emit('answer', { answer: structured.answer });
     emit('conversation_end', { summary: 'Completed.' });
     await this.markCompleted(conversationId);
+    this.finalizeWorkflow(traceId, 'completed', {
+      durationMs: Date.now() - startedAt,
+      sseOutput: { kind: 'answer', answer: structured.answer },
+    });
     endSseResponse(reply);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'AI provider failed';
@@ -2541,6 +2904,7 @@ export class ConversationService {
         actions: shortcutActions,
       },
       emit,
+      { traceId, route: 'shortcut', tier: 0 },
     );
     endSseResponse(reply);
   }

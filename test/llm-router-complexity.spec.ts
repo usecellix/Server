@@ -155,8 +155,27 @@ describe('LlmRouterService complexity integration', () => {
       message: 'copy all paid invoices to a new sheet',
     });
 
-    expect(decision.route).toBe('export');
-    expect(decision.complexity).toBeUndefined();
+    expect(decision.route).toBe('write');
+    expect(decision.overridden).toBe(true);
+  });
+
+  it('Spec 20 repro — create sheet + copy paid rows routes to write', async () => {
+    openRouter.complete.mockResolvedValue(
+      JSON.stringify({
+        route: 'export',
+        confidence: 0.9,
+        reasoning: 'Misclassified: find+export/copy rows',
+      }),
+    );
+
+    const decision = await service.route({
+      ...baseInput,
+      message:
+        'create a new sheet named Paid payments and copy the paid data from purchase register to that new sheet only paid',
+    });
+
+    expect(decision.route).toBe('write');
+    expect(decision.overridden).toBe(true);
   });
 
   it('adds complexity 3 on fallback write decisions', async () => {

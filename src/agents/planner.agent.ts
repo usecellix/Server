@@ -1,6 +1,7 @@
 import { Injectable, Logger, Optional } from '@nestjs/common';
 import { PlannerFileLoggerService } from '../common/logging/planner-file-logger.service';
 import { truncateForPlannerLog } from '../common/logging/planner-file-logger.util';
+import { WorkflowTraceService } from '../common/logging/workflow-trace.service';
 import { AppConfigService } from '../config/app-config.service';
 import { PLANNER_RULES_ADDITION } from '../excel-ai/prompt/cellix-system-prompt';
 import { OpenRouterService } from '../excel-ai/services/openrouter.service';
@@ -31,6 +32,7 @@ export class PlannerAgent {
     private readonly config: AppConfigService,
     private readonly structuredLogger: StructuredLogger = new StructuredLogger(),
     @Optional() private readonly plannerFileLogger?: PlannerFileLoggerService,
+    @Optional() private readonly workflowTrace?: WorkflowTraceService,
   ) {}
 
   async plan(
@@ -101,6 +103,7 @@ export class PlannerAgent {
       this.logger.log(
         `Planner produced ${parsed.subtasks.length} subtasks, confidence: ${parsed.confidence}`,
       );
+      const covered = this.ensureMultiClauseCoverage(prompt, parsed);
       this.structuredLogger.logAgentEvent({
         correlationId,
         agent: 'planner',
@@ -109,8 +112,9 @@ export class PlannerAgent {
         success: true,
         tokenUsage: this.structuredLogger.estimateTokens(raw),
         rawResponse: raw,
-        parsedResponse: parsed,
+        parsedResponse: covered,
       });
+      this.recordWorkflowNode(correlationId, startedAt, true, prompt, context, covered, model);
       this.writePlannerFileLog({
         correlationId,
         model,
@@ -124,11 +128,11 @@ export class PlannerAgent {
         userMessage,
         systemPrompt,
         raw,
-        parsed,
+        parsed: covered,
         fallback: false,
         retried: retried || lastResort,
       });
-      return parsed;
+      return covered;
     }
 
     // Prefer useful structured fallbacks (empty sheet clarify / create+sort) over a stub.
@@ -148,6 +152,16 @@ export class PlannerAgent {
         parsedResponse: usefulFallback,
         error: 'Planner JSON parse failed after retry — structured fallback',
       });
+      this.recordWorkflowNode(
+        correlationId,
+        startedAt,
+        false,
+        prompt,
+        context,
+        usefulFallback,
+        model,
+        'Planner JSON parse failed after retry — structured fallback',
+      );
       this.writePlannerFileLog({
         correlationId,
         model,
@@ -182,6 +196,16 @@ export class PlannerAgent {
       rawResponse: raw,
       error: 'PlannerExhaustedError',
     });
+    this.recordWorkflowNode(
+      correlationId,
+      startedAt,
+      false,
+      prompt,
+      context,
+      { subtasks: [], clarificationsNeeded: [], confidence: 'low', reasoning: '' },
+      model,
+      'PlannerExhaustedError',
+    );
     this.writePlannerFileLog({
       correlationId,
       model,
@@ -259,6 +283,109 @@ export class PlannerAgent {
         fallback: args.fallback,
         retried: args.retried,
       },
+    });
+  }
+
+  /**
+   * Spec 22 Bug 1: multi-clause "X and Y" write requests must not collapse to one subtask.
+   * If the model drops a clause, ask for clarification rather than shipping a half-plan.
+   */
+  ensureMultiClauseCoverage(prompt: string, plan: PlannerOutput): PlannerOutput {
+    if (plan.clarificationsNeeded.length > 0) return plan;
+    if (plan.subtasks.length >= 2) {
+      return this.ensureDestructiveDependsOnAnnotate(plan);
+    }
+
+    const clauses = splitWriteClauses(prompt);
+    if (clauses.length < 2) return plan;
+
+    const covered = clauses.filter((clause) =>
+      plan.subtasks.some((subtask) => clauseLikelyCovered(clause, subtask.description)),
+    );
+    if (covered.length >= 2) {
+      return this.ensureDestructiveDependsOnAnnotate(plan);
+    }
+
+    const missing = clauses.filter(
+      (clause) => !plan.subtasks.some((subtask) => clauseLikelyCovered(clause, subtask.description)),
+    );
+    this.logger?.warn(
+      `Planner multi-clause gap: ${missing.length} clause(s) missing from ${plan.subtasks.length} subtask(s)`,
+    );
+    return {
+      ...plan,
+      confidence: 'low',
+      clarificationsNeeded: [
+        ...plan.clarificationsNeeded,
+        `Your request has multiple steps (${clauses.map((c) => `"${c.slice(0, 60)}"`).join(' and ')}). I only planned ${plan.subtasks.length} step(s). Should I handle both — annotate/filter first, then any column deletion?`,
+      ],
+      reasoning: `${plan.reasoning} [Spec 22: incomplete multi-clause decomposition]`.trim(),
+    };
+  }
+
+  /** Prefer annotate/filter before DELETE_COLUMN when both appear in the plan. */
+  private ensureDestructiveDependsOnAnnotate(plan: PlannerOutput): PlannerOutput {
+    const deleteIdx = plan.subtasks.findIndex((s) =>
+      /\bdelete\b.*\bcolumn\b|\bDELETE_COLUMN\b/i.test(s.description) ||
+      s.suggestedActionType === 'DELETE_COLUMN',
+    );
+    const annotateIdx = plan.subtasks.findIndex((s) =>
+      /\bremark|priority|unpaid|set\b.*\bwhere\b|SET_MATCHING_ROWS/i.test(s.description) ||
+      s.suggestedActionType === 'SET_MATCHING_ROWS',
+    );
+    if (deleteIdx < 0 || annotateIdx < 0 || deleteIdx === annotateIdx) return plan;
+
+    const annotate = plan.subtasks[annotateIdx]!;
+    const del = plan.subtasks[deleteIdx]!;
+    if (del.dependsOn.includes(annotate.id)) return plan;
+
+    const subtasks = plan.subtasks.map((s, i) => {
+      if (i !== deleteIdx) return s;
+      return {
+        ...s,
+        dependsOn: Array.from(new Set([...s.dependsOn, annotate.id])),
+      };
+    });
+    return { ...plan, subtasks };
+  }
+
+  private recordWorkflowNode(
+    correlationId: string,
+    startedAt: number,
+    success: boolean,
+    prompt: string,
+    context: WorkbookContext,
+    parsed: PlannerOutput,
+    model: string,
+    error?: string,
+  ): void {
+    this.workflowTrace?.appendNode(correlationId, {
+      id: 'planner',
+      type: 'planner',
+      label: 'Planner',
+      status: success ? 'success' : 'failed',
+      startedAt: new Date(startedAt),
+      endedAt: new Date(),
+      durationMs: Date.now() - startedAt,
+      input: {
+        prompt,
+        sheets: context.sheets.map((s) => s.name),
+        activeSheet: context.activeSheetName,
+      },
+      output: {
+        subtaskCount: parsed.subtasks.length,
+        subtasks: parsed.subtasks.map((s) => ({
+          id: s.id,
+          description: s.description,
+          targetSheet: s.targetSheet,
+          dependsOn: s.dependsOn,
+        })),
+        clarificationsNeeded: parsed.clarificationsNeeded,
+        confidence: parsed.confidence,
+        reasoning: parsed.reasoning,
+        ...(error ? { error } : {}),
+      },
+      meta: { model, agent: 'planner' },
     });
   }
 
@@ -368,4 +495,35 @@ export class PlannerAgent {
     const normalized = value.replace(/\s+/g, ' ').trim();
     return normalized.length <= max ? normalized : `${normalized.slice(0, max)}...`;
   }
+}
+
+/** Split compound write prompts on and/then/also connectors. */
+export function splitWriteClauses(prompt: string): string[] {
+  const normalized = prompt.replace(/\s+/g, ' ').trim();
+  if (!normalized) return [];
+  const parts = normalized
+    .split(/\s+(?:and|, and|then|also)\s+/i)
+    .map((p) => p.trim())
+    .filter((p) => p.length >= 8);
+  return parts.length >= 2 ? parts : [];
+}
+
+export function clauseLikelyCovered(clause: string, description: string): boolean {
+  const clauseTokens = significantTokens(clause);
+  const descTokens = new Set(significantTokens(description));
+  if (clauseTokens.length === 0) return false;
+  const overlap = clauseTokens.filter((t) => descTokens.has(t)).length;
+  return overlap >= Math.min(2, clauseTokens.length);
+}
+
+function significantTokens(text: string): string[] {
+  const stop = new Set([
+    'the', 'a', 'an', 'to', 'of', 'in', 'on', 'for', 'with', 'and', 'or', 'by',
+    'from', 'that', 'this', 'into', 'add', 'set', 'make', 'please', 'column',
+  ]);
+  return text
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .split(/\s+/)
+    .filter((t) => t.length > 2 && !stop.has(t));
 }

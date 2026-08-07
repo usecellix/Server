@@ -1,4 +1,4 @@
-import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger, OnModuleDestroy, OnModuleInit, Optional } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import { promises as fs } from 'node:fs';
@@ -10,6 +10,7 @@ import {
   type FrontendLogEntry,
 } from './frontend-file-logger.util';
 import { FrontendLog } from './schemas/frontend-log.schema';
+import { WorkflowTraceService } from './workflow-trace.service';
 
 const DEFAULT_LOG_DIR = path.join(process.cwd(), 'logs');
 const DEFAULT_LOG_FILE = 'frontend.log';
@@ -28,6 +29,7 @@ export class FrontendFileLoggerService implements OnModuleInit, OnModuleDestroy 
   constructor(
     @InjectModel(FrontendLog.name)
     private readonly frontendLogModel: Model<FrontendLog>,
+    @Optional() private readonly workflowTrace?: WorkflowTraceService,
   ) {
     const dir = process.env.FRONTEND_LOG_DIR?.trim() || DEFAULT_LOG_DIR;
     const file = process.env.FRONTEND_LOG_FILE?.trim() || DEFAULT_LOG_FILE;
@@ -77,6 +79,7 @@ export class FrontendFileLoggerService implements OnModuleInit, OnModuleDestroy 
         await fs.appendFile(this.filePath, formatFrontendLogLine(entry), 'utf8');
         await this.pruneIfDue(false);
         await this.persistToDb(entry);
+        this.mirrorWorkflowTerminal(entry);
       })
       .catch((err: unknown) => {
         const msg = err instanceof Error ? err.message : String(err);
@@ -117,6 +120,54 @@ export class FrontendFileLoggerService implements OnModuleInit, OnModuleDestroy 
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       this.logger.warn(`Failed to persist frontend log to MongoDB: ${msg}`);
+    }
+  }
+
+  private mirrorWorkflowTerminal(entry: FrontendLogEntry): void {
+    if (!this.workflowTrace) return;
+
+    const category = entry.category;
+    if (category !== 'preview' && category !== 'accept' && category !== 'reject') {
+      return;
+    }
+
+    const nodeType =
+      category === 'preview' ? 'preview' : category === 'accept' ? 'accept' : 'reject';
+    const status =
+      category === 'accept' ? 'accepted' : category === 'reject' ? 'rejected' : undefined;
+    const node = {
+      id: `${nodeType}:${Date.now()}`,
+      type: nodeType as 'preview' | 'accept' | 'reject',
+      label:
+        category === 'preview'
+          ? 'Frontend Preview'
+          : category === 'accept'
+            ? 'Frontend Accept'
+            : 'Frontend Reject',
+      status: 'success' as const,
+      input: {
+        event: entry.event,
+        message: entry.message,
+        conversationId: entry.conversationId,
+        changeSetId: entry.changeSetId,
+      },
+      output: entry.details ?? { event: entry.event },
+    };
+
+    if (entry.changeSetId) {
+      this.workflowTrace.appendTerminalByChangeSet(
+        entry.changeSetId,
+        node,
+        status as 'accepted' | 'rejected' | undefined,
+      );
+      return;
+    }
+    if (entry.conversationId) {
+      this.workflowTrace.appendTerminalByConversationId(
+        entry.conversationId,
+        node,
+        status as 'accepted' | 'rejected' | undefined,
+      );
     }
   }
 

@@ -4,7 +4,7 @@
  */
 
 const WRITE_INTENT_VERBS =
-  /\b(sort|filter|delete|remove|insert|add|bold|highlight|color|colour|format|merge|split|fill|clear|rename|hide|unhide|freeze|protect|create|build|generate|apply|replace|update|change|set)\b/i;
+  /\b(sort|filter|delete|remove|insert|add|copy|move|bold|highlight|color|colour|format|merge|split|fill|clear|rename|hide|unhide|freeze|protect|create|build|generate|apply|replace|update|change|set)\b/i;
 
 /**
  * Requests that LOOK like write-intent verbs but are actually questions about
@@ -32,6 +32,8 @@ export const WRITE_INTENT_CATALOG_VERBS = [
   'remove',
   'insert',
   'add',
+  'copy',
+  'move',
   'bold',
   'highlight',
   'color',
