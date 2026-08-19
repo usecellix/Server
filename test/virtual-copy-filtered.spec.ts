@@ -20,6 +20,7 @@ describe('virtualApply COPY_FILTERED_RANGE / MOVE_RANGE', () => {
         formulas: [[], [], [], []],
         numberFormats: [[], [], [], []],
         structure: 'data_table',
+      headerRowIndex: 0,
       },
     ],
     namedRanges: [],

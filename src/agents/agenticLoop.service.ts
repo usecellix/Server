@@ -3,6 +3,7 @@ import { ExecutorAgent } from './executor.agent';
 import { VerifierAgent } from './verifier.agent';
 import {
   Action,
+  DroppedAction,
   ExecutorOutput,
   SubTask,
   VerifierIssue,
@@ -31,6 +32,7 @@ import { StructuredLogger } from './logging/structured-logger';
 import { shouldSkipVerifier } from './verifier-skip.policy';
 import { isDestructiveActionType } from './verifier-skip.policy';
 import { isExecutorBlockedSignal } from './utils/verifier-partial-parse.util';
+import { rebindFormatRangeNumberFormats } from './utils/preserve-number-format.util';
 
 export interface AgenticLoopOptions {
   conversationId?: string;
@@ -63,6 +65,8 @@ export interface AgenticLoopResult {
 interface SubtaskActionState {
   subtask: SubTask;
   actions: Action[];
+  /** Actions the Executor emitted that normalization rejected — verified against, never ignored. */
+  droppedActions: DroppedAction[];
   completed: boolean;
   verified?: boolean;
   failedReason?: string;
@@ -121,6 +125,7 @@ export class AgenticLoopService {
     const subtaskStates: SubtaskActionState[] = ordered.map((subtask) => ({
       subtask,
       actions: [],
+      droppedActions: [],
       completed: false,
     }));
 
@@ -163,6 +168,7 @@ export class AgenticLoopService {
               () => {
                 timedOut = true;
               },
+              originalPrompt,
             );
             return { iterations, error: null as unknown };
           } catch (error) {
@@ -180,6 +186,20 @@ export class AgenticLoopService {
       iterationsRun += waveSettled.reduce((sum, entry) => sum + entry.iterations, 0);
       for (const subtask of wave) {
         completedIds.add(subtask.id);
+      }
+
+      // Live progress so the UI is not idle while remaining waves run.
+      const readyActions = subtaskStates.reduce((sum, s) => sum + (s.actions?.length ?? 0), 0);
+      const doneSteps = subtaskStates.filter((s) => s.completed && !s.failedReason).length;
+      const failedSteps = subtaskStates.filter((s) => Boolean(s.failedReason)).length;
+      if (readyActions > 0 || doneSteps > 0) {
+        emitter.send({
+          type: 'CHECKPOINT',
+          step:
+            failedSteps > 0
+              ? `Progress: ${doneSteps} step(s) ready (${readyActions} changes), ${failedSteps} blocked — continuing…`
+              : `Progress: ${doneSteps} step(s) ready · ${readyActions} change(s) prepared — continuing…`,
+        });
       }
 
       // Do not rethrow — keep going so completed siblings can surface as partialProgress.
@@ -306,6 +326,7 @@ export class AgenticLoopService {
           () => {
             timedOut = true;
           },
+          originalPrompt,
           undefined,
           stepRetryAttempts,
         );
@@ -457,6 +478,7 @@ export class AgenticLoopService {
         () => {
           timedOut = true;
         },
+        originalPrompt,
         (subtask) => {
           const subtaskResult = verification.subtaskResults.find(
             (result) => result.subtaskId === subtask.id,
@@ -707,6 +729,7 @@ export class AgenticLoopService {
     failingIds: Set<string>,
     checkResult: CheckerResult,
     onTimeout: () => void,
+    originalPrompt: string,
     retryContextFor?: (subtask: SubTask) => RetryContext,
     stepRetryAttempts?: Map<string, number>,
   ): Promise<number> {
@@ -733,6 +756,7 @@ export class AgenticLoopService {
       const issues: VerifierIssue[] = subtaskResult?.issues ?? checkResult.issues;
 
       state.actions = [];
+      state.droppedActions = [];
       state.completed = false;
       state.verified = undefined;
       state.failedReason = undefined;
@@ -749,6 +773,7 @@ export class AgenticLoopService {
         loopOptions,
         visibleIds,
         onTimeout,
+        originalPrompt,
         retryContextFor?.(subtask) ?? { verifierFeedback: feedback, verifierIssues: issues },
         retryAttempt,
       );
@@ -767,6 +792,7 @@ export class AgenticLoopService {
     loopOptions: AgenticLoopOptions,
     visibleStateIds: Set<string>,
     onTimeout: () => void,
+    originalPrompt: string,
     retryContext?: RetryContext,
     retryAttempt?: number,
   ): Promise<number> {
@@ -833,9 +859,33 @@ export class AgenticLoopService {
         continue;
       }
 
-      for (const action of validatedBatch.actions) {
+      // Never invent date/number display formats — rebind to sheet-owned formats or drop.
+      const rebound = rebindFormatRangeNumberFormats(validatedBatch.actions, {
+        userPrompt: originalPrompt,
+        subtaskDescription: subtask.description,
+        context: currentContext,
+      });
+      if (rebound.droppedInvented) {
+        this.logger.log(
+          `Stripped invented numberFormat on "${subtask.description}" (user did not name a format)`,
+        );
+      }
+      if (rebound.actions.length === 0 && validatedBatch.actions.length > 0) {
+        state.failedReason =
+          'Could not apply a number format without inventing one — please name the format (e.g. m/d/yyyy) or ask to re-use the existing column format.';
+        emitter.send({
+          type: 'THINKING',
+          message: state.failedReason,
+        });
+        break;
+      }
+
+      for (const action of rebound.actions) {
         emitter.send({ type: 'ACTION', action });
         state.actions.push(action);
+      }
+      if (validatedBatch.droppedActions?.length) {
+        state.droppedActions.push(...validatedBatch.droppedActions);
       }
 
       subtaskDone = validatedBatch.isDone;
@@ -865,16 +915,28 @@ export class AgenticLoopService {
       state.completed = true;
       state.failedReason = undefined;
     } else {
-      const hitTimeout = Date.now() - startedAt > this.TIMEOUT_MS;
-      const reason = hitTimeout
-        ? `Subtask "${subtask.description}" timed out before completion`
-        : `Subtask "${subtask.description}" hit max iterations (${this.MAX_ITERATIONS_PER_SUBTASK})`;
-      state.failedReason = reason;
-      this.logger.warn(reason);
-      emitter.send({
-        type: 'THINKING',
-        message: `Reached step limit for "${subtask.description}" — moving on`,
-      });
+      // Preserve an honest block reason — do not overwrite with "max iterations".
+      if (!state.failedReason) {
+        const hitTimeout = Date.now() - startedAt > this.TIMEOUT_MS;
+        state.failedReason = hitTimeout
+          ? `Subtask "${subtask.description}" timed out before completion`
+          : `Subtask "${subtask.description}" hit max iterations (${this.MAX_ITERATIONS_PER_SUBTASK})`;
+        this.logger.warn(state.failedReason);
+        emitter.send({
+          type: 'THINKING',
+          message: hitTimeout
+            ? `Timed out on "${subtask.description}" — continuing with work already ready`
+            : `Reached step limit for "${subtask.description}" — moving on`,
+        });
+      } else {
+        this.logger.warn(
+          `Subtask "${subtask.description}" stopped: ${state.failedReason}`,
+        );
+        emitter.send({
+          type: 'THINKING',
+          message: state.failedReason,
+        });
+      }
     }
 
     return iterationsRun;

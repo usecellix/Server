@@ -56,6 +56,7 @@ export type SheetActionType =
   | 'SET_COLUMN_WIDTH'
   | 'FREEZE_PANES'
   | 'UNFREEZE_PANES'
+  | 'AUTO_FILTER'
   | 'SET_ZOOM'
   | 'PROTECT_SHEET'
   | 'UNPROTECT_SHEET'
@@ -189,7 +190,8 @@ export interface SheetActionPayload {
   groupByTransform?: 'none' | 'month' | 'year' | 'monthYear' | 'weekday' | 'quarter';
   aggregations?: Array<{
     column: string;
-    fn: 'sum' | 'count' | 'average' | 'max' | 'min';
+    /** 'first' passes through a label column 1:1 with the group key (e.g. Supplier Name alongside a GSTIN group-by) — not a numeric reduction. */
+    fn: 'sum' | 'count' | 'average' | 'max' | 'min' | 'first';
     outputLabel: string;
   }>;
   sortBy?: { column: string; direction: 'asc' | 'desc' };

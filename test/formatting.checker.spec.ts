@@ -24,6 +24,7 @@ describe('FormattingChecker', () => {
           ['General', 'd/m/yyyy', '₹#,##0.00'],
         ],
         structure: 'data_table',
+      headerRowIndex: 0,
       },
     ],
     namedRanges: [],

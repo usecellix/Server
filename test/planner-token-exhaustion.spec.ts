@@ -30,6 +30,7 @@ function sheet(
     formulas: values.map((row) => row.map(() => '')),
     numberFormats: values.map((row) => row.map(() => 'General')),
     structure: 'data_table',
+      headerRowIndex: 0,
   };
 }
 

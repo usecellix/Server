@@ -24,6 +24,7 @@ const baseContext: WorkbookContext = {
       formulas: [['', '', ''], ['', '', '']],
       numberFormats: [['General', 'General', 'General']],
       structure: 'data_table',
+      headerRowIndex: 0,
     },
   ],
   namedRanges: [],
@@ -67,5 +68,40 @@ describe('diff.engine', () => {
 
     const restored = virtualApply(after, inverse as never);
     expect(restored.sheets.get('Sheet1')?.cells.get('A1')?.value).toBe('Item');
+  });
+
+  it('restores the captured number format alongside the value on revert (TASKS.md #10)', () => {
+    const before = buildShadowWorkbook(baseContext);
+    const beforeState = snapshotBeforeState(before);
+    expect(beforeState['Sheet1!C2']).toMatchObject({ format: 'General' });
+
+    // Forward change touches both value and format — e.g. an agent turning a
+    // plain number into a percentage.
+    const after = virtualApply(before, [
+      {
+        type: 'SET_CELL',
+        sheetName: 'Sheet1',
+        row: 1,
+        col: 2,
+        value: 0.15,
+        format: { numberFormat: '0.00%' },
+      },
+    ] as never);
+    expect(after.sheets.get('Sheet1')?.cells.get('C2')?.numberFormat).toBe('0.00%');
+
+    const changes = generateDiff(before, after);
+    const inverse = beforeStateToInverseActions(beforeState, changes);
+    const inverseForC2 = inverse.find(
+      (a) => (a as Action & { address?: string }).address === 'C2',
+    ) as (Action & { format?: { numberFormat?: string } }) | undefined;
+    expect(inverseForC2?.format?.numberFormat).toBe('General');
+
+    const restored = virtualApply(after, inverse as never);
+    const restoredCell = restored.sheets.get('Sheet1')?.cells.get('C2');
+    expect(restoredCell?.value).toBe(1.5);
+    // Without the #10 fix, this stays '0.00%' — the inverse action never carried
+    // a format field, so virtualSetCell preserved whatever format the forward
+    // change left behind instead of restoring the captured before-state.
+    expect(restoredCell?.numberFormat).toBe('General');
   });
 });

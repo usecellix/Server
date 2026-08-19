@@ -29,6 +29,7 @@ const context: WorkbookContext = {
         ['General', 'General'],
       ],
       structure: 'data_table',
+      headerRowIndex: 0,
     },
   ],
   namedRanges: [],
@@ -163,6 +164,16 @@ describe('Spec 17 Bug C — blocked signal not overridden', () => {
       ),
     ).toBe(true);
     expect(isExecutorBlockedSignal('Continue with next rows')).toBe(false);
+    expect(
+      isExecutorBlockedSignal(
+        'Cannot create the pie chart because the source table range starting at Main!A20 is not available in the current context.',
+      ),
+    ).toBe(true);
+    expect(
+      isExecutorBlockedSignal(
+        'Blocker: Missing sourceRange for the table starting at Main!A4.',
+      ),
+    ).toBe(true);
   });
 
   it('does not apply SORT_RANGE fallback when executor reports Blocked', async () => {

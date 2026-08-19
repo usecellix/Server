@@ -4,6 +4,7 @@ import {
   extractSheetNameFromPrompt,
   sanitizeExcelSheetName,
 } from './sheet-name.util';
+import { hasCompoundSignals } from './complexity-classifier.util';
 
 export interface TablePlan {
   headers: string[];
@@ -91,6 +92,38 @@ export function buildTableActionsFromMessage(message: string): SheetActionPayloa
   return [buildWriteTableAction(plan)];
 }
 
+export interface DeterministicTableResult {
+  plan: TablePlan;
+  actions: SheetActionPayload[];
+}
+
+/**
+ * The single gate for "should this message deterministically produce a WRITE_TABLE
+ * action, with no LLM/planner involved." conversation.service.ts calls this from
+ * two different moments — before the LLM is asked anything, and again as a
+ * last-resort fallback when the LLM's response failed to parse — and both used
+ * to apply their own, different conditions. The fallback path was missing the
+ * compound-signal gate entirely, so a prompt like "create a table with columns
+ * Name, Age, City, and then add a chart" could still silently drop the chart
+ * clause if the LLM call happened to fail to parse. One gate, called from both
+ * places, means a fix here can't go stale in the other.
+ */
+export function tryDeterministicTableCreate(message: string): DeterministicTableResult | null {
+  if (hasCompoundSignals(message)) return null;
+
+  const isNewSheetWithData =
+    detectCreateNewSheetIntent(message) && detectSheetDataGenerationIntent(message);
+  if (isNewSheetWithData) return null;
+
+  const plan = parseTableCreateRequest(message);
+  if (!plan || plan.headers.length < 2) return null;
+
+  const actions = buildTableActionsFromMessage(message);
+  if (!actions?.length) return null;
+
+  return { plan, actions };
+}
+
 function extractRowCount(message: string): number | null {
   const patterns = [
     /\b(\d{1,3})\s+dummy\b/i,
@@ -157,10 +190,11 @@ export function buildNewSheetWithDummyDataActions(message: string): SheetActionP
 function extractHeaders(message: string): string[] {
   const patterns = [
     // "add headers Job Title, Company, … and 3 sample rows"
-    /\b(?:add|set|insert|create)\s+headers?\s+(.+?)(?=\s+and\s+\d|\s*,?\s*(?:give|and\s+give|for\s+this)\b|$)/i,
-    /\bwith\s+headers?\s+(.+?)(?=\s+and\s+\d|\s*,?\s*(?:give|and\s+give|for\s+this)\b|$)/i,
+    // Negative lookahead on "row" excludes unrelated phrases like "freeze the header row".
+    /\b(?:add|set|insert|create)\s+headers?\s+(?!row\b)(.+?)(?=\s+and\s+\d|\s*,?\s*(?:give|and\s+give|for\s+this)\b|$)/i,
+    /\bwith\s+headers?\s+(?!row\b)(.+?)(?=\s+and\s+\d|\s*,?\s*(?:give|and\s+give|for\s+this)\b|$)/i,
     /\bheaders?\s*:\s*(.+?)(?=\s+and\s+\d|\s*,?\s*(?:give|for)\b|$)/i,
-    /\bheaders?\s+(.+?)(?=\s+and\s+\d|\s*,?\s*(?:give|and\s+give|for\s+this)\b|$)/i,
+    /\bheaders?\s+(?!row\b)(.+?)(?=\s+and\s+\d|\s*,?\s*(?:give|and\s+give|for\s+this)\b|$)/i,
     /\bcolumns?\s+(?:named|called)\s+(.+?)(?=\s+and\s+\d|\s*,?\s*(?:give|for)\b|$)/i,
     /\bcolumns?\s+(?:as\s+)?(.+?)(?=\s+and\s+\d|\s*,?\s*(?:give|for)\b|$)/i,
   ];

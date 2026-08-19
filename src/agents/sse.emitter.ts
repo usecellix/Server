@@ -19,6 +19,7 @@ export class SseEmitter {
     switch (payload.type) {
       case 'THINKING':
         this.emit('thinking', { message: payload.message });
+        this.emit('status', { message: payload.message });
         break;
       case 'CLARIFY':
         this.emit('clarification', {
@@ -29,15 +30,25 @@ export class SseEmitter {
         break;
       case 'CHECKPOINT':
         this.emit('status', { message: payload.step });
+        this.emit('thinking', { message: payload.step });
         break;
-      case 'ACTION':
-        this.emit('status', { message: `Prepared ${payload.action.type} action` });
+      case 'ACTION': {
+        const type = payload.action.type ?? 'action';
+        const sheet =
+          (payload.action as { sheetName?: string; name?: string }).sheetName ||
+          (payload.action as { name?: string }).name ||
+          '';
+        const detail = sheet ? ` on ${sheet}` : '';
+        this.emit('status', { message: `Prepared ${type}${detail}` });
         break;
+      }
       case 'VERIFY_PASS':
         this.emit('status', { message: 'Actions verified' });
+        this.emit('thinking', { message: 'Checks passed — preparing preview…' });
         break;
       case 'VERIFY_FAIL':
         this.emit('status', { message: `Verification issue: ${payload.feedback}` });
+        this.emit('thinking', { message: `Verification issue: ${payload.feedback}` });
         break;
       case 'DONE':
         this.emit('conversation_end', { summary: payload.summary });

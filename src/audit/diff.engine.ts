@@ -132,12 +132,20 @@ export function beforeStateToInverseActions(
       continue;
     }
 
+    // Restore the captured number format alongside the value/formula. The apply-side
+    // handlers (cell.handler.ts) only touch FormatSpec keys that are actually present,
+    // so a numberFormat-only object leaves bold/italic/fill/etc. untouched — those
+    // were never captured in CellSnapshot to begin with, so there's nothing to restore
+    // for them yet (see TASKS.md #10).
+    const format = { numberFormat: snapshot.format };
+
     if (snapshot.formula && snapshot.formula.startsWith('=')) {
       actions.push({
         type: 'SET_FORMULA',
         sheetName: sheet,
         address,
         formula: snapshot.formula,
+        format,
         explicitOverwriteConfirmed: true,
       } as Action);
     } else {
@@ -146,6 +154,7 @@ export function beforeStateToInverseActions(
         sheetName: sheet,
         address,
         value: snapshot.value as string | number | boolean | null,
+        format,
         explicitOverwriteConfirmed: true,
       } as Action);
     }

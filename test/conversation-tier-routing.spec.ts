@@ -14,6 +14,17 @@ describe('write route tier classification', () => {
     expect(quickEdit.match?.actionHint).toBe('SORT_OR_FILTER');
   });
 
+  it('classifies a purchase-register-style compound build (columns + formulas + filters + freeze + summary) as tier 3', () => {
+    const result = classifyComplexity(
+      'Create a purchase register from the data in this workbook. Add columns for purchase date, ' +
+        'supplier, invoice number, item, category, quantity, unit price, tax %, tax amount, total amount, ' +
+        'payment status, department, requested by, and approved by. Add formulas for tax and total amount. ' +
+        'Add filters, freeze the header row, and create a summary showing total purchases, paid amount, ' +
+        'pending amount, and purchases by department.',
+    );
+    expect(result.match?.tier).toBe(3);
+  });
+
   it('does not attach tier metadata to refinement context payloads', () => {
     const changeSet = {
       changeSetId: 'cs-1',

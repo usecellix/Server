@@ -5,7 +5,11 @@ import { parseExecutorPayload } from '../../agents/utils/parse-agent-json.util';
 import { buildTier1SystemPrompt, buildTier1UserMessage } from '../prompts/tier1-action-prompt';
 import { SheetAction } from '../types/sheet-actions.types';
 import { NUMERIC_FINANCIAL_HINT } from '../utils/complexity-classifier.util';
-import { normalizeTier1ConditionalFormatActions } from '../utils/format-matching-rows.util';
+import {
+  isHeaderRowFormatRequest,
+  normalizeTier1ConditionalFormatActions,
+  normalizeTier1HeaderFormatActions,
+} from '../utils/format-matching-rows.util';
 import { extractJsonFromLlmText } from '../utils/parse-llm-response.util';
 import { OpenRouterService } from './openrouter.service';
 
@@ -50,10 +54,15 @@ export class Tier1SingleActionService {
     const parsed = parseExecutorPayload(raw);
     const envelope = extractJsonFromLlmText(raw);
     let actions = Array.isArray(parsed?.actions) ? (parsed.actions as SheetAction[]) : [];
-    const answer =
+    let answer =
       typeof envelope?.answer === 'string' && envelope.answer.trim().length > 0
         ? envelope.answer.trim()
-        : 'Applied your requested change.';
+        : "I'll apply that change to your sheet.";
+    // Spec 24: never claim success before Accept.
+    answer = answer
+      .replace(/\bI've applied\b/gi, "I'll apply")
+      .replace(/\bI have applied\b/gi, 'I will apply')
+      .replace(/\bApplied your requested change\.?\b/gi, "I'll apply that change to your sheet.");
 
     if (actions.length !== 1) {
       this.logger.warn(
@@ -62,7 +71,9 @@ export class Tier1SingleActionService {
     }
 
     actions = actions.slice(0, 1);
-    if (actionHint === 'CONDITIONAL_FORMAT') {
+    if (actionHint === 'HEADER_FORMAT' || isHeaderRowFormatRequest(message)) {
+      actions = normalizeTier1HeaderFormatActions(actions, workbookContext, message);
+    } else if (actionHint === 'CONDITIONAL_FORMAT') {
       actions = normalizeTier1ConditionalFormatActions(actions, workbookContext, message);
     }
 

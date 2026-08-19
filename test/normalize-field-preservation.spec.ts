@@ -61,6 +61,7 @@ const FIELD_FIXTURES: Record<SheetActionType, Record<string, unknown>> = {
   SET_COLUMN_WIDTH: { type: 'SET_COLUMN_WIDTH', sheetName: 'Dashboard', col: 0, width: 15 },
   FREEZE_PANES: { type: 'FREEZE_PANES', sheetName: 'Dashboard', freezeRows: 1, freezeColumns: 0 },
   UNFREEZE_PANES: { type: 'UNFREEZE_PANES', sheetName: 'Dashboard' },
+  AUTO_FILTER: { type: 'AUTO_FILTER', sheetName: 'Dashboard', range: 'A1:N51' },
   SET_ZOOM: { type: 'SET_ZOOM', sheetName: 'Dashboard', zoomPercent: 120 },
   PROTECT_SHEET: { type: 'PROTECT_SHEET', sheetName: 'Dashboard' },
   UNPROTECT_SHEET: { type: 'UNPROTECT_SHEET', sheetName: 'Dashboard' },
@@ -219,6 +220,15 @@ const FIELD_FIXTURES: Record<SheetActionType, Record<string, unknown>> = {
     hasHeaders: true,
     filter: { column: 'Status', operator: 'equals', value: 'Open' },
     format: { fillColor: '#FFEEEE' },
+  },
+  SET_MATCHING_ROWS: {
+    type: 'SET_MATCHING_ROWS',
+    sheetName: 'Purchase Register',
+    range: 'A1:L200',
+    hasHeaders: true,
+    filter: { column: 'Payment Status', operator: 'equals', value: 'Paid' },
+    targetColumn: 'Remarks',
+    value: 'Cleared',
   },
   MOVE_RANGE: {
     type: 'MOVE_RANGE',

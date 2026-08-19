@@ -22,6 +22,8 @@ import {
 } from '../utils/complexity-tiering-flag.util';
 import { ChangeSetService } from '../../audit/change-set.service';
 import { buildWorkbookSourceRefsFromActions } from '../../audit/utils/provenance.util';
+import { ChangeSetRecord } from '../../audit/types/change-set.types';
+import { ActionWave, splitIntoActionWaves } from '../utils/action-wave.util';
 import { classifyIntent, detectAmbiguity } from '../llm/ambiguity-detector';
 import { LLMTier, SheetSnapshot } from '../../types/cellix.types';
 import { OrchestratorService } from '../../agents/orchestrator.service';
@@ -44,12 +46,7 @@ import {
 import { modeIsReadOnly, normalizeAssistantMode, stripWriteActions } from '../utils/mode-guard.util';
 import { PlannerOutput } from '../../agents/types/agent.types';
 import { buildStatusMessage } from '../utils/status-message.util';
-import {
-  buildTableActionsFromMessage,
-  detectCreateNewSheetIntent,
-  detectSheetDataGenerationIntent,
-  parseTableCreateRequest,
-} from '../utils/table-request.util';
+import { tryDeterministicTableCreate } from '../utils/table-request.util';
 import { routeShortcutAction, buildShortcutAnswer } from '../utils/shortcut-router.util';
 import {
   buildDeleteSheetAnswer,
@@ -83,8 +80,22 @@ import { isFindLookupMessage } from '../utils/find-query-parser.util';
 import {
   buildInternalDetails,
   buildUserFacingSummary,
+  sanitizeAnswerForUser,
   tierProcessingLabel,
 } from '../utils/user-facing-response.util';
+import {
+  buildSheetOverview,
+  formatSheetOverviewMarkdown,
+  isSheetOverviewRequest,
+  sanitizeAskAnswer,
+} from '../utils/sheet-overview.util';
+import {
+  buildPendingWritePlanMetadata,
+  buildResumedWritePrompt,
+  findPendingWritePlan,
+  isAffirmationMessage,
+  shouldStorePendingWritePlan,
+} from '../utils/pending-write-plan.util';
 import { WorkflowTraceService } from '../../common/logging/workflow-trace.service';
 import type { WorkflowTraceStatus } from '../../common/logging/schemas/workflow-trace.schema';
 
@@ -161,6 +172,39 @@ export class ConversationService {
       ...(turnActionRecords.length > 0 ? { turnActionRecords } : {}),
       ...extra,
     };
+  }
+
+  /**
+   * When the assistant only offers a large write ("want me to apply?") with no actions,
+   * persist a pendingWritePlan so a short "yes" forces the write path next turn.
+   */
+  private async buildAnswerPersistMetadata(
+    conversationId: string,
+    answer: string,
+    hasActions: boolean,
+  ): Promise<ConversationMessageEntry['metadata'] | undefined> {
+    if (!shouldStorePendingWritePlan(answer, hasActions)) {
+      return undefined;
+    }
+    const history = await this.getRecentMessages(conversationId);
+    const originalPrompt = this.resolveSubstantiveUserPrompt(history);
+    if (!originalPrompt) {
+      return undefined;
+    }
+    return buildPendingWritePlanMetadata(originalPrompt, answer);
+  }
+
+  private resolveSubstantiveUserPrompt(
+    history: ConversationMessageEntry[],
+  ): string | undefined {
+    for (let i = history.length - 1; i >= 0; i -= 1) {
+      const entry = history[i];
+      if (entry?.role !== 'user') continue;
+      const content = entry.content?.trim() ?? '';
+      if (!content || isAffirmationMessage(content) || content.length < 15) continue;
+      return content;
+    }
+    return undefined;
   }
 
   private startWorkflowTrace(params: {
@@ -256,6 +300,42 @@ export class ConversationService {
     this.workflowTrace.setMeta(traceId, { changeSetId });
   }
 
+  /**
+   * Create one ChangeSet per accept wave (see splitIntoActionWaves). Pure
+   * orchestration — no SSE emission here, so callers control emit ordering
+   * (e.g. 'answer' before the first 'actions' event) exactly as before.
+   */
+  private async createActionWaveChangeSets(
+    actions: SheetAction[],
+    input: { conversationId: string; traceId: string; prompt: string; context: AgentWorkbookContext },
+  ): Promise<Array<{ wave: ActionWave; changeSet: ChangeSetRecord }>> {
+    const waves = splitIntoActionWaves(actions);
+    const activeSheetName = input.context.activeSheetName;
+    const results: Array<{ wave: ActionWave; changeSet: ChangeSetRecord }> = [];
+
+    for (const wave of waves) {
+      const changeSet = await this.changeSetService.createPreview({
+        conversationId: input.conversationId,
+        traceId: input.traceId,
+        prompt: input.prompt,
+        context: input.context,
+        actions: wave.actions,
+        provenance: {
+          sourceRefs: buildWorkbookSourceRefsFromActions(
+            wave.actions,
+            activeSheetName || 'workbook',
+            activeSheetName,
+          ),
+          workbookId: activeSheetName || 'workbook',
+          activeSheetName,
+        },
+      });
+      results.push({ wave, changeSet });
+    }
+
+    return results;
+  }
+
   private finalizeWorkflow(
     traceId: string,
     status: WorkflowTraceStatus,
@@ -286,12 +366,14 @@ export class ConversationService {
 
     const conversation = await this.getOrCreateConversation(request.conversationId);
     const activeRequestRaw = await this.applyRefinementContext(request);
-    const activeRequest: ConversationRequestDto = {
+    let activeRequest: ConversationRequestDto = {
       ...activeRequestRaw,
       mode: normalizeAssistantMode(activeRequestRaw.mode),
     };
     const requestMode = activeRequest.mode ?? 'action';
     const writeAllowed = requestMode === 'action';
+    /** True when this turn is a short "yes" resuming a stored multi-sheet / large write plan. */
+    let resumePendingWrite = false;
 
     // Spec 09 item 3: instant shortcut before SheetAnalyzer (no sheet analysis needed).
     const instantShortcut = this.llmRouter.peekInstantShortcut(activeRequest.message);
@@ -410,26 +492,37 @@ export class ConversationService {
 
       const history = await this.getRecentMessages(conversation.conversationId);
 
-      const tablePlan = parseTableCreateRequest(request.message);
-      const tableActions = buildTableActionsFromMessage(request.message);
-      const isNewSheetWithData =
-        detectCreateNewSheetIntent(request.message) &&
-        detectSheetDataGenerationIntent(request.message);
+      // Affirmation resume: rehydrate turn-1 scaffold confirm into a forced write prompt.
+      const pendingWritePlan = findPendingWritePlan(history);
       if (
         writeAllowed &&
-        tablePlan &&
-        tableActions?.length &&
-        tablePlan.headers.length >= 2 &&
-        !isNewSheetWithData
+        isAffirmationMessage(request.message) &&
+        pendingWritePlan
       ) {
+        resumePendingWrite = true;
         this.logger.log(
-          `Table create (deterministic) trace=${traceId} conversation=${conversationId} rows=${tablePlan.rowCount} cols=${tablePlan.headers.length}`,
+          `Pending write plan resume trace=${traceId} conversation=${conversationId} promptChars=${pendingWritePlan.originalPrompt.length}`,
+        );
+        emit('status', { message: 'Applying your confirmed changes…' });
+        activeRequest = {
+          ...activeRequest,
+          message: buildResumedWritePrompt(pendingWritePlan),
+        };
+      }
+
+      const deterministicTable = writeAllowed
+        ? tryDeterministicTableCreate(request.message)
+        : null;
+      if (deterministicTable) {
+        const { plan, actions } = deterministicTable;
+        this.logger.log(
+          `Table create (deterministic) trace=${traceId} conversation=${conversationId} rows=${plan.rowCount} cols=${plan.headers.length}`,
         );
         const decision = {
           kind: 'actions' as const,
-          answer: `Created **${tablePlan.rowCount}** rows with columns: ${tablePlan.headers.join(', ')}.`,
+          answer: `Created **${plan.rowCount}** rows with columns: ${plan.headers.join(', ')}.`,
           explanation: 'Wrote headers and all data rows to your sheet.',
-          actions: tableActions,
+          actions,
         };
         await this.emitLocalDecision(conversation.conversationId, decision, emit, {
           traceId,
@@ -445,9 +538,20 @@ export class ConversationService {
         .slice(-2)
         .map((entry) => entry.content);
 
-      const routerDecision = await this.llmRouter.route(
+      let routerDecision = await this.llmRouter.route(
         this.buildRouterInput(activeRequest, recentHistory, analysis),
       );
+
+      if (resumePendingWrite) {
+        routerDecision = {
+          ...routerDecision,
+          route: 'write',
+          complexity: Math.max(routerDecision.complexity ?? 0, 3) as 0 | 1 | 2 | 3,
+          confidence: Math.max(routerDecision.confidence, 0.9),
+          reasoning: `pending_write_plan_resume: ${routerDecision.reasoning}`,
+          overridden: true,
+        };
+      }
 
       this.logger.log(
         `[${traceId}] Router: route=${routerDecision.route} confidence=${routerDecision.confidence} "${routerDecision.reasoning}"`,
@@ -525,6 +629,33 @@ export class ConversationService {
 
       if (this.engine.hasOpenAi()) {
         if (routerDecision.route === 'ask') {
+          // Spec 23: broad sheet overview — deterministic aggregates, skip LLM narration.
+          if (isSheetOverviewRequest(routedRequest.message)) {
+            emit('status', { message: 'Summarizing your sheet…' });
+            const activeSheetName = this.resolveActiveSheetName(routedRequest);
+            const fullData = await this.resolveActiveSheetData(
+              routedRequest,
+              analysis,
+              activeSheetName,
+              conversationId,
+              emit,
+            );
+            const overviewAnalysis = this.sheetAnalyzer.analyze(fullData, {
+              knownHeaders: analysis.headers.length ? analysis.headers : undefined,
+            });
+            const markdown = formatSheetOverviewMarkdown(
+              buildSheetOverview(fullData, overviewAnalysis, activeSheetName),
+            );
+            await this.emitLocalDecision(
+              conversationId,
+              { kind: 'answer', answer: markdown },
+              emit,
+              { traceId, route: 'ask' },
+            );
+            endSseResponse(reply);
+            return;
+          }
+
           const ambiguityOutcome = await this.checkAmbiguity(routedRequest, analysis, history);
           if (ambiguityOutcome?.clarification) {
             await this.emitClarification(
@@ -1052,12 +1183,18 @@ export class ConversationService {
       return;
     }
 
+    const answerMetadata = await this.buildAnswerPersistMetadata(
+      conversationId,
+      decision.answer,
+      false,
+    );
     await this.saveMessage(conversationId, {
       id: `msg_${Date.now()}_assistant`,
       role: 'assistant',
       content: decision.answer,
       type: 'answer',
       timestamp: new Date(),
+      ...(answerMetadata ? { metadata: answerMetadata } : {}),
     });
 
     const matches = decision.kind === 'answer' ? decision.matches : undefined;
@@ -1093,6 +1230,7 @@ export class ConversationService {
           kind: 'answer',
           answer: decision.answer,
           matchCount: matches?.length ?? 0,
+          pendingWritePlan: Boolean(answerMetadata?.pendingWritePlan),
         },
       });
     }
@@ -1502,6 +1640,7 @@ export class ConversationService {
       SORT_OR_FILTER: 'Sort or filter data based on your criteria',
       FIND_REPLACE: 'Find and replace matching values',
       CONDITIONAL_FORMAT: 'Apply conditional formatting rules',
+      HEADER_FORMAT: 'Format the header row',
       COPY_FILL: 'Copy formatting or fill values down a column',
       FORMULA_GEN: 'Generate a formula for the requested calculation',
       PIVOT_TABLE: 'Create or update a pivot table',
@@ -1780,7 +1919,6 @@ export class ConversationService {
     const {
       conversationId,
       tier,
-      answer,
       processingLabel,
       emit,
       traceId,
@@ -1789,6 +1927,8 @@ export class ConversationService {
       assumption,
       model,
     } = params;
+
+    const answer = sanitizeAnswerForUser(params.answer);
 
     const actions = annotateExplicitOverwriteConfirmation(
       params.actions,
@@ -2090,39 +2230,24 @@ export class ConversationService {
 
       const answer = `I'll apply the prepared changes to your sheet.`;
 
-      const changeSet = await this.changeSetService.createPreview({
+      // Large multi-sheet builds ("a sheet per month, then fill each in") split
+      // into staged accept waves — sheet creates reviewed/accepted before the
+      // writes that depend on them exist as their own card. A pure-write or
+      // pure-create batch (the common case) comes back as a single wave,
+      // identical to today's behavior.
+      const waveChangeSets = await this.createActionWaveChangeSets(actions, {
         conversationId,
         traceId,
         prompt: request.message,
         context: enrichedContext,
-        actions,
-        provenance: {
-          sourceRefs: buildWorkbookSourceRefsFromActions(
-            actions,
-            enrichedContext.activeSheetName || 'workbook',
-            enrichedContext.activeSheetName,
-          ),
-          workbookId: enrichedContext.activeSheetName || 'workbook',
-          activeSheetName: enrichedContext.activeSheetName,
-        },
       });
+      const lastChangeSet = waveChangeSets[waveChangeSets.length - 1].changeSet;
+      const combinedChangesLength = waveChangeSets.reduce(
+        (sum, w) => sum + w.changeSet.changes.length,
+        0,
+      );
 
       const processingLabel = tierProcessingLabel(3);
-      const userFacingSummary = buildUserFacingSummary({
-        answer,
-        actions,
-        changes: changeSet.changes,
-        assumption: routerAssumption,
-        activeSheetName: enrichedContext.activeSheetName,
-      });
-      const internalDetails = buildInternalDetails({
-        tier: 3,
-        model: telemetry.model,
-        processingLabel,
-        assumption: routerAssumption,
-        actions,
-        legacyExplanation: processingLabel,
-      });
 
       await this.saveMessage(conversationId, {
         id: `msg_${Date.now()}_assistant`,
@@ -2130,33 +2255,62 @@ export class ConversationService {
         content: answer,
         type: 'answer',
         timestamp: new Date(),
-        metadata: this.buildWriteMetadata(actions, changeSet.changeSetId),
+        metadata: this.buildWriteMetadata(actions, lastChangeSet.changeSetId),
       });
 
       emit('answer', { answer, tier: 3 });
-      emit('actions', {
-        actions,
-        explanation: processingLabel,
-        userFacingSummary,
-        internalDetails,
-        changeSetId: changeSet.changeSetId,
-        changes: changeSet.changes,
-        tier: 3,
-      });
+
+      let previousChangeSetId: string | undefined;
+      let firstUserFacingSummary: ReturnType<typeof buildUserFacingSummary> | undefined;
+      for (const { wave, changeSet } of waveChangeSets) {
+        const isFirstWave = !previousChangeSetId;
+        const userFacingSummary = buildUserFacingSummary({
+          answer: isFirstWave ? answer : wave.label,
+          actions: wave.actions,
+          changes: changeSet.changes,
+          assumption: isFirstWave ? routerAssumption : undefined,
+          activeSheetName: enrichedContext.activeSheetName,
+        });
+        firstUserFacingSummary ??= userFacingSummary;
+        const internalDetails = buildInternalDetails({
+          tier: 3,
+          model: telemetry.model,
+          processingLabel: isFirstWave ? processingLabel : wave.label,
+          assumption: isFirstWave ? routerAssumption : undefined,
+          actions: wave.actions,
+          legacyExplanation: isFirstWave ? processingLabel : wave.label,
+        });
+
+        emit('actions', {
+          actions: wave.actions,
+          explanation: isFirstWave ? processingLabel : wave.label,
+          userFacingSummary,
+          internalDetails,
+          changeSetId: changeSet.changeSetId,
+          changes: changeSet.changes,
+          tier: 3,
+          // Gate: the frontend must not let this wave's Accept fire until the
+          // wave named here has been accepted (its sheets/ranges must exist).
+          ...(previousChangeSetId ? { dependsOnChangeSetId: previousChangeSetId } : {}),
+        });
+
+        this.logWorkflowChangeSet(traceId, changeSet.changeSetId, wave.actions, changeSet.changes.length);
+        previousChangeSetId = changeSet.changeSetId;
+      }
+
       emit('conversation_end', { summary: 'Review changes and accept or reject.', tier: 3 });
       await this.markCompleted(conversationId);
-      this.logWorkflowChangeSet(traceId, changeSet.changeSetId, actions, changeSet.changes.length);
       this.finalizeWorkflow(traceId, 'awaiting_accept', {
-        changeSetId: changeSet.changeSetId,
+        changeSetId: lastChangeSet.changeSetId,
         route: 'write',
         tier: 3,
         durationMs: Date.now() - startedAt,
         sseOutput: {
           answer,
-          changeSetId: changeSet.changeSetId,
+          changeSetId: lastChangeSet.changeSetId,
           actionTypes: actions.map((a) => a.type),
-          changesLength: changeSet.changes.length,
-          userFacingSummary,
+          changesLength: combinedChangesLength,
+          userFacingSummary: firstUserFacingSummary,
         },
       });
       endSseResponse(reply);
@@ -2402,6 +2556,13 @@ export class ConversationService {
         request.message,
         richWorkbookContext,
       );
+      // Spec 23: strip internal vocabulary / mode-switch pitches from ask/plan LLM copy.
+      if (readOnly && structured?.kind === 'answer') {
+        structured.answer = sanitizeAskAnswer(structured.answer);
+      }
+      if (readOnly && structured?.kind === 'actions') {
+        structured.answer = sanitizeAskAnswer(structured.answer);
+      }
       const fallbackText = fullText.trim() || 'I could not generate a response.';
       if (structured?.kind === 'actions') {
         actionsCount = structured.actions.length;
@@ -2411,18 +2572,10 @@ export class ConversationService {
       );
 
       if (!structured) {
-        const isNewSheetWithData =
-          detectCreateNewSheetIntent(request.message) &&
-          detectSheetDataGenerationIntent(request.message);
-        const tableFallback =
-          readOnly || isNewSheetWithData
-            ? null
-            : buildTableActionsFromMessage(request.message);
-        if (tableFallback?.length) {
-          const plan = parseTableCreateRequest(request.message);
-          const answer = plan
-            ? `Created **${plan.rowCount}** rows with columns: ${plan.headers.join(', ')}.`
-            : 'Created your table with headers and sample values.';
+        const deterministicTable = readOnly ? null : tryDeterministicTableCreate(request.message);
+        if (deterministicTable) {
+          const { plan, actions: tableFallback } = deterministicTable;
+          const answer = `Created **${plan.rowCount}** rows with columns: ${plan.headers.join(', ')}.`;
           this.logger.log(
             `Table create (LLM parse fallback) trace=${traceId} conversation=${conversationId}`,
           );
@@ -2456,10 +2609,16 @@ export class ConversationService {
 
         const retryHint =
           'I understood your request but could not parse the AI response. Please try again — e.g. "Generate 10 rows of sample GST purchase data with headers".';
-        const answer =
+        const rawAnswer =
           fallbackText.length > 20 && !fallbackText.startsWith('{')
             ? `${fallbackText}\n\n${retryHint}`
             : retryHint;
+        const answer = readOnly ? sanitizeAskAnswer(rawAnswer) : rawAnswer;
+        const parseFailMetadata = await this.buildAnswerPersistMetadata(
+          conversationId,
+          answer,
+          false,
+        );
 
         await this.saveMessage(conversationId, {
           id: `msg_${Date.now()}_assistant`,
@@ -2467,13 +2626,19 @@ export class ConversationService {
           content: answer,
           type: 'answer',
           timestamp: new Date(),
+          ...(parseFailMetadata ? { metadata: parseFailMetadata } : {}),
         });
         emit('answer', { answer });
         emit('conversation_end', { summary: 'Completed.' });
         await this.markCompleted(conversationId);
         this.finalizeWorkflow(traceId, 'completed', {
           durationMs: Date.now() - startedAt,
-          sseOutput: { kind: 'answer', answer, parseFailed: true },
+          sseOutput: {
+            kind: 'answer',
+            answer,
+            parseFailed: true,
+            pendingWritePlan: Boolean(parseFailMetadata?.pendingWritePlan),
+          },
         });
         endSseResponse(reply);
         return;
@@ -2508,15 +2673,21 @@ export class ConversationService {
         const modeLabel = request.mode === 'plan' ? 'Plan' : 'Ask';
         const note =
           removedCount > 0
-            ? `\n\n_${modeLabel} mode is read-only. Switch to Action mode to apply these changes._`
+            ? `\n\n_${modeLabel} mode is read-only. Want me to apply these changes when you're ready to edit?_`
             : '';
-        const answer = `${structured.answer}${note}`;
+        const answer = sanitizeAskAnswer(`${structured.answer}${note}`);
+        const readOnlyMetadata = await this.buildAnswerPersistMetadata(
+          conversationId,
+          answer,
+          false,
+        );
         await this.saveMessage(conversationId, {
           id: `msg_${Date.now()}_assistant`,
           role: 'assistant',
           content: answer,
           type: 'answer',
           timestamp: new Date(),
+          ...(readOnlyMetadata ? { metadata: readOnlyMetadata } : {}),
         });
         emit('answer', { answer });
         emit('conversation_end', { summary: 'Read-only response.' });
@@ -2529,6 +2700,12 @@ export class ConversationService {
         endSseResponse(reply);
         return;
       }
+
+      this.assertWriteRouteProducedActions({
+        conversationId,
+        message: request.message,
+        actionsLength: structured.actions.length,
+      });
 
       await this.saveMessage(conversationId, {
         id: `msg_${Date.now()}_assistant`,
@@ -2557,19 +2734,30 @@ export class ConversationService {
       return;
     }
 
+    // Confirm-only prose with no actions: persist a resumable plan so "yes" can finish the write.
+    const pendingMetadata = await this.buildAnswerPersistMetadata(
+      conversationId,
+      structured.answer,
+      false,
+    );
     await this.saveMessage(conversationId, {
       id: `msg_${Date.now()}_assistant`,
       role: 'assistant',
       content: structured.answer,
       type: 'answer',
       timestamp: new Date(),
+      ...(pendingMetadata ? { metadata: pendingMetadata } : {}),
     });
     emit('answer', { answer: structured.answer });
     emit('conversation_end', { summary: 'Completed.' });
     await this.markCompleted(conversationId);
     this.finalizeWorkflow(traceId, 'completed', {
       durationMs: Date.now() - startedAt,
-      sseOutput: { kind: 'answer', answer: structured.answer },
+      sseOutput: {
+        kind: 'answer',
+        answer: structured.answer,
+        pendingWritePlan: Boolean(pendingMetadata?.pendingWritePlan),
+      },
     });
     endSseResponse(reply);
     } catch (error) {

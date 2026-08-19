@@ -191,4 +191,111 @@ describe('normalizeExecutorOutput', () => {
       }),
     );
   });
+
+  describe('unusable actions are reported, not silently discarded', () => {
+    it('reports an unknown action type instead of dropping it in silence', () => {
+      const result = normalizeExecutorOutput(
+        {
+          subtaskId: 's1',
+          actions: [
+            { type: 'SET_CELL', address: 'A1', value: 'Total' },
+            { type: 'APPLY_PIVOT_MAGIC', range: 'A1:D10' },
+          ],
+        },
+        subtask,
+      );
+
+      expect(result.actions).toHaveLength(1);
+      expect(result.droppedActions).toEqual([
+        { rawType: 'APPLY_PIVOT_MAGIC', reason: 'unknown-type' },
+      ]);
+    });
+
+    it('reports a non-object action entry', () => {
+      const result = normalizeExecutorOutput(
+        { subtaskId: 's1', actions: ['FREEZE_PANES', null] },
+        subtask,
+      );
+
+      expect(result.actions).toHaveLength(0);
+      expect(result.droppedActions).toEqual([
+        { rawType: null, reason: 'not-an-object' },
+        { rawType: null, reason: 'not-an-object' },
+      ]);
+    });
+
+    it('leaves droppedActions empty when every action normalizes', () => {
+      const result = normalizeExecutorOutput(
+        { subtaskId: 's1', actions: [{ type: 'SET_CELL', address: 'A1', value: 1 }] },
+        subtask,
+      );
+
+      expect(result.actions).toHaveLength(1);
+      expect(result.droppedActions).toEqual([]);
+    });
+
+    // Regression: a BATCH_SET with no operations array reached the frontend
+    // undiscarded (every downstream check guards with Array.isArray and just
+    // skips its own logic instead of rejecting), and crashed the entire apply —
+    // "action.operations is not iterable" — losing every other verified action
+    // in the same batch. This is a recognized type with a missing required
+    // field, not an unknown type, so it needs its own reason category.
+    it('drops a BATCH_SET with no operations array, with reason missing-required-fields', () => {
+      const result = normalizeExecutorOutput(
+        { subtaskId: 's1', actions: [{ type: 'BATCH_SET', sheetName: 'Main' }] },
+        subtask,
+      );
+
+      expect(result.actions).toHaveLength(0);
+      expect(result.droppedActions).toEqual([
+        { rawType: 'BATCH_SET', reason: 'missing-required-fields' },
+      ]);
+    });
+
+    it('drops a BATCH_SET with an empty operations array', () => {
+      const result = normalizeExecutorOutput(
+        { subtaskId: 's1', actions: [{ type: 'BATCH_SET', sheetName: 'Main', operations: [] }] },
+        subtask,
+      );
+
+      expect(result.actions).toHaveLength(0);
+      expect(result.droppedActions).toEqual([
+        { rawType: 'BATCH_SET', reason: 'missing-required-fields' },
+      ]);
+    });
+
+    it('drops a BATCH_SET whose operations field is the wrong shape (not an array)', () => {
+      const result = normalizeExecutorOutput(
+        {
+          subtaskId: 's1',
+          actions: [{ type: 'BATCH_SET', sheetName: 'Main', operations: { address: 'B2' } }],
+        },
+        subtask,
+      );
+
+      expect(result.actions).toHaveLength(0);
+      expect(result.droppedActions).toEqual([
+        { rawType: 'BATCH_SET', reason: 'missing-required-fields' },
+      ]);
+    });
+
+    it('keeps a well-formed BATCH_SET with a non-empty operations array', () => {
+      const result = normalizeExecutorOutput(
+        {
+          subtaskId: 's1',
+          actions: [
+            {
+              type: 'BATCH_SET',
+              sheetName: 'Main',
+              operations: [{ address: 'B2', formula: '=SUM(January!G:G)' }],
+            },
+          ],
+        },
+        subtask,
+      );
+
+      expect(result.actions).toHaveLength(1);
+      expect(result.droppedActions).toEqual([]);
+    });
+  });
 });

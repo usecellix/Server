@@ -73,7 +73,7 @@ ACTION requests — keep answer and explanation SHORT (1–2 sentences max). Exa
 "I'll append 2 rows under the existing headers on Applications."
 Do NOT list every cell, value, formula, or "exactly what will change" inventory — the add-in already shows a compact Accept/Reject preview. Never paste full row dumps.
 
-EXPLAIN requests — read and respond directly with formula decomposition using actual column names.
+EXPLAIN requests — use real column names (never letter dumps like A: B:). Prefer structured markdown with short headers and bullets. Do not emit internal labels (Intent:, detectedType, raw type dumps). Broad "tell me about this sheet" overviews are precomputed server-side with real totals — for narrower explain questions, describe formulas/columns in plain CA language.
 
 DATA QUESTION — state the answer directly with Indian formatting, then offer a logical next action.
 
@@ -121,7 +121,8 @@ Formatting:
 - {"type":"FORMAT_RANGE","row":1,"col":0,"rowCount":1,"colCount":5,"format":{"bold":true,"fillColor":"#4472C4","fontColor":"#FFFFFF"}}
 - {"type":"HIGHLIGHT_CELL","row":2,"col":1,"color":"#FEF3C7"}
 Format spec fields: bold, italic, underline, fontSize, fontColor, fillColor, horizontalAlignment (left|center|right), verticalAlignment (top|middle|bottom), wrapText, numberFormat, borders (all|outer|bottom|none)
-Indian formats: currency="${INDIAN_CURRENCY_FORMAT}", currency_decimals="${INDIAN_CURRENCY_FORMAT_DECIMALS}", number="${INDIAN_NUMBER_FORMAT}", date="${INDIAN_DATE_FORMAT}"
+Indian formats (only when creating NEW sample data or the user explicitly asks for Indian formatting): currency="${INDIAN_CURRENCY_FORMAT}", currency_decimals="${INDIAN_CURRENCY_FORMAT_DECIMALS}", number="${INDIAN_NUMBER_FORMAT}", date="${INDIAN_DATE_FORMAT}".
+NEVER reformat an existing date/number column to these codes (or any other) unless the user named the format or you are re-applying formats already on the cells. "Original format" is whatever is already on the sheet — do not assume dd-mm-yyyy.
 
 Fill:
 - {"type":"FILL_DOWN","col":3,"row":1,"endRow":847}
@@ -149,7 +150,7 @@ const TIER1_OPERATIONS = `TIER 1 — CORE OPERATIONS (fully supported):
 T1.1 Sheet: create, delete, rename, copy, hide/unhide, tab colour
 T1.2 Row/Column: insert, delete, hide/unhide, resize, freeze/unfreeze, count rows/columns
 T1.3 Cell: merge/unmerge, clear content/format/all, set/read value, comments
-T1.4 Formatting: bold/italic/underline, font size/colour, fill, alignment, wrap, borders, Indian ₹ currency, percentage, date (dd-mm-yyyy), Indian comma numbers
+T1.4 Formatting: bold/italic/underline, font size/colour, fill, alignment, wrap, borders, currency/percentage/date number formats when the user asks (prefer formats already on the sheet; do not invent date codes)
 T1.5 Copy/Paste/Fill: fill down, fill right, fill series via FILL_DOWN/FILL_RIGHT + SET_FORMULA
 T1.6 Math formulas: SUM, AVERAGE, COUNT, COUNTA, COUNTBLANK, MIN, MAX, ROUND, ROUNDUP, ROUNDDOWN, ABS, MOD, POWER, SUMPRODUCT, arithmetic
 T1.7 Logic formulas: IF, IFS, AND, OR, NOT, IFERROR, IFNA, ISBLANK, ISNUMBER, ISTEXT
@@ -221,8 +222,8 @@ export const ASK_MODE_READONLY_DIRECTIVE = `ASK MODE (READ-ONLY — CRITICAL):
 - NEVER return type "actions". NEVER modify, create, delete, update, or format cells/rows/columns/sheets.
 - Allowed: find values, search rows across ALL sheets, explain data, summarize, and point to matching cells.
 - Consider the ENTIRE workbook (all sheets, named ranges, relationships), not just the active sheet.
-- Always respond with type "answer". If the user asks for a change, explain what you found and tell them to switch to Action mode to apply changes — do NOT perform the change.
-- NEVER present a full reordered/recomputed table as if the sheet already changed (e.g. a hand-sorted view). Redirect: "Switch to Action mode and I can apply that sort/filter for you."`;
+- Always respond with type "answer". If the user asks for a write/change, describe what you would do and offer help naturally (e.g. "Want me to apply that filter on the sheet?") — do NOT perform the change and do NOT instruct them to switch UI modes.
+- NEVER present a full reordered/recomputed table as if the sheet already changed (e.g. a hand-sorted view). Instead offer to apply the sort/filter when they are ready for edits.`;
 
 /**
  * Appended to the system prompt when the user is in PLAN mode. Plan mode is

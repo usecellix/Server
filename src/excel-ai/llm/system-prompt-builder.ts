@@ -65,6 +65,7 @@ export function buildFormatContextSection(context: WorkbookContext): string {
       if (!fmt) return '';
 
       const headerRow = sheet.headers.join(' | ');
+      const headerRowNumber = (sheet.headerRowIndex ?? 0) + 1;
       const sampleRows = sheet.sampleData
         .slice(0, 5)
         .map((row) => formatSampleRow(row))
@@ -77,7 +78,7 @@ export function buildFormatContextSection(context: WorkbookContext): string {
 
       return `
 ### Sheet: "${sheet.sheetName}" (${sheet.rowCount} rows × ${sheet.colCount} cols)
-Headers (Row 1): ${headerRow}
+Headers (Row ${headerRowNumber}): ${headerRow}
 Sample data:
 ${sampleRows}
 Format rules (MUST follow exactly):

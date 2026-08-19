@@ -20,6 +20,7 @@ const baseContext: WorkbookContext = {
       formulas: [['', '', ''], ['', '', ''], ['', '', '']],
       numberFormats: [['General', 'General', 'General']],
       structure: 'data_table',
+      headerRowIndex: 0,
     },
   ],
   namedRanges: [{ name: 'TaxRate', formula: '=0.1' }],

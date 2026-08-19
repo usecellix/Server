@@ -69,6 +69,12 @@ export interface SheetSnapshot {
   rowCount: number;
   colCount: number;
   headers: string[];
+  /**
+   * 0-based row index within sampleData where `headers` actually lives, when the
+   * add-in detected it. Undefined on older add-in builds — callers should treat
+   * that as "unknown" and re-detect from sampleData rather than assuming row 0.
+   */
+  headerRowIndex?: number;
   sampleData: (string | number | null)[][];
   columnMeta?: ColumnMeta[];
   structure?: SheetStructure;

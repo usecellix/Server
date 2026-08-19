@@ -94,6 +94,104 @@ export function isClearHighlightMessage(message: string): boolean {
   );
 }
 
+/**
+ * Spec 24: header-row cosmetics ("highlight the header row") — not a data-row match.
+ */
+export function isHeaderRowFormatRequest(message: string): boolean {
+  const lower = message.toLowerCase();
+  if (!/\b(header|headers)\b/.test(lower)) return false;
+  // Conditional highlight of rows that mention "header" should not match; need format intent.
+  return (
+    /\b(header|headers)\b.*\b(row|bg|background|fill|highlight|bold|colou?r|green|red|yellow|blue)\b/i.test(
+      lower,
+    ) ||
+    /\b(highlight|fill|bg|background|bold|colou?r)\b.*\b(header|headers)\b/i.test(lower)
+  );
+}
+
+function resolveColorFromMessage(message: string): string | undefined {
+  const lower = message.toLowerCase();
+  // "light bg green" / "light background red" (common chat phrasing)
+  const lightLoose = /\blight\s+(?:bg|background|fill)?\s*(red|green|yellow|blue)\b/i.exec(lower);
+  if (lightLoose) {
+    const key = `light ${lightLoose[1]!.toLowerCase()}`;
+    if (COLOR_ALIASES[key]) return COLOR_ALIASES[key];
+  }
+  // Prefer multi-word aliases first
+  const ordered = Object.keys(COLOR_ALIASES).sort((a, b) => b.length - a.length);
+  for (const key of ordered) {
+    if (lower.includes(key)) return COLOR_ALIASES[key];
+  }
+  return undefined;
+}
+
+function wantsHeaderBold(message: string): boolean {
+  return /\bbold\b/i.test(message);
+}
+
+function resolveHeaderColCount(workbookContext: WorkbookContext, sheetName: string): number {
+  const sheet = workbookContext.sheets.find((s) => s.name === sheetName);
+  if (!sheet) return workbookContext.sheets[0]?.columnCount || 1;
+  const fromValues = Math.max(
+    sheet.columnCount || 0,
+    ...(sheet.values ?? []).map((row) => (Array.isArray(row) ? row.length : 0)),
+    0,
+  );
+  const used = stripSheetPrefix(sheet.usedRange ?? 'A1');
+  const rangeMatch = /^[A-Za-z]+(\d+)(?::([A-Za-z]+)(\d+))?$/.exec(used);
+  if (rangeMatch?.[2]) {
+    const endCol = rangeMatch[2];
+    let col = 0;
+    for (const ch of endCol.toUpperCase()) {
+      col = col * 26 + (ch.charCodeAt(0) - 64);
+    }
+    return Math.max(fromValues, col, 1);
+  }
+  return Math.max(fromValues, 1);
+}
+
+/** Deterministic FORMAT_RANGE for the full header row. */
+export function buildHeaderRowFormatAction(
+  workbookContext: WorkbookContext,
+  userMessage: string,
+  seed?: SheetAction,
+): SheetAction {
+  const record = (seed ?? {}) as unknown as Record<string, unknown>;
+  const sheetName =
+    (typeof record.sheetName === 'string' && record.sheetName) ||
+    workbookContext.activeSheetName;
+  const colCount = resolveHeaderColCount(workbookContext, sheetName);
+  const clearFill = isClearHighlightMessage(userMessage) || wantsClearFill(record);
+  const fillColor =
+    resolveFillColor(record) ?? resolveColorFromMessage(userMessage) ?? LIGHT_RED;
+  const bold = wantsHeaderBold(userMessage);
+
+  if (clearFill) {
+    return {
+      type: 'FORMAT_RANGE',
+      sheetName,
+      row: 0,
+      col: 0,
+      rowCount: 1,
+      colCount,
+      format: { clearFill: true },
+    };
+  }
+
+  const format: NonNullable<SheetAction['format']> = { fillColor };
+  if (bold) format.bold = true;
+
+  return {
+    type: 'FORMAT_RANGE',
+    sheetName,
+    row: 0,
+    col: 0,
+    rowCount: 1,
+    colCount,
+    format,
+  };
+}
+
 function resolveUsedRange(workbookContext: WorkbookContext, sheetName: string): string {
   const sheet = workbookContext.sheets.find((s) => s.name === sheetName);
   const used = sheet?.usedRange ?? workbookContext.sheets[0]?.usedRange ?? 'A1';
@@ -209,7 +307,20 @@ export function normalizeTier1ConditionalFormatActions(
   workbookContext: WorkbookContext,
   userMessage?: string,
 ): SheetAction[] {
+  if (userMessage && isHeaderRowFormatRequest(userMessage)) {
+    const seed = actions[0];
+    return [buildHeaderRowFormatAction(workbookContext, userMessage, seed)];
+  }
   return actions.map((action) =>
     normalizeFormatMatchingRowsAction(action, workbookContext, userMessage),
   );
+}
+
+/** Normalize any Tier-1 header-format batch (HEADER_FORMAT hint or misrouted match). */
+export function normalizeTier1HeaderFormatActions(
+  actions: SheetAction[],
+  workbookContext: WorkbookContext,
+  userMessage: string,
+): SheetAction[] {
+  return [buildHeaderRowFormatAction(workbookContext, userMessage, actions[0])];
 }

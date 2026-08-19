@@ -79,6 +79,7 @@ function buildSheetContext(
     formulas,
     numberFormats,
     structure: inferStructure(analysis.headers, richSheet?.structure),
+    headerRowIndex: analysis.headerRowIndex ?? 0,
     compressionMeta: richSheet?.compressionMeta,
     dataTruncated,
   };
@@ -112,7 +113,9 @@ export function buildAgentWorkbookContext(
           rowCount: richSheet.rowCount,
           columnCount: richSheet.colCount,
           headers: richSheet.headers,
-          headerRowIndex: 0,
+          // Non-active sheets have no live sheetData to re-detect from here — trust
+          // the add-in's own detection when it sent one, rather than assuming row 0.
+          headerRowIndex: richSheet.headerRowIndex ?? 0,
           isEmpty: richSheet.rowCount === 0,
           columnLetters: Array.from({ length: richSheet.colCount }, (_, i) =>
             String.fromCharCode(65 + (i % 26)),

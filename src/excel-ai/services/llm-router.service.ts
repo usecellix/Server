@@ -7,7 +7,7 @@ import { ROUTER_SYSTEM_PROMPT, buildRouterUserMessage } from '../prompts/router-
 import { RouterDecision, RouterInput } from '../types/router.types';
 import { classifyComplexity } from '../utils/complexity-classifier.util';
 import { resolveLocalFindRoute } from '../utils/find-query-parser.util';
-import { hasWriteIntent } from '../utils/write-intent-guard.util';
+import { hasWriteIntent, isWorkbookScaffoldIntent } from '../utils/write-intent-guard.util';
 import { OpenRouterService } from './openrouter.service';
 
 // Regex fast lane — these NEVER go to the LLM router.
@@ -41,9 +41,9 @@ export class LlmRouterService {
    * Priority:
    * 1. Regex fast lane (0ms) — unambiguous layout commands
    * 2. Find + copy/export — FindExportService (must beat read-only data lane)
-   * 3. Data query fast lane — LLM read-only path with column slicing
-   * 4. Ask/plan mode short-circuit — non-data messages
-   * 5. Complexity regex lane — write-tier classification before LLM
+   * 3. Complexity / workbook scaffold (write) — before data, so "total amount" cols can't trap builds
+   * 4. Data query fast lane — LLM read-only path with column slicing
+   * 5. Ask/plan mode short-circuit — non-data messages
    * 6. LLM Router (LOW tier, ~100ms) — everything else
    * 7. Write-intent guard — escalate misrouted mutations to write (never silent read-only)
    */
@@ -72,6 +72,49 @@ export class LlmRouterService {
       );
     }
 
+    // Write patterns before data: "dashboard" + "total amount" (column name) would otherwise
+    // false-positive into SmartDataQuery and answer "no sheet data".
+    if (input.mode === 'action') {
+      const complexityEarly = classifyComplexity(input.message);
+      if (complexityEarly.match) {
+        const { tier, actionHint } = complexityEarly.match;
+        this.logger.debug(`Complexity regex match (pre-data): tier=${tier} actionHint=${actionHint}`);
+        return {
+          route: 'write',
+          complexity: tier,
+          actionHint,
+          matchedBy: 'regex',
+          confidence: 1.0,
+          reasoning: `Complexity regex: tier=${tier} hint=${actionHint}`,
+        };
+      }
+      if (isWorkbookScaffoldIntent(input.message)) {
+        return {
+          route: 'write',
+          complexity: 3,
+          actionHint: 'WORKBOOK_SCAFFOLD',
+          matchedBy: 'regex',
+          confidence: 0.95,
+          reasoning: 'Workbook scaffold (multi-sheet / main / payments ledger) — Tier 3',
+        };
+      }
+      // Sort / add / etc. with column names like "Total Amount" must not enter data lane.
+      // An unrecognized write is deliberately escalated to Tier 3: the full
+      // planner/executor/verifier pipeline is the safe default when we cannot
+      // classify the request, so correctness wins over the cheaper lanes.
+      if (hasWriteIntent(input.message)) {
+        return {
+          route: 'write',
+          complexity: 3,
+          // Decided by regex — no LLM was consulted on this path.
+          matchedBy: 'regex',
+          confidence: 0.9,
+          reasoning: 'Write-intent heuristic (pre-data/LLM) — unclassified write escalated to Tier 3',
+          overridden: true,
+        };
+      }
+    }
+
     if (this.quickDataCheck(input.message)) {
       return this.applyWriteIntentGuard(
         {
@@ -94,20 +137,7 @@ export class LlmRouterService {
       );
     }
 
-    const complexityResult = classifyComplexity(input.message);
-    if (complexityResult.match) {
-      const { tier, actionHint } = complexityResult.match;
-      this.logger.debug(`Complexity regex match: tier=${tier} actionHint=${actionHint}`);
-      return {
-        route: 'write',
-        complexity: tier,
-        actionHint,
-        matchedBy: 'regex',
-        confidence: 1.0,
-        reasoning: `Complexity regex: tier=${tier} hint=${actionHint}`,
-      };
-    }
-
+    // Late complexity already tried above for action mode; remaining action uses LLM.
     const llmDecision = await this.callLlmRouter(input);
     return this.applyWriteIntentGuard(llmDecision, input.message);
   }
@@ -166,7 +196,8 @@ export class LlmRouterService {
   }
 
   private quickDataCheck(message: string): boolean {
-    return /\b(find|search|sum|count|average|avg|max|min|duplicate|blank|lookup|how many|total)\b/i.test(
+    // Bare "total" matches column names like "total amount" in scaffold prompts; require query form.
+    return /\b(find|search|sum|count|average|avg|max|min|duplicate|blank|lookup|how many|what is the total|grand total|the total of)\b/i.test(
       message,
     );
   }

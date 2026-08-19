@@ -1,4 +1,5 @@
 import { WorkbookContext } from '../../types/cellix.types';
+import { findHeaderRowIndex } from './header-row-detection.util';
 
 export interface SlicedSheetData {
   sheetName: string;
@@ -416,21 +417,8 @@ function detectHeaderRow(rows: string[][], knownHeaders?: string[]): number {
     }
   }
 
-  const limit = Math.min(8, rows.length);
-  for (let index = 0; index < limit; index++) {
-    const row = rows[index] ?? [];
-    if (!row.length) {
-      continue;
-    }
-    const textCells = row.filter((cell) => {
-      const value = cell.trim();
-      return value && Number.isNaN(Number(value.replace(/[,₹\s]/g, '')));
-    }).length;
-    if (textCells / row.length >= 0.6) {
-      return index;
-    }
-  }
-  return 0;
+  const columnCount = rows.reduce((max, row) => Math.max(max, row?.length ?? 0), 0);
+  return findHeaderRowIndex(rows, columnCount);
 }
 
 function matchesAnyHeader(keyword: string, headers: string[]): boolean {

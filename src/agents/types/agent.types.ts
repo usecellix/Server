@@ -52,6 +52,12 @@ export interface SheetContext {
   formulas: string[][];
   numberFormats: string[][];
   structure: 'financial_model' | 'data_table' | 'report' | 'unknown';
+  /**
+   * 0-based index into `values` where column headers live. Not always 0 — sheets
+   * with a title row above the table (common in exported reports) have headers
+   * further down. The Executor must key off this instead of assuming row 0.
+   */
+  headerRowIndex: number;
   formulaInsights?: FormulaInsights;
   compressionMeta?: SheetCompressionMeta;
   dataTruncated?: boolean;
@@ -74,6 +80,16 @@ export interface PlannerOutput {
   reasoning: string;
 }
 
+/**
+ * An action the Executor emitted that could not be normalized into a usable action.
+ * Carried out of normalization so it is logged and verified against — never silently discarded.
+ */
+export interface DroppedAction {
+  /** The `type` the model emitted, when it was a string at all. */
+  rawType: string | null;
+  reason: 'not-an-object' | 'unknown-type' | 'missing-required-fields';
+}
+
 export interface ExecutorOutput {
   subtaskId: string;
   actions: Action[];
@@ -82,6 +98,8 @@ export interface ExecutorOutput {
   toolRequest?: RangeDataToolRequest;
   /** False when the executor needed a JSON parse retry. */
   parsedOnFirstAttempt?: boolean;
+  /** Actions the model emitted that normalization could not use. Empty/absent when all were kept. */
+  droppedActions?: DroppedAction[];
 }
 
 export interface VerifierIssue {

@@ -30,6 +30,15 @@ export class ConversationMessageEntry {
     changeSetId?: string;
     questionOptions?: string[];
     pendingIntent?: string;
+    /**
+     * Multi-sheet / large write offer awaiting short affirmation ("yes do it").
+     * Rehydrated on the next turn to force the write path.
+     */
+    pendingWritePlan?: {
+      originalPrompt: string;
+      offeredAt?: string;
+      summary?: string;
+    };
     ambiguityScore?: number;
     /** Spec 12 — successful early subtasks delivered when a later step fails */
     partialProgress?: boolean;

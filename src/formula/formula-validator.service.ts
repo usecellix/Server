@@ -90,6 +90,36 @@ export class FormulaValidatorService {
       issues.push(...this.validateReferences(entry, postContext));
     }
 
+    // Some action types (FILL_DOWN/FILL_RIGHT) carry no `formula` field of
+    // their own — the resulting formula only exists inside the simulated
+    // shadow cell, produced by shifting the source formula's references.
+    // Without this pass, a fill that shifts a reference out of bounds is
+    // invisible to reference validation entirely: extractFormulas() only
+    // reads the actions array, and the EXCEL_ERRORS scan above only catches
+    // literal error tokens, not a derived out-of-bounds reference. Re-run
+    // the same reference-bounds check directly against every formula the
+    // shadow actually ended up holding, regardless of which action produced
+    // it. See TASKS.md #42.
+    const alreadyChecked = new Set(
+      formulas.map((f) => `${f.sheetName}!${f.cell ?? ''}`),
+    );
+    for (const key of shadow.changedCells) {
+      const bang = key.indexOf('!');
+      if (bang === -1) continue;
+      const sheetName = key.slice(0, bang);
+      const address = key.slice(bang + 1);
+      if (alreadyChecked.has(key)) continue;
+      const cell = shadow.sheets.get(sheetName)?.cells.get(address);
+      if (!cell?.formula || !cell.formula.startsWith('=')) continue;
+
+      issues.push(
+        ...this.validateReferences(
+          { formula: cell.formula, sheetName, cell: address, actionIndex: -1 },
+          postContext,
+        ),
+      );
+    }
+
     const errors = issues.filter((i) => i.severity === 'error');
     if (errors.length > 0) {
       this.logger.warn(`Post-apply formula validation: ${errors.length} error(s)`);

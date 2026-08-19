@@ -119,6 +119,9 @@ export function shadowSheetToContext(sheet: ShadowSheet): SheetContext {
     formulas,
     numberFormats,
     structure: sheet.structure as SheetContext['structure'],
+    // Shadow workbook diffing doesn't reason about title rows — this is an
+    // internal post-apply verification snapshot, not user-facing header context.
+    headerRowIndex: 0,
   };
 }
 

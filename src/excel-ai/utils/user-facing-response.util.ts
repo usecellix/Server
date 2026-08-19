@@ -38,7 +38,30 @@ export interface BuildInternalDetailsInput {
 
 /** Strings that must never appear in the default user-facing headline. */
 export const INTERNAL_COPY_MARKERS =
-  /\b(Tier\s*[0-3]|single-action|no verification|Direct Change|Planner|Executor|Verifier|CONDITIONAL_FORMAT|SET_FORMULA|WRITE_TABLE|openai\/)/i;
+  /\b(Tier\s*[0-3]|single-action|no verification|Direct Change|Planner|Executor|Verifier|CONDITIONAL_FORMAT|FORMAT_MATCHING_ROWS|findMatchingRowOffsets|hasHeaders\s*:|SET_FORMULA|WRITE_TABLE|openai\/)/i;
+
+/** Spec 24: full answers must not leak action-type / validation stack fragments. */
+export function sanitizeAnswerForUser(answer: string): string {
+  if (!answer) return answer;
+  let text = answer;
+  if (
+    /findMatchingRowOffsets|FORMAT_MATCHING_ROWS\s*:|hasHeaders\s*:\s*true|Spreadsheet update failed/i.test(
+      text,
+    )
+  ) {
+    return "I couldn't apply that formatting. Please try again or describe the range differently.";
+  }
+  // Drop lines that look like internal ActionType: message dumps
+  text = text
+    .split('\n')
+    .filter((line) => !/^[A-Z][A-Z0-9_]+\s*:\s*.+/.test(line.trim()))
+    .join('\n')
+    .trim();
+  if (INTERNAL_COPY_MARKERS.test(text) && !text.includes(' ')) {
+    return "I couldn't apply that formatting. Please try again or describe the range differently.";
+  }
+  return text || answer;
+}
 
 function colToLetter(col: number): string {
   let n = col + 1;
@@ -106,7 +129,7 @@ export function describeRangeCompactly(changes: CellChange[]): string | undefine
 }
 
 export function sanitizeAnswerForHeadline(answer: string): string {
-  let text = answer
+  let text = sanitizeAnswerForUser(answer)
     .replace(/\*\*([^*]+)\*\*/g, '$1')
     .replace(/\*([^*]+)\*/g, '$1')
     .replace(/`([^`]+)`/g, '$1')

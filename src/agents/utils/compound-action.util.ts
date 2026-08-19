@@ -176,11 +176,53 @@ export function buildCompoundCreateAndSortActions(
   };
 }
 
+function trySkipEmptySourceCopy(
+  subtask: SubTask,
+  context: WorkbookContext,
+): ExecutorOutput | null {
+  const desc = subtask.description;
+  const looksLikeCopy =
+    subtask.suggestedActionType === 'COPY_FILTERED_RANGE' ||
+    subtask.suggestedActionType === 'MOVE_RANGE' ||
+    /\bcopy\b/i.test(desc) ||
+    /\bmove\b/i.test(desc);
+  if (!looksLikeCopy) return null;
+  if (!/\b(data rows?|excluding header|excluding the header|all rows)\b/i.test(desc)) {
+    // Still handle vague "copy from 'X'" when source is header-only.
+    if (!/\bfrom\b/i.test(desc)) return null;
+  }
+
+  const fromQuoted =
+    /from\s+['"]([^'"]+)['"]/i.exec(desc)?.[1] ??
+    /from\s+([A-Za-z0-9][A-Za-z0-9\s/-]{0,40}?)(?:\s+to\b|\s+starting\b|$)/i.exec(desc)?.[1];
+  if (!fromQuoted?.trim()) return null;
+
+  const sourceName = fromQuoted.trim();
+  const sheet = context.sheets.find(
+    (s) => s.name.toLowerCase() === sourceName.toLowerCase(),
+  );
+
+  // Not in workbook yet or only headers — no data rows to copy.
+  if (!sheet || sheet.rowCount <= 1) {
+    return {
+      subtaskId: subtask.id,
+      actions: [],
+      isDone: true,
+    };
+  }
+
+  return null;
+}
+
 export function buildDeterministicSubtaskActions(
   subtask: SubTask,
   context: WorkbookContext,
 ): ExecutorOutput | null {
   const desc = subtask.description;
+
+  // Empty monthly templates: "copy all data rows … excluding header" has nothing to copy.
+  const emptyCopySkip = trySkipEmptySourceCopy(subtask, context);
+  if (emptyCopySkip) return emptyCopySkip;
 
   if (detectCreateNewSheet(desc) && detectSortIntent(desc)) {
     return buildCompoundCreateAndSortActions(desc, context, subtask);

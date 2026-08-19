@@ -3,8 +3,12 @@ import {
   resolveFilterColumnIndex,
 } from '../src/agents/utils/range-filter.util';
 import {
+  buildHeaderRowFormatAction,
   isClearHighlightMessage,
+  isHeaderRowFormatRequest,
   normalizeFormatMatchingRowsAction,
+  normalizeTier1ConditionalFormatActions,
+  normalizeTier1HeaderFormatActions,
 } from '../src/excel-ai/utils/format-matching-rows.util';
 import { WorkbookContext } from '../src/agents/types/agent.types';
 import { SheetAction } from '../src/excel-ai/types/sheet-actions.types';
@@ -45,6 +49,7 @@ describe('FORMAT_MATCHING_ROWS helpers', () => {
         formulas: [],
         numberFormats: [],
         structure: 'data_table',
+      headerRowIndex: 0,
       },
     ],
     namedRanges: [],
@@ -137,5 +142,78 @@ describe('FORMAT_MATCHING_ROWS helpers', () => {
       'remove the red highlights',
     );
     expect(normalized.format).toEqual({ clearFill: true });
+  });
+
+  describe('Spec 24 header row FORMAT_RANGE', () => {
+    it('detects header-row format requests', () => {
+      expect(isHeaderRowFormatRequest('Highlight the header row with light bg green')).toBe(true);
+      expect(isHeaderRowFormatRequest('highlight pending rows light green')).toBe(false);
+    });
+
+    it('rewrites misrouted FORMAT_MATCHING_ROWS to FORMAT_RANGE for header phrasing', () => {
+      const bad: SheetAction = {
+        type: 'FORMAT_MATCHING_ROWS',
+        sheetName: 'Purchase Register',
+        range: 'A1:L5',
+        hasHeaders: false,
+        filter: { column: 'Date', operator: 'equals', value: 'Date' },
+        format: { fillColor: '#C6EFCE' },
+      };
+
+      const out = normalizeTier1ConditionalFormatActions(
+        [bad],
+        workbookContext,
+        'Highlight the header row with light bg green',
+      );
+      expect(out).toHaveLength(1);
+      expect(out[0]).toMatchObject({
+        type: 'FORMAT_RANGE',
+        sheetName: 'Purchase Register',
+        row: 0,
+        col: 0,
+        rowCount: 1,
+        format: { fillColor: '#C6EFCE' },
+      });
+      expect(out[0]!.colCount).toBeGreaterThanOrEqual(12);
+    });
+
+    it('buildHeaderRowFormatAction / HEADER_FORMAT hint yields one FORMAT_RANGE', () => {
+      const action = buildHeaderRowFormatAction(
+        workbookContext,
+        'Highlight the header row with light bg green',
+      );
+      expect(action.type).toBe('FORMAT_RANGE');
+      expect(action.format?.fillColor).toBe('#C6EFCE');
+
+      const batch = normalizeTier1HeaderFormatActions(
+        [{ type: 'FORMAT_MATCHING_ROWS' } as SheetAction],
+        workbookContext,
+        'header should be in bg red',
+      );
+      expect(batch[0]?.type).toBe('FORMAT_RANGE');
+      expect(batch[0]?.format?.fillColor).toBe('#FF6B6B');
+    });
+
+    it('keeps conditional Pending highlight as FORMAT_MATCHING_ROWS', () => {
+      const action: SheetAction = {
+        type: 'FORMAT_MATCHING_ROWS',
+        sheetName: 'Purchase Register',
+        range: 'A1:L51',
+        hasHeaders: true,
+        filter: {
+          column: 'Payment Status',
+          operator: 'equals',
+          value: 'Pending',
+        },
+        format: { fillColor: '#FFC7CE' },
+      };
+      const out = normalizeTier1ConditionalFormatActions(
+        [action],
+        workbookContext,
+        'highlight rows where Payment Status is Pending',
+      );
+      expect(out[0]?.type).toBe('FORMAT_MATCHING_ROWS');
+      expect(out[0]?.filter?.value).toBe('Pending');
+    });
   });
 });

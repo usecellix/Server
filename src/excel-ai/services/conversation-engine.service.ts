@@ -26,9 +26,20 @@ import { SheetAnalysis, SheetAnalyzerService } from './sheet-analyzer.service';
 import { pruneSpuriousAddSheetActions } from '../../agents/utils/compound-action.util';
 import { annotateClearIntentOverwrite } from '../../agents/utils/clear-intent-overwrite.util';
 import {
+  buildSheetOverview,
+  formatSheetOverviewMarkdown,
+  isSheetOverviewRequest,
+} from '../utils/sheet-overview.util';
+import {
   annotateExplicitOverwriteConfirmation,
   type OverwriteTurnActionRecord,
 } from '../utils/overwrite-confirmation.util';
+import {
+  findPendingWritePlan,
+  isAffirmationMessage,
+  localActionWithoutLlmMessage,
+  localWriteUnavailableMessage,
+} from '../utils/pending-write-plan.util';
 
 export { LlmRequestError, LlmRequestError as OpenAiRequestError } from '../errors/llm-request.error';
 export type { SheetActionPayload };
@@ -100,10 +111,28 @@ export class ConversationEngineService {
       return this.handlePendingSumColumn(normalized, sheetData, analysis);
     }
 
+    const pendingWritePlan = findPendingWritePlan(history);
+
+    // Short affirmations must never fall through to the sheet-census "I see N rows".
+    if (isAffirmationMessage(normalized)) {
+      return {
+        kind: 'answer',
+        answer: localWriteUnavailableMessage(pendingWritePlan),
+      };
+    }
+
     const classification = this.intentClassifier.classify(normalized);
 
     if (intentIsReadOnly(classification.intent)) {
       if (classification.intent === 'EXPLAIN') {
+        // Spec 23: broad overview uses real aggregates, not structural letter dumps.
+        if (isSheetOverviewRequest(normalized)) {
+          const sheetName = ctx.activeSheet || 'Sheet';
+          const answer = formatSheetOverviewMarkdown(
+            buildSheetOverview(sheetData, analysis, sheetName),
+          );
+          return { kind: 'answer', answer };
+        }
         return { kind: 'answer', answer: this.buildSheetExplanation(sheetData, analysis, ctx) };
       }
       if (classification.intent === 'DATA_QUESTION') {
@@ -184,6 +213,20 @@ export class ConversationEngineService {
         kind: 'answer',
         answer:
           'Your worksheet is empty. Ask me to **generate sample GST data**, **create a purchase register**, or describe what columns and rows you need — I will build it for you.',
+      };
+    }
+
+    // Write / resume prompts must never die on a structural sheet census.
+    if (
+      classification.intent === 'ACTION' ||
+      this.isWriteIntent(lower) ||
+      pendingWritePlan
+    ) {
+      return {
+        kind: 'answer',
+        answer: pendingWritePlan
+          ? localWriteUnavailableMessage(pendingWritePlan)
+          : localActionWithoutLlmMessage(),
       };
     }
 
@@ -444,8 +487,20 @@ Sheet has ${analysis.rowCount} rows, ${analysis.columnCount} columns. Next appen
       finalActions = injectMissingFormats(finalActions, richWorkbookContext);
       const validation = validateCrossSheetActions(finalActions, richWorkbookContext);
       if (validation.errors.length > 0) {
-        this.logger.warn(
-          `Cross-sheet action validation errors: ${validation.errors.join('; ')}`,
+        // These actions are DISCARDED, so a multi-sheet build silently delivers
+        // less than planned — the user sees a partial result with no explanation.
+        // Log at error level with the offending sheets so it is diagnosable.
+        const missingSheets = [
+          ...new Set(
+            validation.invalid
+              .map((action) => action.sheetName ?? richWorkbookContext.activeSheet)
+              .filter((name): name is string => Boolean(name)),
+          ),
+        ];
+        this.logger.error(
+          `Dropped ${validation.invalid.length} action(s) targeting sheet(s) that neither exist ` +
+            `nor are created in this batch: ${missingSheets.join(', ')}. ` +
+            `Details: ${validation.errors.join('; ')}`,
         );
       }
       finalActions = validation.valid;
@@ -764,7 +819,7 @@ Sheet has ${analysis.rowCount} rows, ${analysis.columnCount} columns. Next appen
       };
     }
 
-    const total = this.sheetAnalyzer.sumColumn(sheetData, columnIndex);
+    const total = this.sheetAnalyzer.sumColumn(sheetData, columnIndex, true, analysis.headerRowIndex ?? 0);
     const columnLabel = analysis.headers[columnIndex] || analysis.columnLetters[columnIndex];
     const totalRow = this.buildSummaryRow(analysis, columnIndex, total, `Total ${columnLabel}`);
     return {
@@ -790,7 +845,12 @@ Sheet has ${analysis.rowCount} rows, ${analysis.columnCount} columns. Next appen
 
     const explicitColumn = this.extractColumnReference(normalized, analysis);
     if (explicitColumn !== null) {
-      const total = this.sheetAnalyzer.sumColumn(sheetData, explicitColumn);
+      const total = this.sheetAnalyzer.sumColumn(
+        sheetData,
+        explicitColumn,
+        true,
+        analysis.headerRowIndex ?? 0,
+      );
       const columnLabel = analysis.headers[explicitColumn] || analysis.columnLetters[explicitColumn];
       if (this.isWriteResultIntent(lower)) {
         return {
@@ -907,7 +967,12 @@ Sheet has ${analysis.rowCount} rows, ${analysis.columnCount} columns. Next appen
     sheetData: unknown[][],
     analysis: SheetAnalysis,
   ): EngineResponse {
-    const blankRows = this.sheetAnalyzer.findBlankRows(sheetData);
+    const blankRows = this.sheetAnalyzer.findBlankRows(
+      sheetData,
+      undefined,
+      true,
+      analysis.headerRowIndex ?? 0,
+    );
     if (blankRows.length === 0) {
       return { kind: 'answer', answer: 'No completely blank rows found in your data.' };
     }
@@ -1004,9 +1069,10 @@ Sheet has ${analysis.rowCount} rows, ${analysis.columnCount} columns. Next appen
         'Most cells look **empty** or free-form — add headers and structured rows to get column-level insight.',
       );
     } else {
+      // Column names + samples only — avoid letter dumps (A:, B:) for user-facing EXPLAIN.
       const lines = detailed.map((c) => {
         const h = safe(c.header);
-        return `• **${h}** (${c.letter}): ${c.preview}`;
+        return `• **${h}**: ${c.preview}`;
       });
       blocks.push(
         `**${detailed.length}** of **${columnsWithData.length}** columns show sample values:\n${lines.join('\n')}`,

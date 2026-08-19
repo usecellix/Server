@@ -110,6 +110,7 @@ describe('INSERT_COLUMN semantic + overwrite safety (spec 14)', () => {
       rowCount: 3,
       columnCount: 12,
       structure: 'data_table',
+      headerRowIndex: 0,
     };
     // Headers A-L
     const headers = analysis.headers;
@@ -167,6 +168,7 @@ describe('INSERT_COLUMN semantic + overwrite safety (spec 14)', () => {
             columnCount: 12,
             usedRange: 'A1:L52',
             structure: 'data_table',
+      headerRowIndex: 0,
             values: [analysis.headers],
             formulas: [[]],
             numberFormats: [[]],

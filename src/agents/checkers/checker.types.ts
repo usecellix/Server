@@ -1,4 +1,4 @@
-import { Action, SubTask, VerifierIssue } from '../types/agent.types';
+import { Action, DroppedAction, SubTask, VerifierIssue } from '../types/agent.types';
 
 export interface CheckerSubtaskResult {
   subtaskId: string;
@@ -18,6 +18,8 @@ export interface CheckerResult {
 export interface SubtaskActionSlice {
   subtask: SubTask;
   actions: Action[];
+  /** Actions the Executor emitted that could not be normalized into a usable type. */
+  droppedActions?: DroppedAction[];
 }
 
 export function mergeCheckerResults(results: CheckerResult[]): CheckerResult {

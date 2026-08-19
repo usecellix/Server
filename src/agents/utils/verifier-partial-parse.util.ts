@@ -81,7 +81,22 @@ function extractBalancedObject(
   return null;
 }
 
-/** True when nextStep is an honest executor block (must not be overridden). */
+/** True when nextStep is an honest executor block (must not be overridden / retried endlessly). */
 export function isExecutorBlockedSignal(nextStep: string | undefined | null): boolean {
-  return Boolean(nextStep && /^\s*blocked\b/i.test(nextStep));
+  if (!nextStep?.trim()) return false;
+  const t = nextStep.trim();
+  if (/^\s*blocked\b/i.test(t)) return true;
+  if (/^\s*blocker\b/i.test(t)) return true;
+  // Soft "cannot/missing" chart/range stalls (common dashboard scaffold dead-ends).
+  if (/cannot create (the )?(pie |column |bar |line )?chart/i.test(t)) return true;
+  if (/cannot determine.*(source\s*range|table)/i.test(t)) return true;
+  if (/missing source\s*range/i.test(t)) return true;
+  if (/source\s*range.*(not known|not available|unknown|missing)/i.test(t)) return true;
+  if (
+    /provide (the )?(full |exact )?(source\s*)?range/i.test(t) &&
+    /\b(chart|table|pie|column)\b/i.test(t)
+  ) {
+    return true;
+  }
+  return false;
 }

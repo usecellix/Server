@@ -1,5 +1,6 @@
 import { SheetActionPayload, SheetActionType } from '../../excel-ai/types/sheet-actions.types';
-import { Action, ExecutorOutput, SubTask } from '../types/agent.types';
+import { ALL_SHEET_ACTION_TYPES } from '../../excel-ai/types/action-catalog';
+import { Action, DroppedAction, ExecutorOutput, SubTask } from '../types/agent.types';
 import { resolveRemarkValue, stripCalledLabel } from './called-value.util';
 import { annotateClearIntentOverwrite } from './clear-intent-overwrite.util';
 import { stripSheetPrefix } from './range-address.util';
@@ -18,63 +19,12 @@ const INDEX_RANGE_ACTION_TYPES = new Set<SheetActionType>([
   'DELETE_COMMENT',
 ]);
 
-const KNOWN_TYPES = new Set<string>([
-  'SET_CELL',
-  'CLEAR_CELL',
-  'HIGHLIGHT_CELL',
-  'SET_FORMULA',
-  'ADD_ROW',
-  'DELETE_ROW',
-  'INSERT_ROW',
-  'INSERT_COLUMN',
-  'DELETE_COLUMN',
-  'HIDE_ROW',
-  'UNHIDE_ROW',
-  'SHOW_ROW',
-  'HIDE_COLUMN',
-  'UNHIDE_COLUMN',
-  'SHOW_COLUMN',
-  'SET_ROW_HEIGHT',
-  'SET_COLUMN_WIDTH',
-  'FREEZE_PANES',
-  'UNFREEZE_PANES',
-  'SET_ZOOM',
-  'PROTECT_SHEET',
-  'UNPROTECT_SHEET',
-  'MERGE_CELLS',
-  'UNMERGE_CELLS',
-  'CLEAR_CONTENT',
-  'CLEAR_FORMAT',
-  'CLEAR_ALL',
-  'FORMAT_RANGE',
-  'FILL_DOWN',
-  'FILL_RIGHT',
-  'CREATE_SHEET',
-  'DELETE_SHEET',
-  'RENAME_SHEET',
-  'COPY_SHEET',
-  'HIDE_SHEET',
-  'SHOW_SHEET',
-  'SET_SHEET_COLOR',
-  'ADD_COMMENT',
-  'DELETE_COMMENT',
-  'WRITE_TABLE',
-  'BATCH_SET',
-  'CREATE_TABLE',
-  'CREATE_CHART',
-  'DEFINE_NAMED_RANGE',
-  'AUTOFIT_COLUMNS',
-  'CLARIFY',
-  'CHECKPOINT',
-  'ADD_SHEET',
-  'SORT_RANGE',
-  'COPY_FILTERED_RANGE',
-  'FORMAT_MATCHING_ROWS',
-  'SET_MATCHING_ROWS',
-  'MOVE_RANGE',
-  'AGGREGATE_TABLE',
-  'UPDATE_CHART',
-]);
+/**
+ * Accepted action types, derived from the exhaustive action catalog so this set
+ * can never fall behind SheetActionType. An unlisted type is dropped by
+ * normalizeSingleAction and reported via ExecutorOutput.droppedActions.
+ */
+const KNOWN_TYPES = new Set<string>(ALL_SHEET_ACTION_TYPES);
 
 function normalizeActionType(raw: unknown): SheetActionType | null {
   if (typeof raw !== 'string') return null;
@@ -437,7 +387,29 @@ export function normalizeSingleAction(
     expandRangeStringToIndices(action);
   }
 
+  if (!hasRequiredFields(action)) return null;
+
   return action;
+}
+
+/**
+ * A recognized action type with a missing required field is just as unusable as
+ * an unrecognized type — but every field-mapping line above only guards with
+ * `Array.isArray(record.x)` before COPYING the field, never rejects the action
+ * when it turns out absent. A BATCH_SET with no `operations` array sailed
+ * through every downstream check (each one individually guards with
+ * `Array.isArray(action.operations)` and just skips its own logic) all the way
+ * to the frontend, where nothing guarded the iteration and it crashed the
+ * entire apply — 136 already-verified actions lost to one malformed one.
+ * Reject here instead, so it is reported via ExecutorOutput.droppedActions
+ * (Phase A) and the scoped retry gets a chance to fix it, exactly like an
+ * unrecognized type.
+ */
+function hasRequiredFields(action: SheetActionPayload): boolean {
+  if (action.type === 'BATCH_SET') {
+    return Array.isArray(action.operations) && action.operations.length > 0;
+  }
+  return true;
 }
 
 function isValidIndex(value: unknown): value is number {
@@ -472,10 +444,19 @@ export function normalizeExecutorOutput(
   subtask: SubTask,
 ): ExecutorOutput {
   const rawActions = Array.isArray(parsed.actions) ? parsed.actions : [];
-  const actions: Action[] = rawActions
-    .map((a) => normalizeSingleAction(a, subtask.targetSheet))
-    .filter((a): a is Action => a !== null)
-    .map((action) => applyCalledValueHints(action, subtask.description));
+  const actions: Action[] = [];
+  const droppedActions: DroppedAction[] = [];
+
+  for (const raw of rawActions) {
+    const normalized = normalizeSingleAction(raw, subtask.targetSheet);
+    if (normalized) {
+      actions.push(applyCalledValueHints(normalized, subtask.description));
+      continue;
+    }
+    // An unusable action must be reported, not quietly filtered away — a dropped
+    // action otherwise looks identical to a task the Executor chose not to do.
+    droppedActions.push(describeDroppedAction(raw));
+  }
 
   const cleared = annotateClearIntentOverwrite(actions, subtask.description);
 
@@ -502,6 +483,23 @@ export function normalizeExecutorOutput(
     isDone,
     nextStep,
     toolRequest,
+    droppedActions,
+  };
+}
+
+/** Classify why normalizeSingleAction rejected a raw action. */
+function describeDroppedAction(raw: unknown): DroppedAction {
+  if (!raw || typeof raw !== 'object') {
+    return { rawType: null, reason: 'not-an-object' };
+  }
+  const record = raw as Record<string, unknown>;
+  const rawType = record.type;
+  const type = normalizeActionType(rawType);
+  return {
+    rawType: typeof rawType === 'string' ? rawType : null,
+    // A recognized type only reaches here when hasRequiredFields rejected it —
+    // an unrecognized type never got that far.
+    reason: type ? 'missing-required-fields' : 'unknown-type',
   };
 }
 

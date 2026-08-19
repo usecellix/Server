@@ -21,9 +21,19 @@ Allowed action types: BATCH_SET
 BATCH_SET schema: { "type": "BATCH_SET", "sheetName": "...", "operations": [{ "address": "A2", "value": "new text" }] }
 Only replace explicit text tokens the user named — do not rewrite formulas or currency columns.
 `,
+    HEADER_FORMAT: `
+Action hint: HEADER_FORMAT (whole header row — not conditional data rows)
+Allowed action types: FORMAT_RANGE only
+FORMAT_RANGE schema: { "type": "FORMAT_RANGE", "sheetName": "Purchase Register", "row": 0, "col": 0, "rowCount": 1, "colCount": <number of header columns>, "format": { "fillColor": "#C6EFCE", "bold": true } }
+Rules:
+- Target EXACTLY the header row: row 0, col 0, rowCount 1, colCount = width of headers / used range
+- Light green → "#C6EFCE"; light red → "#FFC7CE"; light yellow → "#FFF2CC"
+- NEVER use FORMAT_MATCHING_ROWS (that requires a data-row filter like Payment Status = Pending)
+- answer must be preview tense: "I'll highlight the header row…" — never "I've applied"
+`,
     CONDITIONAL_FORMAT: `
 Action hint: CONDITIONAL_FORMAT
-Allowed action types: FORMAT_MATCHING_ROWS
+Allowed action types: FORMAT_MATCHING_ROWS (data rows with a match filter). If the user only wants the header row / headers / first row formatted (no "where/status equals" condition), use FORMAT_RANGE on row 0 instead — never FORMAT_MATCHING_ROWS for header-only requests.
 FORMAT_MATCHING_ROWS schema (Office.js reads the sheet and paints matching rows — never invent per-row HIGHLIGHT_CELL lists or a "condition" field on HIGHLIGHT_CELL/FORMAT_RANGE):
 Apply highlight: { "type": "FORMAT_MATCHING_ROWS", "sheetName": "Purchase Register", "range": "A1:L51", "hasHeaders": true, "filter": { "column": "Payment Status", "operator": "equals", "value": "Pending" }, "format": { "fillColor": "#FFC7CE" } }
 Remove/clear highlight: { "type": "FORMAT_MATCHING_ROWS", "sheetName": "Purchase Register", "range": "A1:L51", "hasHeaders": true, "filter": { "column": "Payment Status", "operator": "equals", "value": "Pending" }, "format": { "clearFill": true } }
@@ -33,7 +43,8 @@ Rules:
 - Use the sheet's used range for "range" (include the header row)
 - To REMOVE highlights/fill: use format.clearFill true — NEVER white fill (#FFFFFF) and NEVER enumerate per-row FORMAT_RANGE actions
 - Light red → "#FFC7CE"; light yellow → "#FFF2CC"; light green → "#C6EFCE"
-- Emit exactly ONE FORMAT_MATCHING_ROWS action — do not use HIGHLIGHT_CELL or FORMAT_RANGE for row-conditional highlights
+- Emit exactly ONE FORMAT_MATCHING_ROWS action for row-conditional highlights (hasHeaders: true always)
+- answer must be preview tense: "I'll highlight…" — never "I've applied"
 `,
     COPY_FILL: `
 Action hint: COPY_FILL
@@ -53,7 +64,7 @@ ${SHARED_RULES}
 ${specific}
 Response JSON shape:
 {
-  "answer": "one sentence for the user",
+  "answer": "one short sentence in preview tense (I'll …) for the Accept/Reject UI — never past tense I've applied",
   "actions": [ { "type": "...", ... } ]
 }`;
 }

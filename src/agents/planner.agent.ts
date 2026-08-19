@@ -12,6 +12,7 @@ import {
 import { PLANNER_SYSTEM_PROMPT, buildPlannerUserMessage } from './prompts/planner.prompt';
 import { parseAgentJson } from './utils/parse-agent-json.util';
 import { buildCompoundFallbackSubtasks } from './utils/compound-action.util';
+import { ensureNumberFormatPlanSafety } from './utils/preserve-number-format.util';
 import {
   PLANNER_LAST_RESORT_MAX_TOKENS,
   PLANNER_REASONING_MAX_TOKENS,
@@ -103,7 +104,10 @@ export class PlannerAgent {
       this.logger.log(
         `Planner produced ${parsed.subtasks.length} subtasks, confidence: ${parsed.confidence}`,
       );
-      const covered = this.ensureMultiClauseCoverage(prompt, parsed);
+      const covered = ensureNumberFormatPlanSafety(
+        prompt,
+        this.ensureMultiClauseCoverage(prompt, parsed),
+      );
       this.structuredLogger.logAgentEvent({
         correlationId,
         agent: 'planner',
