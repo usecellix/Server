@@ -58,6 +58,16 @@ export class Conversation {
   @Prop({ required: true, unique: true, index: true })
   conversationId!: string;
 
+  /**
+   * Durable per-workbook identity (TASKS.md #22-23, ARCHITECTURE.md AD-9). Optional
+   * and additive — minted client-side via Office.js document.settings, so it
+   * survives past this conversation's 24h TTL, unlike `conversationId` itself.
+   * A conversation created before this field existed simply has none; nothing
+   * backfills it retroactively (DATABASE_SCHEMA.md §6.1/§7).
+   */
+  @Prop({ type: String, required: false, index: true })
+  workbookId?: string;
+
   @Prop({ type: [ConversationMessageEntrySchema], default: [] })
   messages!: ConversationMessageEntry[];
 

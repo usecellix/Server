@@ -277,3 +277,107 @@ describe('virtualApply — CLEAR_CONTENT / CLEAR_ALL / SET_MATCHING_ROWS / MERGE
     expect(after.sheets.get('Sheet1')?.cells.get('A1')?.value).toBe('Item');
   });
 });
+
+describe('virtualApply — CONDITIONAL_FORMAT presence tracking (TASKS.md #39)', () => {
+  const scoresContext: WorkbookContext = {
+    activeSheetName: 'Sheet1',
+    sheets: [
+      {
+        name: 'Sheet1',
+        usedRange: 'A1:B3',
+        rowCount: 3,
+        columnCount: 2,
+        values: [['Item', 'Score'], ['Apple', 10], ['Pear', 20]],
+        formulas: [['', ''], ['', ''], ['', '']],
+        numberFormats: [['General', 'General'], ['General', 'General'], ['General', 'General']],
+        structure: 'data_table',
+        headerRowIndex: 0,
+      },
+    ],
+    namedRanges: [],
+    tables: [],
+  };
+
+  it('records sheet/range/ruleKind for a cellValue rule — not a fill simulation, presence only', () => {
+    const before = buildShadowWorkbook(scoresContext);
+    expect(before.conditionalFormats).toEqual([]);
+
+    const after = virtualApply(before, [
+      {
+        type: 'CONDITIONAL_FORMAT',
+        sheetName: 'Sheet1',
+        range: 'B2:B3',
+        rule: { kind: 'cellValue', operator: 'greaterThan', value: 15, format: { fillColor: '#FFC7CE' } },
+      },
+    ] as never);
+
+    expect(after.conditionalFormats).toEqual([
+      { sheetName: 'Sheet1', range: 'B2:B3', ruleKind: 'cellValue' },
+    ]);
+    // Presence-only, per this task's own scope — the shadow does not track
+    // which specific cells the rule would actually highlight; the cell's own
+    // value is untouched by the action.
+    expect(after.sheets.get('Sheet1')?.cells.get('B2')?.value).toBe(10);
+  });
+
+  it('strips a sheet-prefixed range and records formula/topBottom/colorScale rule kinds the same way', () => {
+    const before = buildShadowWorkbook(scoresContext);
+    const after = virtualApply(before, [
+      {
+        type: 'CONDITIONAL_FORMAT',
+        sheetName: 'Sheet1',
+        range: "'Sheet1'!A2:B3",
+        rule: { kind: 'formula', formula: '=$B2>15', format: { fillColor: '#FFC7CE' } },
+      },
+      {
+        type: 'CONDITIONAL_FORMAT',
+        sheetName: 'Sheet1',
+        range: 'B2:B3',
+        rule: { kind: 'topBottom', side: 'top', rank: 1, format: { fillColor: '#C6EFCE' } },
+      },
+      {
+        type: 'CONDITIONAL_FORMAT',
+        sheetName: 'Sheet1',
+        range: 'B2:B3',
+        rule: { kind: 'colorScale', colors: ['#F8696B', '#63BE7B'] },
+      },
+    ] as never);
+
+    expect(after.conditionalFormats).toEqual([
+      { sheetName: 'Sheet1', range: 'A2:B3', ruleKind: 'formula' },
+      { sheetName: 'Sheet1', range: 'B2:B3', ruleKind: 'topBottom' },
+      { sheetName: 'Sheet1', range: 'B2:B3', ruleKind: 'colorScale' },
+    ]);
+  });
+
+  it('does not record anything for an action missing range or rule', () => {
+    const before = buildShadowWorkbook(scoresContext);
+    const after = virtualApply(before, [
+      { type: 'CONDITIONAL_FORMAT', sheetName: 'Sheet1' },
+    ] as never);
+    expect(after.conditionalFormats).toEqual([]);
+  });
+
+  it('deepCloneShadow (via a second virtualApply call) does not let the two shadows share the same array', () => {
+    const before = buildShadowWorkbook(scoresContext);
+    const withRule = virtualApply(before, [
+      {
+        type: 'CONDITIONAL_FORMAT',
+        sheetName: 'Sheet1',
+        range: 'B2:B3',
+        rule: { kind: 'cellValue', operator: 'greaterThan', value: 15, format: { fillColor: '#FFC7CE' } },
+      },
+    ] as never);
+    const withSecondRule = virtualApply(withRule, [
+      {
+        type: 'CONDITIONAL_FORMAT',
+        sheetName: 'Sheet1',
+        range: 'A2:A3',
+        rule: { kind: 'cellValue', operator: 'lessThan', value: 5, format: { fillColor: '#C6EFCE' } },
+      },
+    ] as never);
+
+    expect(withRule.conditionalFormats).toHaveLength(1);
+    expect(withSecondRule.conditionalFormats).toHaveLength(2);
+  });
+});

@@ -26,7 +26,8 @@ export type WorkflowNodeType =
   | 'preview'
   | 'accept'
   | 'reject'
-  | 'error';
+  | 'error'
+  | 'restore';
 
 export type WorkflowNodeStatus = 'pending' | 'running' | 'success' | 'failed' | 'skipped';
 
@@ -65,6 +66,10 @@ export class WorkflowTrace {
 
   @Prop({ type: String, index: true })
   conversationId?: string;
+
+  /** Durable per-workbook identity (TASKS.md #25, ARCHITECTURE.md AD-9). Optional and additive. */
+  @Prop({ type: String, index: true })
+  workbookId?: string;
 
   @Prop({ type: String, index: true })
   changeSetId?: string;

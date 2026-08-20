@@ -8,6 +8,7 @@ const NATIVE_RANGE_ACTION_TYPES = new Set([
   'SET_MATCHING_ROWS',
   'MOVE_RANGE',
   'AGGREGATE_TABLE',
+  'CONDITIONAL_FORMAT',
 ]);
 
 export const EXECUTOR_SYSTEM_PROMPT = `
@@ -58,7 +59,30 @@ COPY_FILTERED_RANGE schema (copy/filter rows to another sheet — Office.js move
 - If destSheet is missing, emit ADD_SHEET (or CREATE_SHEET) first in the same actions array, then COPY_FILTERED_RANGE
 - EMPTY / HEADER-ONLY SOURCE (critical): If the source sheet has rowCount ≤ 1 (headers only, no data rows) OR usedRange is missing because the sheet was just created in this turn, do NOT block and do NOT ask for used range. Return isDone: true with actions: [] (nothing to copy). Empty monthly templates should not use COPY_FILTERED_RANGE.
 
-FORMAT_MATCHING_ROWS schema (highlight/format rows matching a column filter — Office.js paints fills; never invent per-row HIGHLIGHT_CELL lists):
+CONDITIONAL_FORMAT schema (creates a LIVE Excel rule that re-evaluates automatically when the data changes; NEVER use FORMAT_MATCHING_ROWS for a numeric or cross-column comparison):
+cellValue variant — single column vs. a constant ("highlight expenses above 1000", "highlight where balance is negative"):
+{ "type": "CONDITIONAL_FORMAT", "sheetName": "Purchase Register", "range": "J2:J51", "rule": { "kind": "cellValue", "operator": "greaterThan", "value": 1000, "format": { "fillColor": "#FFC7CE" } } }
+- range MUST be only the data cells of the single numeric column being compared (exclude the header row) — never the whole row/table
+- rule.operator: greaterThan | greaterThanOrEqual | lessThan | lessThanOrEqual | equalTo | notEqualTo | between | notBetween (rule.value2 required only for between/notBetween)
+formula variant — comparison across two or more columns ("highlight the regions where revenue dropped more than 10%" — this period's revenue vs. last period's, per row):
+{ "type": "CONDITIONAL_FORMAT", "sheetName": "Regional Revenue", "range": "A2:D9", "rule": { "kind": "formula", "formula": "=$C2<$B2*0.9", "format": { "fillColor": "#FFC7CE" } } }
+- formula is a boolean formula evaluated relative to the TOP-LEFT cell of range (write it for that row/column; Excel shifts relative references automatically for every other row)
+- $-anchor the COLUMN of any reference that must stay fixed while the row varies (e.g. "$B2") — required for one formula to apply correctly across the whole range
+- range should cover the full row span needed to both read the compared columns and paint the highlight — not just one column
+- Light red → "#FFC7CE"; light yellow → "#FFF2CC"; light green → "#C6EFCE"
+topBottom variant — rank-based highlight ("highlight the top 5 suppliers by total", "flag the bottom 10% of scores"), NEVER a fixed threshold:
+{ "type": "CONDITIONAL_FORMAT", "sheetName": "Suppliers", "range": "C2:C40", "rule": { "kind": "topBottom", "side": "top", "rank": 5, "format": { "fillColor": "#C6EFCE" } } }
+- range MUST be only the data cells of the single numeric column being ranked (exclude the header row)
+- rule.side: "top" | "bottom"; rule.rank: item count (default) or a 0-100 percentage when rule.isPercent is true
+- Re-ranks live — a new row entering the top/bottom N re-highlights automatically, no re-request needed
+colorScale variant — gradient across a column's values ("color-scale the Total Amount column", "add a heat map to the scores"), NEVER a discrete threshold/rank:
+{ "type": "CONDITIONAL_FORMAT", "sheetName": "Scores", "range": "B2:B50", "rule": { "kind": "colorScale", "colors": ["#F8696B", "#FFEB84", "#63BE7B"] } }
+- range MUST be only the data cells of the single numeric column being scaled (exclude the header row)
+- rule.colors: 2 hex colors (low→high) or 3 hex colors (low→mid→high) — no other fields; colorScale has no "format" (no bold/fill toggle, only the gradient itself)
+- The scale's low/high ends are the range's actual current min/max and shift automatically as data changes
+MODIFYING AN EXISTING RULE (critical — check the "Existing conditional-format rules" list below before every CONDITIONAL_FORMAT action): if the subtask is changing a rule that already exists (e.g. "change the threshold to 15%", "make it top 10 instead of top 5") and one of the listed rules' range/summary matches, add "existingRuleId": "<id from the list>" and set rule to the FULL corrected rule of the SAME kind as the existing one — do not change rule.kind when modifying. If no listed rule matches, or the user wants a genuinely different kind of rule, omit existingRuleId and create a new one. Never emit a second CONDITIONAL_FORMAT on a range an existing rule already covers when the request is clearly an edit, not an addition.
+
+FORMAT_MATCHING_ROWS schema (highlight/format rows matching a TEXT/STATUS column filter — Office.js paints fills; never invent per-row HIGHLIGHT_CELL lists; use CONDITIONAL_FORMAT above instead when the comparison value is a number):
 Apply: { "type": "FORMAT_MATCHING_ROWS", "sheetName": "Purchase Register", "range": "A1:L51", "hasHeaders": true, "filter": { "column": "Payment Status", "operator": "equals", "value": "Pending" }, "format": { "fillColor": "#FFC7CE" } }
 Clear/remove fill: { "type": "FORMAT_MATCHING_ROWS", "sheetName": "Purchase Register", "range": "A1:L51", "hasHeaders": true, "filter": { "column": "Payment Status", "operator": "equals", "value": "Pending" }, "format": { "clearFill": true } }
 - filter.column MUST be the header name, never a numeric index
@@ -140,7 +164,7 @@ Rules:
 - Set sheetName on actions when targeting a non-active sheet
 - For large sheets: check dimensions vs visible rows — use toolRequest before SORT_RANGE or row-specific edits
 - suggestedActionType is a HINT only: if it does not fit the subtask (e.g. AGGREGATE_TABLE for a single KPI label + SUM formula in A1:B1), IGNORE it and emit the correct actions (ADD_SHEET / SET_CELL / SET_FORMULA / etc.)
-- NATIVE RANGE ACTIONS (critical): When suggestedActionType is COPY_FILTERED_RANGE, FORMAT_MATCHING_ROWS, SET_MATCHING_ROWS, MOVE_RANGE, or AGGREGATE_TABLE AND the subtask clearly matches that operation, emit exactly ONE action of that type with resolved parameters. Do NOT enumerate rows as SET_CELL. Do NOT call get_range_data to re-transcribe source values — Office.js reads and writes the data directly.
+- NATIVE RANGE ACTIONS (critical): When suggestedActionType is COPY_FILTERED_RANGE, FORMAT_MATCHING_ROWS, SET_MATCHING_ROWS, MOVE_RANGE, AGGREGATE_TABLE, or CONDITIONAL_FORMAT AND the subtask clearly matches that operation, emit exactly ONE action of that type with resolved parameters. Do NOT enumerate rows as SET_CELL. Do NOT call get_range_data to re-transcribe source values — Office.js reads and writes the data directly.
 - When the subtask says to copy data rows but the source sheet in context has only a header row (rowCount ≤ 1), finish with isDone: true and actions: [] — do not emit Blocked/Cannot determine used range.
 - When suggestedActionType is CREATE_CHART or UPDATE_CHART, emit exactly one such action. For UPDATE_CHART, use chartId from a prior CREATE_CHART in previous actions / conversation — do not recreate the chart.
 - ADD COLUMN (critical): For any "add a new column" / "insert a column called …" request, emit exactly one INSERT_COLUMN with columnName + position ("afterLastColumn" or { afterColumn }). NEVER target an existing column with SET_CELL / SET_FORMULA — writing into occupied cells is blocked and destroys data.
@@ -204,6 +228,16 @@ export function buildExecutorUserMessage(
       ? `\nRanges fetched this session:\n${context.fetchedRanges.map((r) => `- ${r.sheet}!${r.range} (${r.rowCount} rows)`).join('\n')}\n`
       : '';
 
+  const sheetConditionalFormats = (context.conditionalFormats ?? []).filter(
+    (rule) => rule.sheetName === (targetSheet?.name ?? normalizedTarget),
+  );
+  const conditionalFormatsBlock =
+    sheetConditionalFormats.length > 0
+      ? `\nExisting conditional-format rules on this sheet:\n${sheetConditionalFormats
+          .map((rule) => `- [${rule.id}] ${rule.range} (${rule.ruleKind}: ${rule.summary})`)
+          .join('\n')}\n`
+      : '';
+
   const sheetBlock = targetSheet ? formatSparseSheetPreview(targetSheet) : 'Target sheet not found in context';
 
   // Native range actions let Office.js read and write the data directly. Re-state the
@@ -222,6 +256,7 @@ Subtask: ${subtask.description}
 Target sheet: ${subtask.targetSheet}
 ${suggestedActionBlock}On-demand fetch available: ${context.onDemandFetchEnabled ? 'yes' : 'no'}
 ${fetchedBlock}
+${conditionalFormatsBlock}
 ${formulaBlock}
 ${sheetBlock}
 

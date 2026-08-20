@@ -58,6 +58,19 @@ function buildSheetContext(
       return meta?.numberFormat ?? '';
     }),
   );
+  // TASKS.md #64 — same column-broadcast pattern as numberFormats above, from
+  // ColumnMeta.format (itself read client-side from the column's first data row).
+  const formats: SheetContext['formats'] = Array.from({ length: values.length }, () =>
+    Array.from({ length: columnCount }, (_, colIdx) => {
+      const format = richSheet?.columnMeta?.[colIdx]?.format;
+      return {
+        bold: format?.bold,
+        italic: format?.italic,
+        fontColor: format?.fontColor,
+        fillColor: format?.fillColor,
+      };
+    }),
+  );
 
   const usedRange =
     richSheet?.usedRange ??
@@ -78,6 +91,7 @@ function buildSheetContext(
     values,
     formulas,
     numberFormats,
+    formats,
     structure: inferStructure(analysis.headers, richSheet?.structure),
     headerRowIndex: analysis.headerRowIndex ?? 0,
     compressionMeta: richSheet?.compressionMeta,
@@ -132,6 +146,7 @@ export function buildAgentWorkbookContext(
       formula: n.formula,
     })),
     tables: (richContext.tables ?? []).map((t) => t.name),
+    conditionalFormats: richContext.conditionalFormats ?? [],
     selectedRange: richContext.selectedRange,
     onDemandFetchEnabled,
   };

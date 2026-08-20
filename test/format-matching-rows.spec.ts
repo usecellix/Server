@@ -194,6 +194,68 @@ describe('FORMAT_MATCHING_ROWS helpers', () => {
       expect(batch[0]?.format?.fillColor).toBe('#FF6B6B');
     });
 
+    it('TASKS.md #33 — "highlight expenses above 1000" produces CONDITIONAL_FORMAT, not FORMAT_MATCHING_ROWS', () => {
+      // Plausible Tier-1 LLM output for a numeric-comparison highlight request,
+      // in the FORMAT_MATCHING_ROWS shape the model is still taught for row matches.
+      const action: SheetAction = {
+        type: 'FORMAT_MATCHING_ROWS',
+        sheetName: 'Purchase Register',
+        range: 'A1:L5',
+        hasHeaders: true,
+        filter: { column: 'Total Amount', operator: 'greaterThan', value: 1000 },
+        format: { fillColor: '#FFC7CE' },
+      };
+
+      const out = normalizeTier1ConditionalFormatActions(
+        [action],
+        workbookContext,
+        'Highlight expenses above 1000',
+      );
+
+      expect(out).toHaveLength(1);
+      expect(out[0]?.type).toBe('CONDITIONAL_FORMAT');
+      expect(out[0]).toMatchObject({
+        type: 'CONDITIONAL_FORMAT',
+        sheetName: 'Purchase Register',
+        range: 'J2:J5', // Total Amount is column J (0-based index 9); header row excluded
+        rule: {
+          kind: 'cellValue',
+          operator: 'greaterThan',
+          value: 1000,
+          format: { fillColor: '#FFC7CE' },
+        },
+      });
+    });
+
+    it('routes a numeric HIGHLIGHT_CELL + condition into CONDITIONAL_FORMAT rather than FORMAT_MATCHING_ROWS', () => {
+      const broken = {
+        type: 'HIGHLIGHT_CELL',
+        sheetName: 'Purchase Register',
+        row: 1,
+        col: 0,
+        rowCount: 5,
+        colCount: 12,
+        condition: { type: 'GT', column: 'Total Amount', value: 1000 },
+        format: { fillColor: '#FFC7CE' },
+      } as SheetAction;
+
+      const normalized = normalizeFormatMatchingRowsAction(broken, workbookContext, 'highlight expenses above 1000');
+      expect(normalized.type).toBe('CONDITIONAL_FORMAT');
+      expect(normalized.rule?.kind).toBe('cellValue');
+      expect(normalized.rule).toMatchObject({ operator: 'greaterThan', value: 1000 });
+    });
+
+    it('leaves an already-emitted CONDITIONAL_FORMAT action untouched', () => {
+      const action: SheetAction = {
+        type: 'CONDITIONAL_FORMAT',
+        sheetName: 'Purchase Register',
+        range: 'J2:J5',
+        rule: { kind: 'cellValue', operator: 'greaterThan', value: 1000, format: { fillColor: '#FFC7CE' } },
+      };
+      const out = normalizeTier1ConditionalFormatActions([action], workbookContext, 'highlight expenses above 1000');
+      expect(out).toEqual([action]);
+    });
+
     it('keeps conditional Pending highlight as FORMAT_MATCHING_ROWS', () => {
       const action: SheetAction = {
         type: 'FORMAT_MATCHING_ROWS',

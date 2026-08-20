@@ -103,6 +103,8 @@ describe('INSERT_COLUMN semantic + overwrite safety (spec 14)', () => {
       namedRanges: new Map(),
       tables: [],
       changedCells: new Set(),
+      structuralLog: [],
+      conditionalFormats: [],
     };
     const sheet = {
       name: 'Purchase Register',

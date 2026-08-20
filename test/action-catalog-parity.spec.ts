@@ -61,6 +61,10 @@ describe('action catalog parity', () => {
   // not to relax what "well-formed" means for that type.
   const REQUIRED_EXTRA_FIELDS: Partial<Record<string, Record<string, unknown>>> = {
     BATCH_SET: { operations: [{ address: 'A1', value: 'x' }] },
+    CONDITIONAL_FORMAT: {
+      range: 'B2:B10',
+      rule: { kind: 'cellValue', operator: 'greaterThan', value: 1000, format: { fillColor: '#FFC7CE' } },
+    },
   };
 
   it('accepts every advertised action type through the normalizer', () => {

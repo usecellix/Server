@@ -46,6 +46,17 @@ export interface ColumnMeta {
   sampleValues: (string | number | null)[];
   detectedType?: ColumnDetectedType | string;
   numberFormat?: string;
+  /**
+   * Bold/italic/fontColor/fillColor read from the column's first data row
+   * (TASKS.md #64) — column-level granularity, same as `numberFormat` above,
+   * not a genuine per-cell snapshot. Feeds revert's format restoration.
+   */
+  format?: {
+    bold?: boolean;
+    italic?: boolean;
+    fontColor?: string;
+    fillColor?: string;
+  };
 }
 
 export interface ConversationTurn {
@@ -96,6 +107,21 @@ export interface TableInfo {
   columnNames: string[];
 }
 
+/**
+ * A conditional-format rule already present on the live sheet, read back via
+ * Office.js (`client/src/context/workbookReader.ts`, TASKS.md #38) — not
+ * limited to rules Cellix itself applied. `id` is what lets a follow-up
+ * request target this specific rule (`MODIFY_CONDITIONAL_FORMAT`) instead of
+ * stacking a duplicate `CONDITIONAL_FORMAT` on top.
+ */
+export interface ConditionalFormatRuleInfo {
+  id: string;
+  sheetName: string;
+  range: string;
+  ruleKind: 'cellValue' | 'formula' | 'topBottom' | 'colorScale' | 'other';
+  summary: string;
+}
+
 export interface WorkbookContext {
   sheets: SheetSnapshot[];
   activeSheet: string;
@@ -103,6 +129,7 @@ export interface WorkbookContext {
   selectedValues?: (string | number | null)[][];
   namedRanges?: NamedRangeInfo[];
   tables?: TableInfo[];
+  conditionalFormats?: ConditionalFormatRuleInfo[];
   prompt_context?: string;
 }
 

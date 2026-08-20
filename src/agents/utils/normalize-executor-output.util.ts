@@ -1,4 +1,8 @@
-import { SheetActionPayload, SheetActionType } from '../../excel-ai/types/sheet-actions.types';
+import {
+  ConditionalFormatOperator,
+  SheetActionPayload,
+  SheetActionType,
+} from '../../excel-ai/types/sheet-actions.types';
 import { ALL_SHEET_ACTION_TYPES } from '../../excel-ai/types/action-catalog';
 import { Action, DroppedAction, ExecutorOutput, SubTask } from '../types/agent.types';
 import { resolveRemarkValue, stripCalledLabel } from './called-value.util';
@@ -47,11 +51,13 @@ function normalizeActionType(raw: unknown): SheetActionType | null {
     upper === 'FORMAT_MATCHING' ||
     upper === 'FORMAT_MATCHING_ROWS' ||
     upper === 'HIGHLIGHT_MATCHING' ||
-    upper === 'HIGHLIGHT_ROWS' ||
-    upper === 'CONDITIONAL_FORMAT'
+    upper === 'HIGHLIGHT_ROWS'
   ) {
     return 'FORMAT_MATCHING_ROWS';
   }
+  // CONDITIONAL_FORMAT is now a real action type (TASKS.md #33) — no longer
+  // collapsed into FORMAT_MATCHING_ROWS's one-shot static fill. Falls through
+  // to the KNOWN_TYPES check below like any other real type.
   if (
     upper === 'SET_MATCHING' ||
     upper === 'SET_MATCHING_ROWS' ||
@@ -130,6 +136,10 @@ export function normalizeSingleAction(
   if (typeof record.sourceName === 'string') action.sourceName = record.sourceName;
   if (typeof record.copyFrom === 'string') action.copyFrom = record.copyFrom;
   if (typeof record.newSheetName === 'string') action.newSheetName = record.newSheetName;
+  // DELETE_CONDITIONAL_FORMAT — revert-only, not advertised to the Executor (TASKS.md #40).
+  if (typeof record.ruleId === 'string') action.ruleId = record.ruleId;
+  // DELETE_CHART — revert-only, not advertised to the Executor (TASKS.md #15).
+  if (typeof record.chartId === 'string') action.chartId = record.chartId;
   if (
     record.position === 'above' ||
     record.position === 'below' ||
@@ -282,6 +292,75 @@ export function normalizeSingleAction(
     }
   }
 
+  if (type === 'CONDITIONAL_FORMAT') {
+    if (typeof record.sheetName === 'string') action.sheetName = record.sheetName;
+    if (typeof record.range === 'string') action.range = stripSheetPrefix(record.range);
+    if (typeof record.existingRuleId === 'string' && record.existingRuleId.trim()) {
+      action.existingRuleId = record.existingRuleId.trim();
+    }
+    if (record.rule && typeof record.rule === 'object') {
+      const rule = record.rule as Record<string, unknown>;
+      const format =
+        rule.format && typeof rule.format === 'object' ? (rule.format as SheetActionPayload['format']) : undefined;
+
+      if (rule.kind === 'formula') {
+        if (typeof rule.formula === 'string' && rule.formula.trim() && format) {
+          action.rule = { kind: 'formula', formula: rule.formula.trim(), format };
+        }
+      } else if (rule.kind === 'topBottom') {
+        const side = rule.side === 'top' || rule.side === 'bottom' ? rule.side : undefined;
+        const rank = typeof rule.rank === 'number' && rule.rank > 0 ? rule.rank : undefined;
+        if (side && rank !== undefined && format) {
+          action.rule = {
+            kind: 'topBottom',
+            side,
+            rank,
+            format,
+            ...(rule.isPercent === true ? { isPercent: true } : {}),
+          };
+        }
+      } else if (rule.kind === 'colorScale') {
+        const colors =
+          Array.isArray(rule.colors) &&
+          (rule.colors.length === 2 || rule.colors.length === 3) &&
+          rule.colors.every((c) => typeof c === 'string' && c.trim())
+            ? (rule.colors as [string, string] | [string, string, string])
+            : undefined;
+        if (colors) {
+          action.rule = { kind: 'colorScale', colors };
+        }
+      } else {
+        const validOperators: ConditionalFormatOperator[] = [
+          'greaterThan',
+          'greaterThanOrEqual',
+          'lessThan',
+          'lessThanOrEqual',
+          'equalTo',
+          'notEqualTo',
+          'between',
+          'notBetween',
+        ];
+        const operator =
+          typeof rule.operator === 'string' && (validOperators as string[]).includes(rule.operator)
+            ? (rule.operator as ConditionalFormatOperator)
+            : undefined;
+        const value =
+          typeof rule.value === 'string' || typeof rule.value === 'number' ? rule.value : undefined;
+        if (operator && value !== undefined && format) {
+          action.rule = {
+            kind: 'cellValue',
+            operator,
+            value,
+            format,
+            ...(typeof rule.value2 === 'string' || typeof rule.value2 === 'number'
+              ? { value2: rule.value2 }
+              : {}),
+          };
+        }
+      }
+    }
+  }
+
   if (type === 'SET_MATCHING_ROWS') {
     if (typeof record.sheetName === 'string') action.sheetName = record.sheetName;
     if (typeof record.range === 'string') action.range = stripSheetPrefix(record.range);
@@ -408,6 +487,9 @@ export function normalizeSingleAction(
 function hasRequiredFields(action: SheetActionPayload): boolean {
   if (action.type === 'BATCH_SET') {
     return Array.isArray(action.operations) && action.operations.length > 0;
+  }
+  if (action.type === 'CONDITIONAL_FORMAT') {
+    return Boolean(action.range && action.rule);
   }
   return true;
 }

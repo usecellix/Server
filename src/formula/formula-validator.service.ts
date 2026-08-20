@@ -8,7 +8,9 @@ import {
   FormulaValidationResult,
 } from './formula.types';
 
-const EXCEL_ERRORS = [
+// Exported for diff.engine.ts's detectIntroducedFormulaErrors (TASKS.md #49) — one list,
+// not a second hand-copied one that could drift from this file's own post-apply scan.
+export const EXCEL_ERRORS = [
   '#REF!',
   '#DIV/0!',
   '#NAME?',

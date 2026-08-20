@@ -155,6 +155,11 @@ const FIELD_FIXTURES: Record<SheetActionType, Record<string, unknown>> = {
     sheetName: 'Dashboard',
     operations: [{ address: 'A1', value: 1 }],
   },
+  DELETE_TABLE: {
+    type: 'DELETE_TABLE',
+    sheetName: 'Dashboard',
+    tableName: 'T1',
+  },
   CREATE_TABLE: {
     type: 'CREATE_TABLE',
     sheetName: 'Dashboard',
@@ -258,6 +263,22 @@ const FIELD_FIXTURES: Record<SheetActionType, Record<string, unknown>> = {
     chartId: 'Chart_TotalTaxByDate',
     chartType: 'BarClustered',
     colorScheme: 'green',
+  },
+  CONDITIONAL_FORMAT: {
+    type: 'CONDITIONAL_FORMAT',
+    sheetName: 'Purchase Register',
+    range: 'J2:J51',
+    rule: { kind: 'cellValue', operator: 'greaterThan', value: 1000, format: { fillColor: '#FFC7CE' } },
+  },
+  DELETE_CONDITIONAL_FORMAT: {
+    type: 'DELETE_CONDITIONAL_FORMAT',
+    sheetName: 'Purchase Register',
+    ruleId: 'cf-1',
+  },
+  DELETE_CHART: {
+    type: 'DELETE_CHART',
+    sheetName: 'Dashboard',
+    chartId: 'Chart_spend',
   },
 };
 

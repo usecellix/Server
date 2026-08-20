@@ -117,6 +117,11 @@ export function buildPlannerUserMessage(
         `Sheets: ${context.sheets.map((s) => `${s.name} (${s.rowCount}x${s.columnCount}, type: ${s.structure}${s.dataTruncated ? ', truncated' : ''})`).join(', ')}`,
         `Named ranges: ${context.namedRanges.map((n) => n.name).join(', ') || 'none'}`,
         `Tables: ${context.tables.join(', ') || 'none'}`,
+        `Conditional format rules: ${
+          (context.conditionalFormats ?? [])
+            .map((cf) => `[${cf.id}] ${cf.sheetName}!${cf.range} (${cf.ruleKind}: ${cf.summary})`)
+            .join('; ') || 'none'
+        }`,
         `On-demand range fetch: ${context.onDemandFetchEnabled ? 'enabled' : 'disabled'}`,
         `Active sheet sample (first ${Math.min(activeSheet?.values.length ?? 0, 10)} loaded rows): ${JSON.stringify(activeSheet?.values.slice(0, 10))}`,
       ].join('\n');

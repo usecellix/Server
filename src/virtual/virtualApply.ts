@@ -96,6 +96,9 @@ function applyAction(wb: ShadowWorkbook, action: Action): void {
     case 'FORMAT_MATCHING_ROWS':
       // Format-only — shadow workbook has no fill state to update.
       break;
+    case 'CONDITIONAL_FORMAT':
+      virtualAddConditionalFormat(wb, action);
+      break;
     case 'MOVE_RANGE':
       virtualMoveRange(wb, action);
       break;
@@ -115,8 +118,11 @@ function applyAction(wb: ShadowWorkbook, action: Action): void {
     case 'FORMAT_RANGE':
     case 'AUTOFIT_COLUMNS':
     case 'CREATE_TABLE':
+    case 'DELETE_TABLE':
+    case 'DELETE_CONDITIONAL_FORMAT':
     case 'CREATE_CHART':
     case 'UPDATE_CHART':
+    case 'DELETE_CHART':
     case 'CLARIFY':
     case 'CHECKPOINT':
     case 'HIGHLIGHT_CELL':
@@ -184,13 +190,22 @@ function markChanged(wb: ShadowWorkbook, sheetName: string, address: string): vo
   wb.changedCells.add(`${sheetName}!${address}`);
 }
 
+/** Subset of FormatSpec the shadow workbook tracks per cell (TASKS.md #10/#64). */
+interface VirtualCellFormat {
+  numberFormat?: string;
+  bold?: boolean;
+  italic?: boolean;
+  fontColor?: string;
+  fillColor?: string;
+}
+
 function virtualSetCell(
   wb: ShadowWorkbook,
   sheetName: string,
   address: string,
   value: unknown,
   formula: string,
-  numberFormat?: string,
+  format?: VirtualCellFormat,
 ): void {
   const sheet = ensureSheet(wb, sheetName);
   const existing = sheet.cells.get(address) ?? {
@@ -202,7 +217,11 @@ function virtualSetCell(
     ...existing,
     value: formula ? `[formula: ${formula}]` : value,
     formula,
-    ...(numberFormat !== undefined ? { numberFormat } : {}),
+    ...(format?.numberFormat !== undefined ? { numberFormat: format.numberFormat } : {}),
+    ...(format?.bold !== undefined ? { bold: format.bold } : {}),
+    ...(format?.italic !== undefined ? { italic: format.italic } : {}),
+    ...(format?.fontColor !== undefined ? { fontColor: format.fontColor } : {}),
+    ...(format?.fillColor !== undefined ? { fillColor: format.fillColor } : {}),
   });
   markChanged(wb, sheetName, address);
   updateSheetBounds(sheet);
@@ -210,51 +229,30 @@ function virtualSetCell(
 
 function virtualSetCellLegacy(wb: ShadowWorkbook, action: Action): void {
   if (action.address && action.sheetName) {
-    virtualSetCell(
-      wb,
-      action.sheetName,
-      action.address,
-      action.value ?? null,
-      '',
-      action.format?.numberFormat,
-    );
+    virtualSetCell(wb, action.sheetName, action.address, action.value ?? null, '', action.format);
     return;
   }
   if (action.row === undefined || action.col === undefined) return;
   const sheetName = action.sheetName ?? wb.activeSheetName;
   const address = `${colIndexToLetter(action.col)}${action.row + 1}`;
-  virtualSetCell(wb, sheetName, address, action.value ?? null, '', action.format?.numberFormat);
+  virtualSetCell(wb, sheetName, address, action.value ?? null, '', action.format);
 }
 
 function virtualSetFormulaLegacy(wb: ShadowWorkbook, action: Action): void {
   if (action.address && action.sheetName) {
-    virtualSetCell(
-      wb,
-      action.sheetName,
-      action.address,
-      null,
-      action.formula ?? '',
-      action.format?.numberFormat,
-    );
+    virtualSetCell(wb, action.sheetName, action.address, null, action.formula ?? '', action.format);
     return;
   }
   if (action.row === undefined || action.col === undefined || !action.formula) return;
   const sheetName = action.sheetName ?? wb.activeSheetName;
   const address = `${colIndexToLetter(action.col)}${action.row + 1}`;
-  virtualSetCell(wb, sheetName, address, null, action.formula, action.format?.numberFormat);
+  virtualSetCell(wb, sheetName, address, null, action.formula, action.format);
 }
 
 function virtualBatchSet(wb: ShadowWorkbook, action: Action): void {
   if (!action.sheetName || !Array.isArray(action.operations)) return;
   for (const op of action.operations) {
-    virtualSetCell(
-      wb,
-      action.sheetName,
-      op.address,
-      op.value ?? null,
-      op.formula ?? '',
-      op.format?.numberFormat,
-    );
+    virtualSetCell(wb, action.sheetName, op.address, op.value ?? null, op.formula ?? '', op.format);
   }
 }
 
@@ -299,6 +297,7 @@ function virtualAddRowAfter(
   sheet.cells = newCells;
   sheet.rowCount += 1;
   sheet.columnCount = Math.max(sheet.columnCount, values.length);
+  wb.structuralLog.push({ opType: 'INSERT_ROW', sheetName, index: afterRow + 1, count: 1 });
 }
 
 function virtualDeleteRowLegacy(wb: ShadowWorkbook, action: Action): void {
@@ -343,6 +342,13 @@ function virtualDeleteRows(wb: ShadowWorkbook, sheetName: string, rows: number[]
 
   sheet.cells = newCells;
   sheet.rowCount = Math.max(0, sheet.rowCount - rows.length);
+
+  // Logged in descending row order so `structuralOpsToInverseActions`'s standard
+  // "undo newest-first" reversal re-inserts ascending — the same convention DELETE_COLUMN
+  // gets for free from its own right-to-left processing loop (see TASKS.md #13/#14).
+  for (const r of [...rows].sort((a, b) => b - a)) {
+    wb.structuralLog.push({ opType: 'DELETE_ROW', sheetName, index: r, count: 1 });
+  }
 }
 
 function virtualInsertRowLegacy(wb: ShadowWorkbook, action: Action): void {
@@ -456,6 +462,7 @@ function virtualInsertColumn(
 
   sheet.cells = newCells;
   sheet.columnCount += count;
+  wb.structuralLog.push({ opType: 'INSERT_COLUMN', sheetName, index: insertAt, count });
 }
 
 function virtualDeleteColumnLegacy(wb: ShadowWorkbook, action: Action): void {
@@ -511,6 +518,7 @@ function virtualDeleteColumnLegacy(wb: ShadowWorkbook, action: Action): void {
     }
     sheet.cells = newCells;
     sheet.columnCount = Math.max(0, sheet.columnCount - 1);
+    wb.structuralLog.push({ opType: 'DELETE_COLUMN', sheetName, index: colIndex, count: 1 });
   }
 }
 
@@ -787,6 +795,24 @@ function virtualMergeCells(wb: ShadowWorkbook, action: Action): void {
       markChanged(wb, sheetName, address);
     }
   }
+}
+
+/**
+ * TASKS.md #39 — presence-only tracking, NOT a real fill simulation. The
+ * shadow has no cell-format/fill state to evaluate the rule against (same
+ * reasoning FORMAT_RANGE/HIGHLIGHT_CELL already document), so this records
+ * that a rule was applied to a range — sheet/range/kind — for a verifier
+ * check to confirm the action landed, without pretending to compute which
+ * cells the rule would actually highlight.
+ */
+function virtualAddConditionalFormat(wb: ShadowWorkbook, action: Action): void {
+  const sheetName = action.sheetName ?? wb.activeSheetName;
+  if (!action.range || !action.rule) return;
+  wb.conditionalFormats.push({
+    sheetName,
+    range: stripSheetPrefix(action.range),
+    ruleKind: action.rule.kind,
+  });
 }
 
 /** TASKS.md #42 — same purpose as virtualFillDown, shifting columns instead of rows. */

@@ -9,11 +9,15 @@ import {
 import { FastifyReply } from 'fastify';
 import { SkipEnvelope } from '../common/decorators/skip-envelope.decorator';
 import { AuditService } from './audit.service';
+import { TierAMetricsService } from './tier-a-metrics.service';
 import { LLMTier } from '../types/cellix.types';
 
 @Controller('audit')
 export class AuditController {
-  constructor(private readonly auditService: AuditService) {}
+  constructor(
+    private readonly auditService: AuditService,
+    private readonly tierAMetricsService: TierAMetricsService,
+  ) {}
 
   @Get('logs')
   async getLogs(
@@ -42,6 +46,26 @@ export class AuditController {
       : new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
     const toDate = to ? new Date(to) : new Date();
     return this.auditService.getStats(fromDate, toDate);
+  }
+
+  /**
+   * TASKS.md #50/#51 — PRD A1/A4/A5/A6 rollups, segmented by route + complexity tier.
+   * A1/A4 are derived from `workflow_traces` (3-day TTL — only a recent window is ever
+   * queryable); A5/A6 are derived from `change_sets` (no TTL — arbitrary date ranges
+   * work). See `tier-a-metrics.util.ts`'s module doc for the exact metric definitions
+   * and the two documented scoping approximations (A1/A4 aren't `request_logs`-sourced
+   * as PRD.md literally says; A4 can't distinguish cancel-at-preview from revert-after-apply).
+   */
+  @Get('stats/tier-a')
+  async getTierAStats(
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ) {
+    const fromDate = from
+      ? new Date(from)
+      : new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    const toDate = to ? new Date(to) : new Date();
+    return this.tierAMetricsService.getReport(fromDate, toDate);
   }
 
   @Get('export')

@@ -51,6 +51,12 @@ export const VIRTUAL_APPLY_CATALOG: Record<SheetActionType, VirtualApplyCatalogE
   CLEAR_ALL: { simulated: true },
   SET_MATCHING_ROWS: { simulated: true },
   MERGE_CELLS: { simulated: true },
+  // Presence-only (sheet/range/rule-kind), not a fill simulation — TASKS.md #39.
+  CONDITIONAL_FORMAT: { simulated: true },
+  DELETE_CONDITIONAL_FORMAT: {
+    simulated: false,
+    reason: 'Revert-only inverse of CONDITIONAL_FORMAT (TASKS.md #40); the shadow has no rule-removal effect to simulate — same reasoning as DELETE_TABLE.',
+  },
 
   // ---- Formatting-only, already documented in virtualApply.ts itself ----
   FORMAT_MATCHING_ROWS: {
@@ -89,8 +95,16 @@ export const VIRTUAL_APPLY_CATALOG: Record<SheetActionType, VirtualApplyCatalogE
     simulated: false,
     reason: 'Wraps an existing range in an Excel Table structure; does not change cell values.',
   },
+  DELETE_TABLE: {
+    simulated: false,
+    reason: 'Unwraps a Table back to a plain range (TASKS.md #16); does not change cell values.',
+  },
   CREATE_CHART: { simulated: false, reason: 'Charts are not cell data.' },
   UPDATE_CHART: { simulated: false, reason: 'Charts are not cell data.' },
+  DELETE_CHART: {
+    simulated: false,
+    reason: 'Revert-only inverse of CREATE_CHART (TASKS.md #15); the shadow has no chart state to simulate — same reasoning as DELETE_CONDITIONAL_FORMAT/DELETE_TABLE.',
+  },
   CLARIFY: { simulated: false, reason: 'Conversation control signal, not a sheet mutation.' },
   CHECKPOINT: { simulated: false, reason: 'Progress signal, not a sheet mutation.' },
   CLEAR_CELL: {

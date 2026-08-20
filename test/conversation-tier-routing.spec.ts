@@ -43,6 +43,10 @@ describe('write route tier classification', () => {
         },
       ],
       actions: [],
+      structuralOps: [],
+      irreversibleActionTypes: [],
+      unintendedChanges: [],
+      formulaErrorsIntroduced: [],
       status: 'applied',
     } as ChangeSetRecord;
 

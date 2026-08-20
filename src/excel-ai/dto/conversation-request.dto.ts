@@ -112,6 +112,11 @@ export class ConversationRequestDto {
   @IsString()
   conversationId?: string;
 
+  /** Durable per-workbook identity minted client-side (TASKS.md #22-23). Optional. */
+  @IsOptional()
+  @IsString()
+  workbookId?: string;
+
   @IsString()
   @MaxLength(5000)
   message!: string;

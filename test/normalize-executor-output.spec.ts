@@ -66,6 +66,337 @@ describe('normalizeExecutorOutput', () => {
     );
   });
 
+  it('normalizes a raw CONDITIONAL_FORMAT action, preserving its rule (TASKS.md #33)', () => {
+    const result = normalizeExecutorOutput(
+      {
+        actions: [
+          {
+            type: 'CONDITIONAL_FORMAT',
+            sheetName: 'Purchase Register',
+            range: "'Purchase Register'!J2:J51",
+            rule: {
+              kind: 'cellValue',
+              operator: 'greaterThan',
+              value: 1000,
+              format: { fillColor: '#FFC7CE' },
+            },
+          },
+        ],
+      },
+      subtask,
+    );
+
+    expect(result.actions).toEqual([
+      expect.objectContaining({
+        type: 'CONDITIONAL_FORMAT',
+        sheetName: 'Purchase Register',
+        range: 'J2:J51', // sheet prefix stripped
+        rule: {
+          kind: 'cellValue',
+          operator: 'greaterThan',
+          value: 1000,
+          format: { fillColor: '#FFC7CE' },
+        },
+      }),
+    ]);
+  });
+
+  it("normalizes a formula-kind CONDITIONAL_FORMAT (TASKS.md #35 — VISION.md's own example: revenue dropped >10%)", () => {
+    const result = normalizeExecutorOutput(
+      {
+        actions: [
+          {
+            type: 'CONDITIONAL_FORMAT',
+            sheetName: 'Regional Revenue',
+            range: 'A2:D9',
+            rule: {
+              kind: 'formula',
+              formula: '=$C2<$B2*0.9',
+              format: { fillColor: '#FFC7CE' },
+            },
+          },
+        ],
+      },
+      subtask,
+    );
+
+    expect(result.actions).toEqual([
+      expect.objectContaining({
+        type: 'CONDITIONAL_FORMAT',
+        sheetName: 'Regional Revenue',
+        range: 'A2:D9',
+        rule: { kind: 'formula', formula: '=$C2<$B2*0.9', format: { fillColor: '#FFC7CE' } },
+      }),
+    ]);
+  });
+
+  it('drops a formula-kind CONDITIONAL_FORMAT with an empty formula (fails closed)', () => {
+    const result = normalizeExecutorOutput(
+      {
+        actions: [
+          {
+            type: 'CONDITIONAL_FORMAT',
+            sheetName: 'Regional Revenue',
+            range: 'A2:D9',
+            rule: { kind: 'formula', formula: '   ', format: { fillColor: '#FFC7CE' } },
+          },
+        ],
+      },
+      subtask,
+    );
+    expect(result.actions).toEqual([]);
+    expect((result.droppedActions ?? []).length).toBeGreaterThan(0);
+  });
+
+  it('normalizes a topBottom-kind CONDITIONAL_FORMAT (TASKS.md #36 — "highlight the top 5 suppliers by total")', () => {
+    const result = normalizeExecutorOutput(
+      {
+        actions: [
+          {
+            type: 'CONDITIONAL_FORMAT',
+            sheetName: 'Suppliers',
+            range: 'C2:C40',
+            rule: {
+              kind: 'topBottom',
+              side: 'top',
+              rank: 5,
+              format: { fillColor: '#C6EFCE' },
+            },
+          },
+        ],
+      },
+      subtask,
+    );
+
+    expect(result.actions).toEqual([
+      expect.objectContaining({
+        type: 'CONDITIONAL_FORMAT',
+        sheetName: 'Suppliers',
+        range: 'C2:C40',
+        rule: { kind: 'topBottom', side: 'top', rank: 5, format: { fillColor: '#C6EFCE' } },
+      }),
+    ]);
+  });
+
+  it('normalizes a percent-based bottom topBottom rule, preserving isPercent', () => {
+    const result = normalizeExecutorOutput(
+      {
+        actions: [
+          {
+            type: 'CONDITIONAL_FORMAT',
+            sheetName: 'Scores',
+            range: 'B2:B50',
+            rule: {
+              kind: 'topBottom',
+              side: 'bottom',
+              rank: 10,
+              isPercent: true,
+              format: { fillColor: '#FFC7CE' },
+            },
+          },
+        ],
+      },
+      subtask,
+    );
+
+    expect(result.actions).toEqual([
+      expect.objectContaining({
+        rule: {
+          kind: 'topBottom',
+          side: 'bottom',
+          rank: 10,
+          isPercent: true,
+          format: { fillColor: '#FFC7CE' },
+        },
+      }),
+    ]);
+  });
+
+  it('drops a topBottom CONDITIONAL_FORMAT with an invalid side or non-positive rank (fails closed)', () => {
+    const badSide = normalizeExecutorOutput(
+      {
+        actions: [
+          {
+            type: 'CONDITIONAL_FORMAT',
+            sheetName: 'Suppliers',
+            range: 'C2:C40',
+            rule: { kind: 'topBottom', side: 'middle', rank: 5, format: { fillColor: '#C6EFCE' } },
+          },
+        ],
+      },
+      subtask,
+    );
+    expect(badSide.actions).toEqual([]);
+    expect((badSide.droppedActions ?? []).length).toBeGreaterThan(0);
+
+    const badRank = normalizeExecutorOutput(
+      {
+        actions: [
+          {
+            type: 'CONDITIONAL_FORMAT',
+            sheetName: 'Suppliers',
+            range: 'C2:C40',
+            rule: { kind: 'topBottom', side: 'top', rank: 0, format: { fillColor: '#C6EFCE' } },
+          },
+        ],
+      },
+      subtask,
+    );
+    expect(badRank.actions).toEqual([]);
+    expect((badRank.droppedActions ?? []).length).toBeGreaterThan(0);
+  });
+
+  it('normalizes a colorScale-kind CONDITIONAL_FORMAT (TASKS.md #37 — "color-scale the Total Amount column")', () => {
+    const result = normalizeExecutorOutput(
+      {
+        actions: [
+          {
+            type: 'CONDITIONAL_FORMAT',
+            sheetName: 'Scores',
+            range: 'B2:B50',
+            rule: { kind: 'colorScale', colors: ['#F8696B', '#FFEB84', '#63BE7B'] },
+          },
+        ],
+      },
+      subtask,
+    );
+
+    expect(result.actions).toEqual([
+      expect.objectContaining({
+        type: 'CONDITIONAL_FORMAT',
+        sheetName: 'Scores',
+        range: 'B2:B50',
+        rule: { kind: 'colorScale', colors: ['#F8696B', '#FFEB84', '#63BE7B'] },
+      }),
+    ]);
+  });
+
+  it('normalizes a 2-color colorScale rule', () => {
+    const result = normalizeExecutorOutput(
+      {
+        actions: [
+          {
+            type: 'CONDITIONAL_FORMAT',
+            sheetName: 'Scores',
+            range: 'B2:B50',
+            rule: { kind: 'colorScale', colors: ['#F8696B', '#63BE7B'] },
+          },
+        ],
+      },
+      subtask,
+    );
+
+    expect(result.actions).toEqual([
+      expect.objectContaining({
+        rule: { kind: 'colorScale', colors: ['#F8696B', '#63BE7B'] },
+      }),
+    ]);
+  });
+
+  it('drops a colorScale CONDITIONAL_FORMAT with the wrong number of colors or a non-string entry (fails closed)', () => {
+    const wrongCount = normalizeExecutorOutput(
+      {
+        actions: [
+          {
+            type: 'CONDITIONAL_FORMAT',
+            sheetName: 'Scores',
+            range: 'B2:B50',
+            rule: { kind: 'colorScale', colors: ['#F8696B'] },
+          },
+        ],
+      },
+      subtask,
+    );
+    expect(wrongCount.actions).toEqual([]);
+    expect((wrongCount.droppedActions ?? []).length).toBeGreaterThan(0);
+
+    const badEntry = normalizeExecutorOutput(
+      {
+        actions: [
+          {
+            type: 'CONDITIONAL_FORMAT',
+            sheetName: 'Scores',
+            range: 'B2:B50',
+            rule: { kind: 'colorScale', colors: ['#F8696B', 123] },
+          },
+        ],
+      },
+      subtask,
+    );
+    expect(badEntry.actions).toEqual([]);
+    expect((badEntry.droppedActions ?? []).length).toBeGreaterThan(0);
+  });
+
+  it('preserves existingRuleId on a CONDITIONAL_FORMAT action, so it modifies rather than duplicates (TASKS.md #38)', () => {
+    const result = normalizeExecutorOutput(
+      {
+        actions: [
+          {
+            type: 'CONDITIONAL_FORMAT',
+            sheetName: 'Purchase Register',
+            range: 'J2:J51',
+            existingRuleId: 'cf-abc123',
+            rule: { kind: 'cellValue', operator: 'greaterThan', value: 1500, format: { fillColor: '#FFC7CE' } },
+          },
+        ],
+      },
+      subtask,
+    );
+
+    expect(result.actions).toEqual([
+      expect.objectContaining({ existingRuleId: 'cf-abc123' }),
+    ]);
+  });
+
+  it('drops a blank/whitespace-only existingRuleId rather than passing it through', () => {
+    const result = normalizeExecutorOutput(
+      {
+        actions: [
+          {
+            type: 'CONDITIONAL_FORMAT',
+            sheetName: 'Purchase Register',
+            range: 'J2:J51',
+            existingRuleId: '   ',
+            rule: { kind: 'cellValue', operator: 'greaterThan', value: 1500, format: { fillColor: '#FFC7CE' } },
+          },
+        ],
+      },
+      subtask,
+    );
+
+    expect(result.actions[0]).not.toHaveProperty('existingRuleId');
+  });
+
+  it('drops a CONDITIONAL_FORMAT action missing its rule (fails closed, not silently accepted)', () => {
+    const result = normalizeExecutorOutput(
+      {
+        actions: [{ type: 'CONDITIONAL_FORMAT', sheetName: 'Purchase Register', range: 'J2:J51' }],
+      },
+      subtask,
+    );
+
+    expect(result.actions).toEqual([]);
+    expect((result.droppedActions ?? []).length).toBeGreaterThan(0);
+  });
+
+  it('no longer collapses a real CONDITIONAL_FORMAT type into FORMAT_MATCHING_ROWS', () => {
+    const result = normalizeExecutorOutput(
+      {
+        actions: [
+          {
+            type: 'conditional_format',
+            sheetName: 'Purchase Register',
+            range: 'J2:J51',
+            rule: { kind: 'cellValue', operator: 'lessThan', value: 100, format: { fillColor: '#FFC7CE' } },
+          },
+        ],
+      },
+      subtask,
+    );
+
+    expect(result.actions[0]?.type).toBe('CONDITIONAL_FORMAT');
+  });
+
   it('converts FORMAT_RANGE A1 range string into row/col/rowCount/colCount', () => {
     const result = normalizeExecutorOutput(
       {

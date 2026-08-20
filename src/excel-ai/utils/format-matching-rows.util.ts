@@ -1,5 +1,7 @@
 import { WorkbookContext } from '../../agents/types/agent.types';
-import { SheetAction, RangeFilterSpec } from '../types/sheet-actions.types';
+import { SheetAction, RangeFilterSpec, ConditionalFormatOperator } from '../types/sheet-actions.types';
+import { resolveFilterColumnIndex } from '../../agents/utils/range-filter.util';
+import { colIndexToLetter } from '../../virtual/shadowWorkbook';
 
 const LIGHT_RED = '#FFC7CE';
 
@@ -37,6 +39,107 @@ function mapConditionOperator(raw: unknown): RangeFilterSpec['operator'] {
   if (text === 'GT' || text === 'GREATER_THAN') return 'greaterThan';
   if (text === 'LT' || text === 'LESS_THAN') return 'lessThan';
   return 'equals';
+}
+
+/**
+ * Numeric-comparison operator tokens the model might emit for a condition/rule
+ * (e.g. "above", "GTE", "at least") → Office.js's own comparison vocabulary.
+ * A live CONDITIONAL_FORMAT rule (TASKS.md M3) is only ever built from one of
+ * these — a text/status match (e.g. "Payment Status = Pending") stays on the
+ * existing one-shot FORMAT_MATCHING_ROWS path below, unchanged.
+ */
+function mapConditionalFormatOperator(raw: unknown, hasValue2: boolean): ConditionalFormatOperator {
+  const text = String(raw ?? '')
+    .trim()
+    .toUpperCase()
+    .replace(/[\s-]+/g, '_');
+  if (['GTE', 'GREATER_THAN_OR_EQUAL', 'AT_LEAST', 'MINIMUM'].includes(text)) {
+    return 'greaterThanOrEqual';
+  }
+  if (['GT', 'GREATER_THAN', 'ABOVE', 'OVER', 'EXCEEDS', 'MORE_THAN'].includes(text)) {
+    return 'greaterThan';
+  }
+  if (['LTE', 'LESS_THAN_OR_EQUAL', 'AT_MOST', 'MAXIMUM'].includes(text)) {
+    return 'lessThanOrEqual';
+  }
+  if (['LT', 'LESS_THAN', 'BELOW', 'UNDER'].includes(text)) {
+    return 'lessThan';
+  }
+  if (['NE', 'NOT_EQUALS', 'NOT_EQUAL', 'NOTEQUALS'].includes(text)) {
+    return 'notEqualTo';
+  }
+  if (text === 'BETWEEN') return hasValue2 ? 'between' : 'greaterThanOrEqual';
+  if (text === 'NOT_BETWEEN') return hasValue2 ? 'notBetween' : 'notEqualTo';
+  return 'equalTo';
+}
+
+/** Maps an already-resolved RangeFilterSpec operator (equals/notEquals/greaterThan/lessThan) onto CF's operator set. */
+function rangeOperatorToConditionalFormat(operator: RangeFilterSpec['operator']): ConditionalFormatOperator {
+  switch (operator) {
+    case 'greaterThan':
+      return 'greaterThan';
+    case 'lessThan':
+      return 'lessThan';
+    case 'notEquals':
+      return 'notEqualTo';
+    default:
+      return 'equalTo';
+  }
+}
+
+/**
+ * A filter/condition belongs on the live CONDITIONAL_FORMAT path, not the
+ * static FORMAT_MATCHING_ROWS row-match path, exactly when it's a numeric
+ * comparison against a single column — "contains" and any text value (e.g.
+ * "Pending") stay on the row-match path unchanged.
+ */
+function isNumericComparison(operator: string, value: unknown): boolean {
+  if (typeof value !== 'number') return false;
+  return operator === 'greaterThan' || operator === 'lessThan' || operator === 'notEquals' || operator === 'equals';
+}
+
+/** Data-only span of one column within a used range, e.g. "A1:L51" + col 9 → "J2:J51". */
+function resolveColumnDataRange(usedRange: string, columnIndex0: number, hasHeaders: boolean): string {
+  const stripped = stripSheetPrefix(usedRange);
+  const match = /^[A-Za-z]+(\d+)(?::[A-Za-z]+(\d+))?$/.exec(stripped);
+  const startRow = match?.[1] ? Number(match[1]) : 1;
+  const endRow = match?.[2] ? Number(match[2]) : startRow;
+  const dataStartRow = hasHeaders ? startRow + 1 : startRow;
+  const col = colIndexToLetter(columnIndex0);
+  return `${col}${dataStartRow}:${col}${Math.max(endRow, dataStartRow)}`;
+}
+
+/** Build a live CONDITIONAL_FORMAT action targeting one column's data range. Returns null if the column can't be resolved. */
+function buildConditionalFormatAction(
+  workbookContext: WorkbookContext,
+  sheetName: string,
+  headers: string[],
+  columnIdentifier: string | number,
+  operator: ConditionalFormatOperator,
+  value: number | string,
+  value2: number | string | undefined,
+  format: NonNullable<SheetAction['format']>,
+): SheetAction | null {
+  let columnIndex: number;
+  try {
+    columnIndex = resolveFilterColumnIndex(headers, columnIdentifier);
+  } catch {
+    return null;
+  }
+  const usedRange = resolveUsedRange(workbookContext, sheetName);
+  const range = resolveColumnDataRange(usedRange, columnIndex, true);
+  return {
+    type: 'CONDITIONAL_FORMAT',
+    sheetName,
+    range,
+    rule: {
+      kind: 'cellValue',
+      operator,
+      value,
+      ...(value2 !== undefined ? { value2 } : {}),
+      format,
+    },
+  } as SheetAction;
 }
 
 function resolveColumnName(
@@ -232,6 +335,12 @@ export function normalizeFormatMatchingRowsAction(
   const sheet = workbookContext.sheets.find((s) => s.name === sheetName);
   const headers = (sheet?.values?.[0] ?? []).map((cell) => String(cell ?? '').trim());
 
+  // The model already emitted a real CONDITIONAL_FORMAT action — pass it through
+  // unchanged rather than routing it through the row-match FORMAT_MATCHING_ROWS logic below.
+  if (action.type === 'CONDITIONAL_FORMAT') {
+    return action;
+  }
+
   if (action.type === 'FORMAT_MATCHING_ROWS') {
     const filter =
       record.filter && typeof record.filter === 'object'
@@ -260,6 +369,24 @@ export function normalizeFormatMatchingRowsAction(
         : clearFill
           ? { clearFill: true }
           : { fillColor: LIGHT_RED };
+
+    // Numeric comparison ("above 1000", not "Status = Pending") → a live
+    // CONDITIONAL_FORMAT rule (TASKS.md M7), not a one-shot row fill.
+    // Removal (clearFill) stays on the existing path — no CF-rule lookup/removal exists yet (#38).
+    if (!clearFill && isNumericComparison(operator, value)) {
+      const cfAction = buildConditionalFormatAction(
+        workbookContext,
+        sheetName,
+        headers,
+        column,
+        rangeOperatorToConditionalFormat(operator),
+        value,
+        undefined,
+        { ...format, fillColor: format?.fillColor ?? resolveFillColor(record) ?? LIGHT_RED },
+      );
+      if (cfAction) return cfAction;
+    }
+
     return {
       type: 'FORMAT_MATCHING_ROWS',
       sheetName,
@@ -284,9 +411,34 @@ export function normalizeFormatMatchingRowsAction(
     condition &&
     (action.type === 'HIGHLIGHT_CELL' || action.type === 'FORMAT_RANGE')
   ) {
+    const clearFill = wantsClearFill(record) || (userMessage ? isClearHighlightMessage(userMessage) : false);
+
+    // Numeric comparison ("above 1000") → a live CONDITIONAL_FORMAT rule, not a
+    // one-shot row fill. Removal stays on the FORMAT_MATCHING_ROWS path below — no
+    // CF-rule lookup/removal exists yet (#38).
+    if (!clearFill && typeof condition.value === 'number') {
+      const column = resolveColumnName(condition.column ?? condition.col, headers);
+      if (column) {
+        const operator = mapConditionalFormatOperator(
+          condition.type ?? condition.operator,
+          typeof condition.value2 === 'number',
+        );
+        const cfAction = buildConditionalFormatAction(
+          workbookContext,
+          sheetName,
+          headers,
+          column,
+          operator,
+          condition.value,
+          typeof condition.value2 === 'number' ? condition.value2 : undefined,
+          { fillColor: resolveFillColor(record) ?? LIGHT_RED },
+        );
+        if (cfAction) return cfAction;
+      }
+    }
+
     const filter = buildFilterFromCondition(condition, headers);
     if (!filter) return action;
-    const clearFill = wantsClearFill(record) || (userMessage ? isClearHighlightMessage(userMessage) : false);
     return {
       type: 'FORMAT_MATCHING_ROWS',
       sheetName,

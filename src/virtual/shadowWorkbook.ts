@@ -1,4 +1,5 @@
 import { SheetContext, WorkbookContext } from '../agents/types/agent.types';
+import { ConditionalFormatRuleInfo } from '../types/cellix.types';
 import { ShadowCell, ShadowSheet, ShadowWorkbook } from './shadowWorkbook.types';
 
 export function colIndexToLetter(index: number): string {
@@ -34,6 +35,8 @@ export function buildShadowWorkbook(context: WorkbookContext): ShadowWorkbook {
     namedRanges,
     tables: [...context.tables],
     changedCells: new Set(),
+    structuralLog: [],
+    conditionalFormats: [],
   };
 }
 
@@ -44,10 +47,15 @@ function buildShadowSheet(sheet: SheetContext): ShadowSheet {
     const row = sheet.values[r] ?? [];
     for (let c = 0; c < row.length; c += 1) {
       const address = `${colIndexToLetter(c)}${r + 1}`;
+      const format = sheet.formats?.[r]?.[c];
       cells.set(address, {
         value: row[c],
         formula: sheet.formulas?.[r]?.[c] ?? '',
         numberFormat: sheet.numberFormats?.[r]?.[c] ?? 'General',
+        bold: format?.bold,
+        italic: format?.italic,
+        fontColor: format?.fontColor,
+        fillColor: format?.fillColor,
       });
     }
   }
@@ -71,6 +79,16 @@ export function shadowToWorkbookContext(shadow: ShadowWorkbook): WorkbookContext
       formula,
     })),
     tables: [...shadow.tables],
+    // The shadow only tracks presence (sheet/range/kind, #39) — no real id or
+    // summary exists mid-turn until a live Office.js read happens (#38), so
+    // `id` is deliberately left unset rather than fabricated as targetable.
+    conditionalFormats: shadow.conditionalFormats.map((cf) => ({
+      id: '',
+      sheetName: cf.sheetName,
+      range: cf.range,
+      ruleKind: cf.ruleKind as ConditionalFormatRuleInfo['ruleKind'],
+      summary: cf.ruleKind,
+    })),
   };
 }
 
@@ -99,6 +117,9 @@ export function shadowSheetToContext(sheet: ShadowSheet): SheetContext {
   const numberFormats: string[][] = Array.from({ length: maxRow }, () =>
     Array.from({ length: maxCol }, () => 'General'),
   );
+  const formats: NonNullable<SheetContext['formats']> = Array.from({ length: maxRow }, () =>
+    Array.from({ length: maxCol }, () => ({})),
+  );
 
   for (const [addr, cell] of sheet.cells) {
     const col = letterToColIndex(addr.replace(/\d+/g, ''));
@@ -107,6 +128,12 @@ export function shadowSheetToContext(sheet: ShadowSheet): SheetContext {
       values[row][col] = cell.formula ? cell.formula : cell.value;
       formulas[row][col] = cell.formula;
       numberFormats[row][col] = cell.numberFormat;
+      formats[row][col] = {
+        bold: cell.bold,
+        italic: cell.italic,
+        fontColor: cell.fontColor,
+        fillColor: cell.fillColor,
+      };
     }
   }
 
@@ -118,6 +145,7 @@ export function shadowSheetToContext(sheet: ShadowSheet): SheetContext {
     values,
     formulas,
     numberFormats,
+    formats,
     structure: sheet.structure as SheetContext['structure'],
     // Shadow workbook diffing doesn't reason about title rows — this is an
     // internal post-apply verification snapshot, not user-facing header context.
@@ -139,5 +167,7 @@ export function deepCloneShadow(shadow: ShadowWorkbook): ShadowWorkbook {
     namedRanges: new Map(shadow.namedRanges),
     tables: [...shadow.tables],
     changedCells: new Set(shadow.changedCells),
+    structuralLog: [...shadow.structuralLog],
+    conditionalFormats: shadow.conditionalFormats.map((cf) => ({ ...cf })),
   };
 }

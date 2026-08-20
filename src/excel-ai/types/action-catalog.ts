@@ -61,6 +61,11 @@ const ACTION_CATALOG: Record<SheetActionType, CatalogEntry> = {
   COPY_FILTERED_RANGE: { advertise: true },
   FORMAT_MATCHING_ROWS: { advertise: true },
   SET_MATCHING_ROWS: { advertise: true },
+  CONDITIONAL_FORMAT: { advertise: true },
+  DELETE_CONDITIONAL_FORMAT: {
+    advertise: false,
+    reason: 'Revert-only inverse of a CONDITIONAL_FORMAT create (TASKS.md #40) — not something the Executor should propose directly.',
+  },
   AGGREGATE_TABLE: { advertise: true },
   AUTO_FILTER: { advertise: true },
   FREEZE_PANES: { advertise: true },
@@ -89,8 +94,16 @@ const ACTION_CATALOG: Record<SheetActionType, CatalogEntry> = {
 
   // ---- Objects ----
   CREATE_TABLE: { advertise: true },
+  DELETE_TABLE: {
+    advertise: false,
+    reason: 'Revert-only inverse of CREATE_TABLE (TASKS.md #16) — not something the Executor should propose directly.',
+  },
   CREATE_CHART: { advertise: true },
   UPDATE_CHART: { advertise: true },
+  DELETE_CHART: {
+    advertise: false,
+    reason: 'Revert-only inverse of a CREATE_CHART create (TASKS.md #15) — not something the Executor should propose directly.',
+  },
   ADD_COMMENT: { advertise: false, reason: 'Comments are not part of any current planned workflow.' },
   DELETE_COMMENT: { advertise: false, reason: 'Comments are not part of any current planned workflow.' },
 

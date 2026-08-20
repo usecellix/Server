@@ -210,6 +210,7 @@ export class ConversationService {
   private startWorkflowTrace(params: {
     traceId: string;
     conversationId: string;
+    workbookId?: string;
     message: string;
     mode?: string;
     request: ConversationRequestDto;
@@ -217,6 +218,7 @@ export class ConversationService {
     this.workflowTrace.startTrace({
       traceId: params.traceId,
       conversationId: params.conversationId,
+      workbookId: params.workbookId,
       message: params.message,
       mode: params.mode,
       requestInput: {
@@ -364,7 +366,7 @@ export class ConversationService {
   ): Promise<void> {
     this.validateRequest(request);
 
-    const conversation = await this.getOrCreateConversation(request.conversationId);
+    const conversation = await this.getOrCreateConversation(request.conversationId, request.workbookId);
     const activeRequestRaw = await this.applyRefinementContext(request);
     let activeRequest: ConversationRequestDto = {
       ...activeRequestRaw,
@@ -389,6 +391,7 @@ export class ConversationService {
         this.startWorkflowTrace({
           traceId,
           conversationId,
+          workbookId: conversation.workbookId,
           message: activeRequest.message,
           mode: requestMode,
           request: activeRequest,
@@ -475,6 +478,7 @@ export class ConversationService {
     this.startWorkflowTrace({
       traceId,
       conversationId,
+      workbookId: conversation.workbookId,
       message: activeRequest.message,
       mode: requestMode,
       request: activeRequest,
@@ -1868,6 +1872,7 @@ export class ConversationService {
       internalDetails,
       changeSetId: changeSet.changeSetId,
       changes: changeSet.changes,
+      irreversibleActionTypes: changeSet.irreversibleActionTypes,
       tier: 2,
       durationMs: result.durationMs,
     });
@@ -1986,6 +1991,7 @@ export class ConversationService {
       internalDetails,
       changeSetId: changeSet.changeSetId,
       changes: changeSet.changes,
+      irreversibleActionTypes: changeSet.irreversibleActionTypes,
       tier,
     });
     emit('conversation_end', { summary: 'Review changes and accept or reject.', tier });
@@ -2151,6 +2157,7 @@ export class ConversationService {
             internalDetails,
             changeSetId: changeSet.changeSetId,
             changes: changeSet.changes,
+            irreversibleActionTypes: changeSet.irreversibleActionTypes,
             partialProgress: true,
             failedSubtask: orchestratorResult.failedSubtask,
             tier: 3,
@@ -2288,6 +2295,7 @@ export class ConversationService {
           internalDetails,
           changeSetId: changeSet.changeSetId,
           changes: changeSet.changes,
+          irreversibleActionTypes: changeSet.irreversibleActionTypes,
           tier: 3,
           // Gate: the frontend must not let this wave's Accept fire until the
           // wave named here has been accepted (its sheets/ranges must exist).
@@ -2911,7 +2919,10 @@ export class ConversationService {
     return Math.max(fromCompression, fromSnapshot, request.sheetData.length);
   }
 
-  private async getOrCreateConversation(conversationId?: string): Promise<ConversationDocument> {
+  private async getOrCreateConversation(
+    conversationId?: string,
+    workbookId?: string,
+  ): Promise<ConversationDocument> {
     if (conversationId) {
       const existing = await this.conversationModel.findOne({ conversationId });
       if (!existing) {
@@ -2923,6 +2934,13 @@ export class ConversationService {
       if (existing.messages.length >= MAX_MESSAGES) {
         throw new BadRequestException('CONTEXT_TOO_LARGE');
       }
+      // Backfill only — never overwrite an already-recorded workbookId (mirrors
+      // the frontend's own mint-once discipline from TASKS.md #21). Covers a
+      // conversation that started before the client had minted/persisted one.
+      if (workbookId && !existing.workbookId) {
+        existing.workbookId = workbookId;
+        await existing.save();
+      }
       return existing;
     }
 
@@ -2932,6 +2950,7 @@ export class ConversationService {
       messages: [],
       status: 'active',
       expiresAt: new Date(Date.now() + CONVERSATION_TTL_MS),
+      ...(workbookId ? { workbookId } : {}),
     });
   }
 

@@ -33,6 +33,10 @@ describe('buildRefinementContext', () => {
         },
       ],
       actions: [],
+      structuralOps: [],
+      irreversibleActionTypes: [],
+      unintendedChanges: [],
+      formulaErrorsIntroduced: [],
       status: 'applied',
     };
 

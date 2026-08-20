@@ -80,6 +80,7 @@ export type SheetActionType =
   | 'WRITE_TABLE'
   | 'BATCH_SET'
   | 'CREATE_TABLE'
+  | 'DELETE_TABLE'
   | 'CREATE_CHART'
   | 'DEFINE_NAMED_RANGE'
   | 'AUTOFIT_COLUMNS'
@@ -92,7 +93,75 @@ export type SheetActionType =
   | 'SET_MATCHING_ROWS'
   | 'MOVE_RANGE'
   | 'AGGREGATE_TABLE'
-  | 'UPDATE_CHART';
+  | 'UPDATE_CHART'
+  | 'DELETE_CHART'
+  | 'CONDITIONAL_FORMAT'
+  | 'DELETE_CONDITIONAL_FORMAT';
+
+/** Excel's own cell-value conditional-format comparison operators (Office.js `ConditionalCellValueOperator`). */
+export type ConditionalFormatOperator =
+  | 'greaterThan'
+  | 'greaterThanOrEqual'
+  | 'lessThan'
+  | 'lessThanOrEqual'
+  | 'equalTo'
+  | 'notEqualTo'
+  | 'between'
+  | 'notBetween';
+
+/** Single-column numeric-comparison variant (TASKS.md #32/#33). */
+export interface ConditionalFormatCellValueRule {
+  kind: 'cellValue';
+  operator: ConditionalFormatOperator;
+  value: number | string;
+  /** Required when operator is 'between' / 'notBetween'. */
+  value2?: number | string;
+  format: FormatSpec;
+}
+
+/**
+ * A boolean Excel formula, evaluated relative to the top-left cell of `range`
+ * — e.g. `"=$C2<$B2*0.9"` for a cross-column comparison the cellValue variant
+ * can't express. This is what VISION.md's own example needs: "highlight the
+ * regions where revenue dropped more than 10%" (TASKS.md #35).
+ */
+export interface ConditionalFormatFormulaRule {
+  kind: 'formula';
+  formula: string;
+  format: FormatSpec;
+}
+
+/**
+ * Highlights the top or bottom N items (or N%) of `range` by value — e.g.
+ * "highlight the top 5 suppliers by total". Re-ranks live as values change,
+ * including a new row entering the top/bottom set (TASKS.md #36).
+ */
+export interface ConditionalFormatTopBottomRule {
+  kind: 'topBottom';
+  side: 'top' | 'bottom';
+  /** Item count by default; a 0-100 percentage when `isPercent` is true. */
+  rank: number;
+  isPercent?: boolean;
+  format: FormatSpec;
+}
+
+/**
+ * A 2- or 3-color gradient scale across `range`'s values — e.g. "color-scale
+ * the Total Amount column". No `format` here — each stop supplies its own
+ * color directly. The lowest/highest actual values anchor the scale's ends
+ * and shift automatically as data changes (TASKS.md #37).
+ */
+export interface ConditionalFormatColorScaleRule {
+  kind: 'colorScale';
+  /** [min, max] for a 2-color scale, or [min, mid, max] for a 3-color scale. */
+  colors: [string, string] | [string, string, string];
+}
+
+export type ConditionalFormatRule =
+  | ConditionalFormatCellValueRule
+  | ConditionalFormatFormulaRule
+  | ConditionalFormatTopBottomRule
+  | ConditionalFormatColorScaleRule;
 
 export type RangeFilterOperator =
   | 'equals'
@@ -200,6 +269,12 @@ export interface SheetActionPayload {
   destCell?: string;
   colorScheme?: 'default' | 'blue' | 'grey' | 'blueGrey' | 'green' | 'red' | 'orange' | 'purple' | 'yellow';
   chartId?: string;
+  /** CONDITIONAL_FORMAT — live cell-value comparison rule (TASKS.md M3). */
+  rule?: ConditionalFormatRule;
+  /** CONDITIONAL_FORMAT — targets an existing rule by id to modify in place rather than create (TASKS.md #38). */
+  existingRuleId?: string;
+  /** DELETE_CONDITIONAL_FORMAT — the real Excel-assigned rule id to delete (revert-only, TASKS.md #40). */
+  ruleId?: string;
   /**
    * When true, allow writing over non-empty cells.
    * Only for unambiguously replace/clear intents — never inferred by the Executor.

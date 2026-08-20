@@ -1,6 +1,6 @@
 import { SheetActionPayload } from '../../excel-ai/types/sheet-actions.types';
 import { FormulaInsights, FormulaValidationIssue } from '../../formula/formula.types';
-import { SheetCompressionMeta } from '../../types/cellix.types';
+import { ConditionalFormatRuleInfo, SheetCompressionMeta } from '../../types/cellix.types';
 
 export type Action = SheetActionPayload;
 
@@ -15,6 +15,14 @@ export interface WorkbookContext {
   sheets: SheetContext[];
   namedRanges: { name: string; formula: string }[];
   tables: string[];
+  /**
+   * Existing rules already on the live sheet, preserved with their full
+   * identifying detail (unlike `tables` above, which is collapsed to names
+   * only) — `id` is required to target one for `MODIFY_CONDITIONAL_FORMAT`
+   * (TASKS.md #38). Optional — absent/undefined means "none known", same
+   * convention as `namedRanges ?? []`/`tables ?? []` elsewhere in this file.
+   */
+  conditionalFormats?: ConditionalFormatRuleInfo[];
   selectedRange?: string;
   onDemandFetchEnabled?: boolean;
   fetchedRanges?: { sheet: string; range: string; rowCount: number }[];
@@ -43,6 +51,19 @@ export interface WorkbookContext {
   priorTurnActionsSummary?: string;
 }
 
+/**
+ * Bold/italic/fontColor/fillColor for one cell — column-level granularity in
+ * practice (broadcast from `ColumnMeta.format`, itself read from a column's
+ * first data row, TASKS.md #64), not a genuine per-cell snapshot. Mirrors
+ * `numberFormats`' own existing column-broadcast precedent.
+ */
+export interface CellFormatCell {
+  bold?: boolean;
+  italic?: boolean;
+  fontColor?: string;
+  fillColor?: string;
+}
+
 export interface SheetContext {
   name: string;
   usedRange: string;
@@ -51,6 +72,8 @@ export interface SheetContext {
   values: unknown[][];
   formulas: string[][];
   numberFormats: string[][];
+  /** Absent when the add-in build predates TASKS.md #64 — treat as "no data", not "no formatting". */
+  formats?: CellFormatCell[][];
   structure: 'financial_model' | 'data_table' | 'report' | 'unknown';
   /**
    * 0-based index into `values` where column headers live. Not always 0 — sheets
