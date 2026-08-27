@@ -34,7 +34,7 @@ import { WriteRouteNoActionError } from '../errors/write-route-no-action.error';
 import { ConversationEngineService, EngineResponse, LlmRequestError } from './conversation-engine.service';
 import { DataQueryService } from './data-query.service';
 import { FindExportService, FindExportSheetSlice } from './find-export.service';
-import { ContextCacheService } from './context-cache.service';
+import { ContextCacheService } from '../../common/cache/context-cache.service';
 import { LlmRouterService } from './llm-router.service';
 import { LlmCallTelemetry, OpenRouterService } from './openrouter.service';
 import { RouterDecision, RouterInput } from '../types/router.types';
@@ -135,10 +135,19 @@ export class ConversationService {
     history?: ConversationMessageEntry[],
     userMessage?: string,
   ): { enrichedContext: AgentWorkbookContext; promptContext: string } {
-    const enrichedSheets = context.sheets.map((sheet) => ({
-      ...sheet,
-      formulaInsights: this.formulaAnalyzer.analyzeSheet(sheet),
-    }));
+    // Perf #70: analyzeSheet() walks every formula cell on a sheet to build its
+    // llmSummary — previously ran unconditionally for EVERY sheet in the workbook
+    // context on every Tier 2/3 request, even sheets the request never touches
+    // (e.g. one of 16 monthly sheets in a hospitality-workbook build where only
+    // "Main" needs formula insight). Scope to sheets that are actually relevant:
+    // the active sheet, plus any sheet explicitly named in the user's message
+    // (covers cross-sheet formula requests like "fix the SUMIF on January").
+    const relevantSheetNames = this.resolveFormulaRelevantSheets(context, userMessage);
+    const enrichedSheets = context.sheets.map((sheet) =>
+      relevantSheetNames.has(sheet.name)
+        ? { ...sheet, formulaInsights: this.formulaAnalyzer.analyzeSheet(sheet) }
+        : sheet,
+    );
     let enrichedContext: AgentWorkbookContext = { ...context, sheets: enrichedSheets };
 
     if (history?.length) {
@@ -158,6 +167,29 @@ export class ConversationService {
 
     const promptContext = buildEnrichedPromptContext(basePromptContext, enrichedSheets);
     return { enrichedContext, promptContext };
+  }
+
+  /**
+   * Perf #70: scope formula analysis to sheets the request can plausibly touch —
+   * the active sheet, always, plus any other sheet named verbatim in the user's
+   * message (so "fix the formula in December" still gets December analyzed even
+   * though it isn't active). Deliberately conservative: a large multi-sheet
+   * workbook (e.g. 12+ month sheets) with a request scoped to one or two sheets
+   * no longer pays analyzeSheet()'s full-formula-walk cost for every other sheet.
+   */
+  private resolveFormulaRelevantSheets(
+    context: AgentWorkbookContext,
+    userMessage?: string,
+  ): Set<string> {
+    const relevant = new Set<string>([context.activeSheetName]);
+    if (!userMessage) return relevant;
+
+    for (const sheet of context.sheets) {
+      if (sheet.name && userMessage.includes(sheet.name)) {
+        relevant.add(sheet.name);
+      }
+    }
+    return relevant;
   }
 
   private buildWriteMetadata(

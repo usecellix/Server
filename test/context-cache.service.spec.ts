@@ -1,4 +1,4 @@
-import { ContextCacheService } from '../src/excel-ai/services/context-cache.service';
+import { ContextCacheService } from '../src/common/cache/context-cache.service';
 
 describe('ContextCacheService (Spec 09 item 2)', () => {
   let cache: ContextCacheService;

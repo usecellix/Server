@@ -18,6 +18,23 @@ export type LlmUsage = {
   reasoningTokens?: number;
 };
 
+/**
+ * Mutable out-param for `complete()`. `truncated` is true when the provider
+ * stopped because the completion hit its token budget rather than because the
+ * model finished — the case that silently produces short-but-parseable JSON.
+ */
+export type LlmCompletionOutcome = {
+  finishReason?: string | null;
+  truncated?: boolean;
+};
+
+/** finishReason values that mean "cut off by the token budget", across providers. */
+const TRUNCATION_FINISH_REASONS = new Set(['length', 'max_tokens', 'max_output_tokens']);
+
+export function isTruncationFinishReason(reason: string | null | undefined): boolean {
+  return typeof reason === 'string' && TRUNCATION_FINISH_REASONS.has(reason.toLowerCase());
+}
+
 export type LlmCallTelemetry = {
   provider?: string;
   model?: string;
@@ -80,6 +97,15 @@ export class OpenRouterService {
     /** Cap reasoning tokens independently when the provider supports it. */
     reasoningMaxTokens?: number;
     responseFormat?: 'json_object' | 'text';
+    /**
+     * Optional out-param: populated with the provider's finishReason for the
+     * completion actually returned. A caller that parses structured output MUST
+     * check this — a model that hits its token cap mid-JSON often emits the
+     * closing brackets anyway, so the result parses cleanly and is silently
+     * short. (Real incident: a Planner run truncated mid-subtask, still parsed,
+     * and the missing subtasks were never noticed by any downstream check.)
+     */
+    outcome?: LlmCompletionOutcome;
   }): Promise<string> {
     const apiKey = this.config.openRouterApiKey;
     if (!apiKey) {
@@ -140,6 +166,19 @@ export class OpenRouterService {
         text = this.extractCompletionText(response);
         if (!text.trim()) {
           this.logEmptyCompletion(model, response, 'retry with reasoning.effort=low');
+        }
+      }
+
+      if (opts.outcome) {
+        const finishReason = response.choices?.[0]?.finishReason ?? null;
+        opts.outcome.finishReason = finishReason;
+        opts.outcome.truncated = isTruncationFinishReason(finishReason);
+        if (opts.outcome.truncated) {
+          this.logger.warn(
+            `OpenRouter completion truncated by token budget (model=${model}, ` +
+              `finishReason=${finishReason}, maxTokens=${completionBudget}) — ` +
+              `structured output from this call may parse but be incomplete.`,
+          );
         }
       }
 

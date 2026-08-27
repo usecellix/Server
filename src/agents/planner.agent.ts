@@ -4,7 +4,10 @@ import { truncateForPlannerLog } from '../common/logging/planner-file-logger.uti
 import { WorkflowTraceService } from '../common/logging/workflow-trace.service';
 import { AppConfigService } from '../config/app-config.service';
 import { PLANNER_RULES_ADDITION } from '../excel-ai/prompt/cellix-system-prompt';
-import { OpenRouterService } from '../excel-ai/services/openrouter.service';
+import {
+  LlmCompletionOutcome,
+  OpenRouterService,
+} from '../excel-ai/services/openrouter.service';
 import {
   PLANNER_EXHAUSTED_USER_MESSAGE,
   PlannerExhaustedError,
@@ -62,26 +65,40 @@ export class PlannerAgent {
       reasoningMaxTokens: PLANNER_REASONING_MAX_TOKENS,
     };
 
+    // A plan cut off by the token budget frequently still parses — the model
+    // closes the JSON it has emitted so far — so parse success alone is NOT
+    // evidence the plan is complete. Treat truncation as a failure to be
+    // retried on a bigger budget, exactly like a parse failure.
+    const outcome: LlmCompletionOutcome = {};
     let raw = await this.llm.complete({
       ...completeOpts,
       userMessage,
       temperature: 0.2,
+      outcome,
     });
     this.structuredLogger.debugRawResponse(correlationId, 'planner', model, raw);
 
     let retried = false;
     let lastResort = false;
-    let parsed = this.tryParsePlanner(raw, correlationId, model);
+    let truncated = outcome.truncated === true;
+    let parsed = truncated ? null : this.tryParsePlanner(raw, correlationId, model);
     if (!parsed) {
       retried = true;
-      this.logger.warn(`Planner JSON parse failed — retrying once. Raw snippet: ${this.clip(raw)}`);
+      this.logger.warn(
+        truncated
+          ? `Planner output truncated at maxTokens=${maxTokens} (parseable but incomplete) — retrying once.`
+          : `Planner JSON parse failed — retrying once. Raw snippet: ${this.clip(raw)}`,
+      );
+      const retryOutcome: LlmCompletionOutcome = {};
       raw = await this.llm.complete({
         ...completeOpts,
         userMessage: userMessage + JSON_RETRY_SUFFIX,
         temperature: 0.1,
+        outcome: retryOutcome,
       });
       this.structuredLogger.debugRawResponse(correlationId, 'planner', model, raw);
-      parsed = this.tryParsePlanner(raw, correlationId, model);
+      truncated = retryOutcome.truncated === true;
+      parsed = truncated ? null : this.tryParsePlanner(raw, correlationId, model);
     }
 
     if (!parsed) {
@@ -89,15 +106,29 @@ export class PlannerAgent {
       this.logger.warn(
         `Planner still empty/unparseable — last-resort retry with maxTokens=${PLANNER_LAST_RESORT_MAX_TOKENS}`,
       );
+      const lastResortOutcome: LlmCompletionOutcome = {};
       raw = await this.llm.complete({
         ...completeOpts,
         userMessage: userMessage + JSON_RETRY_SUFFIX,
         temperature: 0.1,
         maxTokens: PLANNER_LAST_RESORT_MAX_TOKENS,
         reasoningMaxTokens: Math.min(PLANNER_REASONING_MAX_TOKENS, 768),
+        outcome: lastResortOutcome,
       });
       this.structuredLogger.debugRawResponse(correlationId, 'planner', model, raw);
+      truncated = lastResortOutcome.truncated === true;
+      // Last resort: a truncated plan here is still better than no plan, so we
+      // keep it rather than failing the request outright — but it must not pass
+      // as complete. Flag it so the caller/log records that this plan may be
+      // short, instead of the silent under-planning this whole check exists for.
       parsed = this.tryParsePlanner(raw, correlationId, model);
+      if (parsed && truncated) {
+        this.logger.error(
+          `Planner output STILL truncated at last-resort maxTokens=${PLANNER_LAST_RESORT_MAX_TOKENS} — ` +
+            `proceeding with a possibly incomplete plan (${parsed.subtasks.length} subtasks). ` +
+            `The request may be under-planned; consider splitting it.`,
+        );
+      }
     }
 
     if (parsed) {
@@ -413,8 +444,23 @@ export class PlannerAgent {
   }
 
   private normalizePlannerOutput(parsed: Partial<PlannerOutput>): PlannerOutput {
-    const subtasks = Array.isArray(parsed.subtasks)
-      ? parsed.subtasks
+    const rawSubtasks = Array.isArray(parsed.subtasks) ? parsed.subtasks : [];
+    // Dropping a malformed subtask silently is how a truncated plan passed as
+    // complete: the model's last subtask was cut mid-string (no targetSheet),
+    // this filter removed it, and the caller saw a clean, shorter plan with no
+    // indication anything was missing. Count and report what we discard.
+    const droppedSubtasks = rawSubtasks.filter(
+      (s) => !(s?.id && s?.description && s?.targetSheet),
+    );
+    if (droppedSubtasks.length > 0) {
+      this.logger.warn(
+        `Planner emitted ${rawSubtasks.length} subtask(s) but ${droppedSubtasks.length} were ` +
+          `malformed and dropped (missing id/description/targetSheet) — ` +
+          `ids: [${droppedSubtasks.map((s) => String(s?.id ?? '(no id)')).join(', ')}]. ` +
+          `This usually means the plan was cut off mid-generation; the remaining plan may be incomplete.`,
+      );
+    }
+    const subtasks = rawSubtasks
           .filter((s): s is SubTask => Boolean(s?.id && s?.description && s?.targetSheet))
           .map((s) => {
             const subtask: SubTask = {
@@ -429,8 +475,7 @@ export class PlannerAgent {
               subtask.suggestedActionType = s.suggestedActionType.trim();
             }
             return subtask;
-          })
-      : [];
+          });
 
     const clarificationsNeeded = Array.isArray(parsed.clarificationsNeeded)
       ? parsed.clarificationsNeeded.map(String).filter(Boolean)

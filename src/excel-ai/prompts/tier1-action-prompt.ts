@@ -24,10 +24,11 @@ Only replace explicit text tokens the user named — do not rewrite formulas or 
     HEADER_FORMAT: `
 Action hint: HEADER_FORMAT (whole header row — not conditional data rows)
 Allowed action types: FORMAT_RANGE only
-FORMAT_RANGE schema: { "type": "FORMAT_RANGE", "sheetName": "Purchase Register", "row": 0, "col": 0, "rowCount": 1, "colCount": <number of header columns>, "format": { "fillColor": "#C6EFCE", "bold": true } }
+FORMAT_RANGE schema: { "type": "FORMAT_RANGE", "sheetName": "Purchase Register", "row": 0, "col": 0, "rowCount": 1, "colCount": <number of header columns>, "format": { "fillColor": "<hex from the color mapping below>", "bold": true } }
 Rules:
 - Target EXACTLY the header row: row 0, col 0, rowCount 1, colCount = width of headers / used range
-- Light green → "#C6EFCE"; light red → "#FFC7CE"; light yellow → "#FFF2CC"
+- Color mapping — use the hex that matches the color the user named, never default to another color: light green → "#C6EFCE"; light red → "#FFC7CE"; light yellow → "#FFF2CC"; light blue → "#DDEBF7"; light orange → "#FCE4D6"; light purple/lavender → "#E4DFEC"; light gray → "#F2F2F2"
+- If the user names a color not in this list, choose the closest standard Excel "Light" theme fill for that color family — never substitute a different color family
 - NEVER use FORMAT_MATCHING_ROWS (that requires a data-row filter like Payment Status = Pending)
 - answer must be preview tense: "I'll highlight the header row…" — never "I've applied"
 `,
@@ -75,7 +76,7 @@ Rules:
 - filter.operator: equals | contains | notEquals | greaterThan | lessThan — but if value is numeric AND operator is greaterThan/lessThan, use CONDITIONAL_FORMAT above instead
 - Use the sheet's used range for "range" (include the header row)
 - To REMOVE highlights/fill: use format.clearFill true — NEVER white fill (#FFFFFF) and NEVER enumerate per-row FORMAT_RANGE actions
-- Light red → "#FFC7CE"; light yellow → "#FFF2CC"; light green → "#C6EFCE"
+- Color mapping — use the hex that matches the color the user named: light red → "#FFC7CE"; light yellow → "#FFF2CC"; light green → "#C6EFCE"; light blue → "#DDEBF7"; light orange → "#FCE4D6"; light purple/lavender → "#E4DFEC"; light gray → "#F2F2F2"
 - Emit exactly ONE action (CONDITIONAL_FORMAT or FORMAT_MATCHING_ROWS) for a highlight request (hasHeaders: true always on FORMAT_MATCHING_ROWS)
 - answer must be preview tense: "I'll highlight…" — never "I've applied"
 `,

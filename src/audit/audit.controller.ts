@@ -10,6 +10,7 @@ import { FastifyReply } from 'fastify';
 import { SkipEnvelope } from '../common/decorators/skip-envelope.decorator';
 import { AuditService } from './audit.service';
 import { TierAMetricsService } from './tier-a-metrics.service';
+import { PerformanceMetricsService } from './performance-metrics.service';
 import { LLMTier } from '../types/cellix.types';
 
 @Controller('audit')
@@ -17,6 +18,7 @@ export class AuditController {
   constructor(
     private readonly auditService: AuditService,
     private readonly tierAMetricsService: TierAMetricsService,
+    private readonly performanceMetricsService: PerformanceMetricsService,
   ) {}
 
   @Get('logs')
@@ -66,6 +68,27 @@ export class AuditController {
       : new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
     const toDate = to ? new Date(to) : new Date();
     return this.tierAMetricsService.getReport(fromDate, toDate);
+  }
+
+  /**
+   * TASKS.md #74 — latency percentiles (p50/p95/p99), token usage, and cache
+   * hit rates, segmented by route + complexity tier for latency (same
+   * PRD §6.3 reasoning as stats/tier-a: a blended number masks the case that
+   * matters — a large multi-sheet Tier 3 request and a single-cell Tier 0 edit
+   * should never be judged against the same latency bar). Cache stats are a
+   * live in-memory snapshot (process-lifetime counters, not date-windowed —
+   * see performance-metrics.util.ts's buildCacheReport doc).
+   */
+  @Get('stats/performance')
+  async getPerformanceStats(
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ) {
+    const fromDate = from
+      ? new Date(from)
+      : new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    const toDate = to ? new Date(to) : new Date();
+    return this.performanceMetricsService.getReport(fromDate, toDate);
   }
 
   @Get('export')

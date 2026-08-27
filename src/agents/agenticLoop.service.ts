@@ -823,8 +823,9 @@ export class AgenticLoopService {
       });
 
       const shadow = this.buildShadowFromStates(baseContext, allStates, visibleStateIds);
+      const relevantSheetNames = this.resolveSubtaskRelevantSheets(subtask, baseContext);
       const currentContext = {
-        ...this.enrichContextFromShadow(shadow),
+        ...this.enrichContextFromShadow(shadow, relevantSheetNames),
         ...retryContext,
       };
       const previousActions = this.flattenActions(
@@ -1242,29 +1243,146 @@ export class AgenticLoopService {
     };
   }
 
+  /**
+   * Perf #71: buildShadowFromStates() previously rebuilt the ENTIRE shadow from
+   * scratch on every call — one call per verifier cycle (agenticLoop's outer
+   * while loop) AND one call per Executor iteration within a subtask (the inner
+   * while loop at runSubtaskExecution). A 19-subtask batch with 3 verification
+   * cycles replayed all 19 subtasks' actions through virtualApply() up to 3
+   * times each — most of that work is identical every time, since only the
+   * most-recently-changed subtask's actions actually differ between calls.
+   *
+   * virtualApply() is pure (deep-clones its input, never mutates) — confirmed
+   * by reading virtualApply.ts before relying on this — so caching intermediate
+   * shadow snapshots by state-array identity is safe: no call site can observe
+   * a cached shadow being mutated out from under it.
+   *
+   * Cache keyed on the array reference of `states` + `visibleStateIds` + the
+   * count of already-applied states, walking forward from the longest matching
+   * cached prefix rather than replaying from an empty shadow every time. Scoped
+   * per AgenticLoopService instance is safe ONLY because this service has no
+   * other per-request mutable state and each `run()` call constructs a fresh
+   * `subtaskStates` array — different requests never share a states array
+   * identity, so entries naturally stop matching and fall out of relevance
+   * (bounded further by the small WeakMap-based cache below, GC'd once the
+   * states array itself is no longer referenced).
+   */
+  private readonly shadowPrefixCache = new WeakMap<
+    SubtaskActionState[],
+    { actionsSnapshot: { ref: Action[]; len: number }[]; shadow: ShadowWorkbook }[]
+  >();
+
   private buildShadowFromStates(
     baseContext: WorkbookContext,
     states: SubtaskActionState[],
     visibleStateIds?: Set<string>,
   ): ShadowWorkbook {
-    let shadow = buildShadowWorkbook(baseContext);
-    for (const state of states) {
-      if (visibleStateIds && !visibleStateIds.has(state.subtask.id)) continue;
-      if (state.actions.length === 0) continue;
-      shadow = virtualApply(shadow, state.actions);
+    const relevantStates = visibleStateIds
+      ? states.filter((s) => visibleStateIds.has(s.subtask.id))
+      : states;
+
+    // Only states with actions actually mutate the shadow — matches the
+    // original loop's `if (state.actions.length === 0) continue`.
+    const activeActions = relevantStates
+      .map((s) => s.actions)
+      .filter((actions) => actions.length > 0);
+
+    let cacheEntries = this.shadowPrefixCache.get(states);
+    if (!cacheEntries) {
+      cacheEntries = [];
+      this.shadowPrefixCache.set(states, cacheEntries);
     }
+
+    // Find the longest cached prefix whose (reference, length) pairs still
+    // match the corresponding prefix of activeActions. Reference identity
+    // alone is NOT sufficient: runSubtaskExecution's inner iteration loop
+    // does `state.actions.push(action)` on the SAME array across multiple
+    // Executor calls within one subtask (confirmed by reading that call
+    // site) — the reference stays stable while content grows, so length is
+    // checked alongside reference to catch that in-place-growth case. A
+    // subtask RETRY (as opposed to continued iteration) always starts from
+    // `state.actions = []`, a fresh reference, so that case is still caught
+    // by the reference check regardless of length.
+    let startIndex = 0;
+    let shadow = buildShadowWorkbook(baseContext);
+    for (const entry of cacheEntries) {
+      const len = entry.actionsSnapshot.length;
+      if (len > activeActions.length || len <= startIndex) continue;
+      const matches = entry.actionsSnapshot.every(
+        (snap, i) => snap.ref === activeActions[i] && snap.len === activeActions[i].length,
+      );
+      if (matches) {
+        startIndex = len;
+        shadow = entry.shadow;
+      }
+    }
+
+    for (let i = startIndex; i < activeActions.length; i += 1) {
+      shadow = virtualApply(shadow, activeActions[i]);
+    }
+
+    // Cache the full-prefix result for future calls. Cap growth: keep only
+    // the most recent few prefixes (verifier cycles are bounded by
+    // maxVerifierCycles, subtask iterations by MAX_ITERATIONS_PER_SUBTASK —
+    // neither is large, so an unbounded cache here would still be small, but
+    // capping keeps memory flat instead of growing with cycle count).
+    cacheEntries.push({
+      actionsSnapshot: activeActions.map((ref) => ({ ref, len: ref.length })),
+      shadow,
+    });
+    if (cacheEntries.length > 8) {
+      cacheEntries.shift();
+    }
+
     return shadow;
   }
 
-  private enrichContextFromShadow(shadow: ShadowWorkbook): WorkbookContext {
+  /**
+   * `relevantSheetNames`, when provided, scopes the (relatively expensive,
+   * full-formula-walk) analyzeSheet() call to just those sheets — used by the
+   * per-subtask Executor context (line ~827) where only the subtask's own
+   * target sheet matters. Left undefined (all sheets analyzed) for the
+   * whole-batch Verifier context (line ~252), which legitimately needs
+   * cross-sheet visibility to catch things like "a dashboard chart pointing
+   * at a sheet nobody actually touched" — narrowing that path risks a real
+   * regression in verification coverage, not just a perf change.
+   */
+  private enrichContextFromShadow(
+    shadow: ShadowWorkbook,
+    relevantSheetNames?: Set<string>,
+  ): WorkbookContext {
     const context = shadowToWorkbookContext(shadow);
     return {
       ...context,
-      sheets: context.sheets.map((sheet) => ({
-        ...sheet,
-        formulaInsights: this.formulaAnalyzer.analyzeSheet(sheet),
-      })),
+      sheets: context.sheets.map((sheet) =>
+        !relevantSheetNames || relevantSheetNames.has(sheet.name)
+          ? { ...sheet, formulaInsights: this.formulaAnalyzer.analyzeSheet(sheet) }
+          : sheet,
+      ),
     };
+  }
+
+  /**
+   * Perf #71 (companion to #70's identical scoping in conversation.service.ts):
+   * an Executor call for one subtask only needs formula insight for that
+   * subtask's own target sheet, plus any other sheet its description names
+   * (covers cross-sheet formula subtasks, e.g. the Monthly Totals table
+   * writing SUMIF formulas that reference each month sheet by name). Every
+   * OTHER sheet in a large workbook (e.g. 11 other month sheets) previously
+   * paid analyzeSheet()'s full-formula-walk cost on every Executor iteration
+   * for no reason — nothing in that subtask's own prompt ever reads it.
+   */
+  private resolveSubtaskRelevantSheets(
+    subtask: SubTask,
+    context: WorkbookContext,
+  ): Set<string> {
+    const relevant = new Set<string>([subtask.targetSheet]);
+    for (const sheet of context.sheets) {
+      if (sheet.name && subtask.description.includes(sheet.name)) {
+        relevant.add(sheet.name);
+      }
+    }
+    return relevant;
   }
 
   private flattenActions(states: SubtaskActionState[]): Action[] {

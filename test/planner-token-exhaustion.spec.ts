@@ -218,3 +218,164 @@ describe('OpenRouterService reasoning_token_exhaustion alert', () => {
     );
   });
 });
+
+/**
+ * Regression: a Planner plan cut off by the token budget usually still PARSES —
+ * the model closes the JSON around whatever it had emitted — so parse success
+ * alone never proved the plan was complete.
+ *
+ * Real incident (Aug 25 2026 study, Trial 1): a 16-subtask plan was truncated
+ * mid-`s16`; the raw output ended `D1 ="}]}`, parsed cleanly, the malformed s16
+ * was silently dropped to 15, and the subtask that the planner prompt requires
+ * AFTER the KPI row (the consolidated-transactions header) was never generated
+ * at all. Nothing downstream noticed: fallback=false, retried=false, and the
+ * completeness checker compares actions against estimatedActions taken from
+ * this same short plan.
+ */
+describe('PlannerAgent truncation detection', () => {
+  function buildAgent(completeImpl: jest.Mock): PlannerAgent {
+    const llm = { complete: completeImpl } as unknown as OpenRouterService;
+    const config = { openRouterModelHigh: 'openai/gpt-5' } as unknown as AppConfigService;
+    return new PlannerAgent(llm, config);
+  }
+
+  const goodPlan = JSON.stringify({
+    subtasks: [
+      {
+        id: 's1',
+        description: 'Create chart on Dashboard',
+        targetSheet: 'Dashboard',
+        dependsOn: [],
+        estimatedActions: 2,
+      },
+    ],
+    clarificationsNeeded: [],
+    confidence: 'high',
+    reasoning: 'ok',
+  });
+
+  it('retries when the first completion was truncated, even though it parsed fine', async () => {
+    const complete = jest
+      .fn()
+      // First call: valid, parseable JSON — but the provider says it ran out of
+      // budget. Must NOT be accepted just because it parses.
+      .mockImplementationOnce((opts: { outcome?: { truncated?: boolean } }) => {
+        if (opts.outcome) opts.outcome.truncated = true;
+        return Promise.resolve(goodPlan);
+      })
+      .mockImplementationOnce((opts: { outcome?: { truncated?: boolean } }) => {
+        if (opts.outcome) opts.outcome.truncated = false;
+        return Promise.resolve(goodPlan);
+      });
+
+    const agent = buildAgent(complete);
+    const plan = await agent.plan(
+      DASHBOARD_PROMPT,
+      nonEmptyContext(),
+      [],
+      undefined,
+      'corr_trunc_1',
+      undefined,
+      3,
+    );
+
+    expect(complete).toHaveBeenCalledTimes(2);
+    expect(plan.subtasks).toHaveLength(1);
+  });
+
+  it('accepts a parseable plan untouched when nothing was truncated', async () => {
+    const complete = jest
+      .fn()
+      .mockImplementation((opts: { outcome?: { truncated?: boolean } }) => {
+        if (opts.outcome) opts.outcome.truncated = false;
+        return Promise.resolve(goodPlan);
+      });
+
+    const agent = buildAgent(complete);
+    await agent.plan(
+      DASHBOARD_PROMPT,
+      nonEmptyContext(),
+      [],
+      undefined,
+      'corr_trunc_2',
+      undefined,
+      3,
+    );
+
+    // No truncation => no retry ladder.
+    expect(complete).toHaveBeenCalledTimes(1);
+  });
+
+  it('passes an outcome out-param on every planner completion call', async () => {
+    const complete = jest
+      .fn()
+      .mockImplementation((opts: { outcome?: { truncated?: boolean } }) => {
+        if (opts.outcome) opts.outcome.truncated = false;
+        return Promise.resolve(goodPlan);
+      });
+
+    const agent = buildAgent(complete);
+    await agent.plan(
+      DASHBOARD_PROMPT,
+      nonEmptyContext(),
+      [],
+      undefined,
+      'corr_trunc_3',
+      undefined,
+      3,
+    );
+
+    const firstCall = complete.mock.calls[0][0] as { outcome?: unknown };
+    expect(firstCall.outcome).toBeDefined();
+  });
+
+  it('warns instead of silently dropping a malformed subtask (the 16 -> 15 case)', async () => {
+    // Exactly the Trial 1 shape: last subtask cut mid-generation, so it has an
+    // id + partial description but no targetSheet.
+    const truncatedShapePlan = JSON.stringify({
+      subtasks: [
+        {
+          id: 's1',
+          description: 'Create January sheet',
+          targetSheet: 'January',
+          dependsOn: [],
+          estimatedActions: 1,
+        },
+        { id: 's2', description: 'On Main KPI rows, write labels: A1 = "Dashboard", D1 =' },
+      ],
+      clarificationsNeeded: [],
+      confidence: 'high',
+      reasoning: 'ok',
+    });
+
+    const complete = jest
+      .fn()
+      .mockImplementation((opts: { outcome?: { truncated?: boolean } }) => {
+        if (opts.outcome) opts.outcome.truncated = false;
+        return Promise.resolve(truncatedShapePlan);
+      });
+
+    const agent = buildAgent(complete);
+    const warnSpy = jest
+      .spyOn((agent as unknown as { logger: { warn: (m: string) => void } }).logger, 'warn')
+      .mockImplementation(() => undefined);
+
+    const plan = await agent.plan(
+      DASHBOARD_PROMPT,
+      nonEmptyContext(),
+      [],
+      undefined,
+      'corr_trunc_4',
+      undefined,
+      3,
+    );
+
+    // The malformed subtask is still excluded (it cannot be executed) ...
+    expect(plan.subtasks).toHaveLength(1);
+    // ... but the drop is now reported rather than silent.
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('malformed and dropped'),
+    );
+    warnSpy.mockRestore();
+  });
+});

@@ -4,6 +4,7 @@ import {
   WorkflowTrace,
   WorkflowTraceSchema,
 } from '../common/logging/schemas/workflow-trace.schema';
+import { ContextCacheModule } from '../common/cache/context-cache.module';
 import { LoggingModule } from '../common/logging/logging.module';
 import { Conversation, ConversationSchema } from '../excel-ai/schemas/conversation.schema';
 import { AuditController } from './audit.controller';
@@ -17,10 +18,12 @@ import { AuditLog, AuditLogSchema } from './schemas/audit-log.schema';
 import { ChangeSet, ChangeSetSchema } from './schemas/change-set.schema';
 import { Checkpoint, CheckpointSchema } from './schemas/checkpoint.schema';
 import { TierAMetricsService } from './tier-a-metrics.service';
+import { PerformanceMetricsService } from './performance-metrics.service';
 
 @Module({
   imports: [
     LoggingModule,
+    ContextCacheModule,
     MongooseModule.forFeature([
       { name: AuditEntry.name, schema: AuditEntrySchema },
       { name: AuditLog.name, schema: AuditLogSchema },
@@ -34,8 +37,20 @@ import { TierAMetricsService } from './tier-a-metrics.service';
       { name: WorkflowTrace.name, schema: WorkflowTraceSchema },
     ]),
   ],
-  providers: [AuditService, ChangeSetService, CheckpointService, TierAMetricsService],
+  providers: [
+    AuditService,
+    ChangeSetService,
+    CheckpointService,
+    TierAMetricsService,
+    PerformanceMetricsService,
+  ],
   controllers: [AuditController, ChangeSetController, CheckpointController],
-  exports: [AuditService, ChangeSetService, CheckpointService, TierAMetricsService],
+  exports: [
+    AuditService,
+    ChangeSetService,
+    CheckpointService,
+    TierAMetricsService,
+    PerformanceMetricsService,
+  ],
 })
 export class AuditModule {}

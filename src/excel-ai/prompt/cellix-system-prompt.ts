@@ -7,8 +7,23 @@ import {
 import { WorkbookContext } from '../types/sheet-actions.types';
 import { formatWorkbookContextForPrompt } from '../utils/workbook-context.util';
 
-export function buildCellixSystemPrompt(ctx: WorkbookContext, sheetIsEmpty = false): string {
-  return `${CORE_IDENTITY}
+/**
+ * Memoized static prompt sections (built once per process, reused across requests).
+ * The only per-request variable is the WorkbookContext and sheetIsEmpty flag.
+ */
+const staticPromptCache = new Map<string, string>();
+
+/**
+ * Get or build the static (non-context-dependent) portion of the prompt.
+ * Cached and keyed by empty-sheet state to avoid rebuilding on every request.
+ */
+function getStaticPromptSection(sheetIsEmpty: boolean): string {
+  const key = `static_${sheetIsEmpty ? 'empty' : 'data'}`;
+  if (staticPromptCache.has(key)) {
+    return staticPromptCache.get(key)!;
+  }
+
+  const section = `${CORE_IDENTITY}
 
 ${AI_FIRST_RULES}
 
@@ -17,8 +32,6 @@ ${INTENT_CLASSIFICATION}
 ${CONVERSATIONAL_RULES}
 
 ${sheetIsEmpty ? EMPTY_SHEET_RULES : ''}
-
-${formatWorkbookContextForPrompt(ctx)}
 
 ${ACTION_TYPES}
 
@@ -31,6 +44,17 @@ ${FORMULA_REFERENCE}
 ${INDIAN_CA_RULES}
 
 ${RESPONSE_FORMAT}`;
+
+  staticPromptCache.set(key, section);
+  return section;
+}
+
+export function buildCellixSystemPrompt(ctx: WorkbookContext, sheetIsEmpty = false): string {
+  const staticSection = getStaticPromptSection(sheetIsEmpty);
+  const contextSection = formatWorkbookContextForPrompt(ctx);
+  return `${staticSection}
+
+${contextSection}`;
 }
 
 const AI_FIRST_RULES = `AI-FIRST BEHAVIOUR (like Cursor for Excel):

@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { MongooseModule } from '@nestjs/mongoose';
 import { AgentsModule } from '../agents/agents.module';
 import { AuditModule } from '../audit/audit.module';
+import { ContextCacheModule } from '../common/cache/context-cache.module';
 import { LoggingModule } from '../common/logging/logging.module';
 import { AppConfigModule } from '../config/app-config.module';
 import { FormulaModule } from '../formula/formula.module';
@@ -9,7 +10,6 @@ import { LlmModule } from '../llm/llm.module';
 import { ConversationController } from './conversation.controller';
 import { Conversation, ConversationSchema } from './schemas/conversation.schema';
 import { ConversationEngineService } from './services/conversation-engine.service';
-import { ContextCacheService } from './services/context-cache.service';
 import { ConversationService } from './services/conversation.service';
 import { FindExportService } from './services/find-export.service';
 import { DataQueryService } from './services/data-query.service';
@@ -25,6 +25,7 @@ import { Tier2GenerateVerifyService } from './services/tier2-generate-verify.ser
   imports: [
     AppConfigModule,
     AuditModule,
+    ContextCacheModule,
     LoggingModule,
     LlmModule,
     FormulaModule,
@@ -35,7 +36,6 @@ import { Tier2GenerateVerifyService } from './services/tier2-generate-verify.ser
   providers: [
     ConversationService,
     ConversationEngineService,
-    ContextCacheService,
     SheetAnalyzerService,
     IntentClassifierService,
     LlmRouterService,
