@@ -207,6 +207,13 @@ const FIELD_FIXTURES: Record<SheetActionType, Record<string, unknown>> = {
     hasHeaders: true,
     columnName: 'Amount',
   },
+  SET_RANGE_VALUES: {
+    type: 'SET_RANGE_VALUES',
+    sheetName: 'Dashboard',
+    range: 'A2:B4',
+    operations: [{ address: 'A2', value: 'x' }],
+    explicitOverwriteConfirmed: true,
+  },
   COPY_FILTERED_RANGE: {
     type: 'COPY_FILTERED_RANGE',
     sourceSheet: 'Purchase Register',

@@ -279,6 +279,62 @@ export function beforeStateToInverseActions(
   return actions;
 }
 
+/**
+ * TASKS.md #100 — fast bulk alternative to `beforeStateToInverseActions`: one
+ * `SET_RANGE_VALUES` per sheet (bounding rectangle of every touched cell on
+ * that sheet, sparse per-cell corrections inside it) instead of one
+ * `SET_CELL`/`SET_FORMULA` per touched cell. For a sort revert touching
+ * hundreds of cells, that's hundreds of separate Office.js round trips
+ * collapsed into one bulk read+write per sheet.
+ *
+ * Only used for change sets with `hasFrontendReportedChanges` (TASKS.md #99)
+ * — those already skip shadow self-verification, so there's no forward-replay
+ * step that needs cell-by-cell inverse actions to reason about. Returns
+ * `null` (falls back to the per-cell path) if any touched cell's captured
+ * "before" was a formula: `SET_RANGE_VALUES` only writes plain values in one
+ * shot, and this caller (currently only SORT_RANGE's frontend-reported diff)
+ * never captures formulas anyway, so `null` here would mean something
+ * unexpected is going on, not a real formula-restoring gap being silently
+ * dropped.
+ */
+export function beforeStateToBulkInverseActions(
+  beforeState: Record<string, CellSnapshot>,
+  changes: CellChange[],
+): Action[] | null {
+  const touched = new Set(changes.map((c) => cellKey(c.sheet, c.cell)));
+  const bySheet = new Map<string, { row: number; col: number; address: string; value: unknown }[]>();
+
+  for (const key of touched) {
+    const { sheet, address } = parseCellKey(key);
+    const snapshot = beforeState[key];
+    if (snapshot?.formula && snapshot.formula.startsWith('=')) return null;
+
+    const row = Number.parseInt(address.replace(/[A-Z]+/i, ''), 10) - 1;
+    const col = letterToColIndex(address.replace(/\d+/g, ''));
+    if (!bySheet.has(sheet)) bySheet.set(sheet, []);
+    bySheet.get(sheet)!.push({ row, col, address, value: snapshot ? snapshot.value : null });
+  }
+
+  const actions: Action[] = [];
+  for (const [sheet, cells] of bySheet) {
+    const minRow = Math.min(...cells.map((c) => c.row));
+    const maxRow = Math.max(...cells.map((c) => c.row));
+    const minCol = Math.min(...cells.map((c) => c.col));
+    const maxCol = Math.max(...cells.map((c) => c.col));
+    const range = `${colIndexToLetter(minCol)}${minRow + 1}:${colIndexToLetter(maxCol)}${maxRow + 1}`;
+
+    actions.push({
+      type: 'SET_RANGE_VALUES',
+      sheetName: sheet,
+      range,
+      operations: cells.map((c) => ({ address: c.address, value: c.value })),
+      explicitOverwriteConfirmed: true,
+    } as Action);
+  }
+
+  return actions;
+}
+
 interface StructuralCellSnapshot {
   address: string;
   value: unknown;

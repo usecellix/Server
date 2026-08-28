@@ -112,6 +112,11 @@ export const VIRTUAL_APPLY_CATALOG: Record<SheetActionType, VirtualApplyCatalogE
     reason:
       'Not advertised to the Executor (action-catalog.ts routes single-cell clears through CLEAR_CONTENT) — unreachable in practice today, flagged rather than silently assumed safe.',
   },
+  SET_RANGE_VALUES: {
+    simulated: false,
+    reason:
+      'Revert-only bulk inverse (TASKS.md #100) — only ever built for change sets whose revert already skips shadow self-verification entirely (hasFrontendReportedChanges, TASKS.md #99), so nothing needs to dry-run it here.',
+  },
 
   // CLEAR_CONTENT, CLEAR_ALL, SET_MATCHING_ROWS, and MERGE_CELLS were found
   // as real gaps during #41's audit (they mutate values/structure but had no

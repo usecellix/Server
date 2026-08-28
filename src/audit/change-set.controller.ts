@@ -9,6 +9,7 @@ import {
 } from '@nestjs/common';
 import { ChangeSetService } from './change-set.service';
 import { RevertVerificationError } from './errors/revert-verification.error';
+import { CellChange } from './types/change-set.types';
 
 @Controller('audit')
 export class ChangeSetController {
@@ -20,16 +21,23 @@ export class ChangeSetController {
     // TASKS.md #40/#15 — optional, since most apply calls carry no CONDITIONAL_FORMAT
     // or CREATE_CHART creates at all. `{}` (the frontend's existing empty-body
     // convention) has neither key, so both stay undefined for those calls.
+    // TASKS.md #93 — sortedRangeChanges: the real before/after cell diff for a
+    // SORT_RANGE, read directly off Excel by the frontend. The backend's own
+    // shadow-workbook diff deliberately skips sparse ranges (virtualApply.ts),
+    // so without this, sort's change set can land with 0 recorded changes even
+    // though the sheet genuinely changed — leaving Revert with nothing to undo.
     @Body()
     body?: {
       createdConditionalFormatIds?: { sheetName: string; range: string; ruleId: string }[];
       createdChartIds?: { sheetName: string; sourceRange: string; chartId: string }[];
+      sortedRangeChanges?: CellChange[];
     },
   ) {
     const changeSet = await this.changeSetService.markApplied(
       changeSetId,
       body?.createdConditionalFormatIds,
       body?.createdChartIds,
+      body?.sortedRangeChanges,
     );
     return { changeSet };
   }

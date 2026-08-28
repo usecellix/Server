@@ -141,6 +141,21 @@ export class ChangeSet {
 
   @Prop({ type: Number, required: false })
   provenanceConfidence?: number;
+
+  /**
+   * TASKS.md #99 — true once any part of `changes`/`beforeState` came from a
+   * frontend-reported real Excel read (`markApplied`'s `frontendChanges`
+   * param, e.g. SORT_RANGE on a non-sparse range) rather than the backend's
+   * own shadow-workbook diff. Revert's forward-replay self-verification
+   * assumes `virtualApply` can accurately re-simulate every action type — a
+   * false assumption for exactly the actions that needed a frontend-reported
+   * fallback in the first place — so that check is skipped for change sets
+   * carrying this flag; the frontend-reported data is ground truth already,
+   * re-deriving and comparing against a simulation of it adds no real safety
+   * and produces false "would not converge" refusals.
+   */
+  @Prop({ type: Boolean, default: false })
+  hasFrontendReportedChanges?: boolean;
 }
 
 export const ChangeSetSchema = SchemaFactory.createForClass(ChangeSet);

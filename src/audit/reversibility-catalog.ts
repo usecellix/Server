@@ -49,6 +49,12 @@ export const REVERSIBILITY_CATALOG: Record<SheetActionType, ReversibilityCatalog
   AGGREGATE_TABLE: { reversible: true }, // writes new aggregate cells, append pattern
   WRITE_TABLE: { reversible: true },
 
+  SET_RANGE_VALUES: {
+    reversible: false,
+    reason:
+      'Revert-only bulk inverse (not advertised to the Executor — see action-catalog.ts). If ever applied as a forward action directly, nothing captures the prior range values to build a further revert from.',
+  },
+
   // ---- Structural: dedicated inverse-action construction in diff.engine.ts's
   // captureStructuralOps()/structuralOpsToInverseActions() ----
   ADD_SHEET: { reversible: true }, // TASKS.md #12

@@ -10,6 +10,7 @@ import { buildShadowWorkbook } from '../virtual/shadowWorkbook';
 import { virtualApply } from '../virtual/virtualApply';
 import { CheckpointService } from './checkpoint.service';
 import {
+  beforeStateToBulkInverseActions,
   beforeStateToInverseActions,
   captureStructuralOps,
   computeUnintendedChanges,
@@ -152,6 +153,19 @@ export class ChangeSetService {
     changeSetId: string,
     createdConditionalFormatIds?: { sheetName: string; range: string; ruleId: string }[],
     createdChartIds?: { sheetName: string; sourceRange: string; chartId: string }[],
+    /**
+     * TASKS.md #93 — the real before/after cell diff for a SORT_RANGE, read
+     * directly off Excel by the frontend (which sees the actual sheet, not a
+     * possibly-partial shadow copy of it). `virtualApply.ts`'s `virtualSortRange`
+     * deliberately skips simulating a sort on a sparse range (mixed blank/filled
+     * cells) rather than risk a garbage diff, so `createPreview`'s shadow-based
+     * `changes`/`beforeState` for that change set can be empty even though the
+     * real sheet was genuinely reordered. When present, this is authoritative —
+     * it reflects what Excel actually did, not an approximation from before the
+     * real apply — and is merged into `changes`/`beforeState` here so Revert
+     * has real data to build an inverse from.
+     */
+    frontendChanges?: CellChange[],
   ): Promise<ChangeSetRecord> {
     const existing = await this.changeSetModel.findOne({ changeSetId }).exec();
     if (existing?.status === 'applied') {
@@ -182,6 +196,32 @@ export class ChangeSetService {
         }
         return op;
       });
+    }
+
+    if (existing && frontendChanges && frontendChanges.length > 0) {
+      const changeKey = (c: { sheet: string; cell: string }) => `${c.sheet}!${c.cell}`;
+      const existingChanges = (existing.changes ?? []) as unknown as CellChange[];
+      const mergedChanges = new Map(existingChanges.map((c) => [changeKey(c), c]));
+      for (const change of frontendChanges) {
+        mergedChanges.set(changeKey(change), change);
+      }
+      update.changes = Array.from(mergedChanges.values());
+
+      const existingBeforeState = (existing.beforeState ?? {}) as Record<
+        string,
+        { value: unknown; formula: string; format: string }
+      >;
+      const beforeStateAdditions: Record<string, { value: unknown; formula: string; format: string }> =
+        {};
+      for (const change of frontendChanges) {
+        beforeStateAdditions[changeKey(change)] = {
+          value: change.before,
+          formula: '',
+          format: 'General',
+        };
+      }
+      update.beforeState = { ...existingBeforeState, ...beforeStateAdditions };
+      update.hasFrontendReportedChanges = true;
     }
 
     const doc = await this.changeSetModel.findOneAndUpdate(
@@ -221,7 +261,16 @@ export class ChangeSetService {
 
     const beforeState = doc.beforeState as Record<string, { value: unknown; formula: string; format: string }>;
     const changes = doc.changes as CellChange[];
-    const cellInverseActions = beforeStateToInverseActions(beforeState, changes);
+    // TASKS.md #100 — a bulk per-sheet SET_RANGE_VALUES instead of one
+    // SET_CELL per touched cell, when it's safe to (see #99: only change
+    // sets whose beforeState already skips shadow self-verification, so
+    // there's no forward-replay step that needs per-cell granularity).
+    // Falls back to the per-cell path if the bulk builder declines (a real
+    // formula was captured, which SET_RANGE_VALUES can't restore).
+    const bulkInverseActions = doc.hasFrontendReportedChanges
+      ? beforeStateToBulkInverseActions(beforeState, changes)
+      : null;
+    const cellInverseActions = bulkInverseActions ?? beforeStateToInverseActions(beforeState, changes);
     const structuralOps = (doc.structuralOps ?? []) as unknown as StructuralOp[];
     const { pre, post } = structuralOpsToInverseActions(structuralOps);
     const inverseActions = [...pre, ...cellInverseActions, ...post];
@@ -229,16 +278,34 @@ export class ChangeSetService {
     // Fail-closed self-verification (TASKS.md #19): dry-run the inverse against a shadow
     // rebuilt from beforeState + the original forward actions, and refuse the revert
     // entirely — never partially — if the result doesn't converge back to beforeState.
-    const expectedShadow = shadowFromBeforeState(beforeState);
-    const originalActions = doc.actions as unknown as Action[];
-    const currentShadow = virtualApply(expectedShadow, originalActions);
-    const revertedShadow = virtualApply(currentShadow, inverseActions);
-    const blockingChanges = diffShadowsFully(expectedShadow, revertedShadow);
-    if (blockingChanges.length > 0) {
-      this.logger.warn(
-        `Change set ${changeSetId} revert refused — ${blockingChanges.length} cell(s) would not converge`,
+    //
+    // TASKS.md #99 — skipped when `hasFrontendReportedChanges` is set. That flag means
+    // part of this change set's `changes`/`beforeState` came from a real Excel read
+    // (e.g. SORT_RANGE on a non-sparse range, per #93) rather than the backend's own
+    // shadow diff. This check's "replay the ORIGINAL action forward on a reconstructed
+    // shadow" step only reconstructs the cells that actually changed (beforeState is
+    // deliberately not a full-range snapshot — see #93's notes on why), so replaying a
+    // SORT on that partial reconstruction reorders garbage in the untouched cells and
+    // reports them as "not converging" even though `cellInverseActions` — an absolute
+    // write of the real captured before-value per changed cell — is already correct on
+    // its own. Re-deriving and comparing against an admittedly-approximate simulation
+    // of ground-truth data adds no real safety here, only false refusals.
+    if (!doc.hasFrontendReportedChanges) {
+      const expectedShadow = shadowFromBeforeState(beforeState);
+      const originalActions = doc.actions as unknown as Action[];
+      const currentShadow = virtualApply(expectedShadow, originalActions);
+      const revertedShadow = virtualApply(currentShadow, inverseActions);
+      const blockingChanges = diffShadowsFully(expectedShadow, revertedShadow);
+      if (blockingChanges.length > 0) {
+        this.logger.warn(
+          `Change set ${changeSetId} revert refused — ${blockingChanges.length} cell(s) would not converge`,
+        );
+        throw new RevertVerificationError(changeSetId, blockingChanges);
+      }
+    } else {
+      this.logger.log(
+        `Change set ${changeSetId} revert skipping shadow self-verification — beforeState includes frontend-reported ground truth`,
       );
-      throw new RevertVerificationError(changeSetId, blockingChanges);
     }
 
     doc.status = 'reverted';

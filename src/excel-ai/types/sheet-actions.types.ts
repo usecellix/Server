@@ -88,6 +88,7 @@ export type SheetActionType =
   | 'CHECKPOINT'
   | 'ADD_SHEET'
   | 'SORT_RANGE'
+  | 'SET_RANGE_VALUES'
   | 'COPY_FILTERED_RANGE'
   | 'FORMAT_MATCHING_ROWS'
   | 'SET_MATCHING_ROWS'

@@ -57,6 +57,10 @@ const ACTION_CATALOG: Record<SheetActionType, CatalogEntry> = {
   FILL_RIGHT: { advertise: true },
   MERGE_CELLS: { advertise: true },
   SORT_RANGE: { advertise: true },
+  SET_RANGE_VALUES: {
+    advertise: false,
+    reason: 'Revert-only bulk inverse (TASKS.md #100, fast-path for large reverts like undoing a SORT_RANGE) — not something the Executor should propose directly.',
+  },
   MOVE_RANGE: { advertise: true },
   COPY_FILTERED_RANGE: { advertise: true },
   FORMAT_MATCHING_ROWS: { advertise: true },
