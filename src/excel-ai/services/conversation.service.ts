@@ -96,6 +96,12 @@ import {
   isAffirmationMessage,
   shouldStorePendingWritePlan,
 } from '../utils/pending-write-plan.util';
+import {
+  classifyLlmFailure,
+  describeLlmFailureForStatus,
+  type LlmFailure,
+} from '../utils/llm-failure-message.util';
+import { annotateAnswerConsistency } from '../utils/answer-consistency.util';
 import { WorkflowTraceService } from '../../common/logging/workflow-trace.service';
 import type { WorkflowTraceStatus } from '../../common/logging/schemas/workflow-trace.schema';
 
@@ -506,6 +512,8 @@ export class ConversationService {
     const emit = (event: string, data: Record<string, unknown>) =>
       writeSseEvent(reply, event, { ...data, conversationId });
     let localReason = this.engine.hasOpenAi() ? 'llm_not_used' : 'no_llm_provider';
+    /** Set when an LLM call failed, so local copy can name the real cause (F11). */
+    let llmFailure: LlmFailure | undefined;
 
     this.startWorkflowTrace({
       traceId,
@@ -751,11 +759,35 @@ export class ConversationService {
           }
           const reason = error instanceof Error ? error.message : 'AI provider unavailable';
           localReason = `llm_fallback:${this.clipForLog(reason, 120)}`;
-          this.logger.warn(`LLM unavailable, using local engine: ${reason}`);
-          emit('status', { message: 'AI unavailable — limited local mode…' });
+          // F11: keep the provider's own diagnosis instead of discarding it — the
+          // local engine must not blame the user's API key for a 402/429/timeout.
+          llmFailure = classifyLlmFailure(
+            error instanceof LlmRequestError ? error.status : undefined,
+            reason,
+            true,
+          );
+          this.logger.warn(
+            `LLM unavailable (${llmFailure.kind}), using local engine: ${reason}`,
+          );
+          // Task #92: persist WHY, not just that it happened — requests.log records
+          // SSE events only, so the cause was previously terminal-only.
+          this.workflowTrace.appendNode(traceId, {
+            id: `llm_fail_${Date.now()}`,
+            type: 'error',
+            label: `LLM call failed (${llmFailure.kind})`,
+            status: 'failed',
+            meta: {
+              kind: llmFailure.kind,
+              status: llmFailure.status ?? null,
+              detail: this.clipForLog(reason, 300),
+              recoverable: true,
+            },
+          });
+          emit('status', { message: describeLlmFailureForStatus(llmFailure) });
         }
       } else {
-        emit('status', { message: 'AI not configured — set OPENROUTER_API_KEY in backend .env' });
+        llmFailure = classifyLlmFailure(undefined, undefined, false);
+        emit('status', { message: describeLlmFailureForStatus(llmFailure) });
       }
 
       const decision = this.engine.decide(
@@ -764,6 +796,7 @@ export class ConversationService {
         analysis,
         history,
         resolveEngineWorkbookMeta(activeRequest),
+        llmFailure,
       );
       this.logger.log(
         `AI skipped trace=${traceId} conversation=${conversationId} provider=local reason=${localReason} result=${decision.kind} durationMs=${Date.now() - startedAt}`,
@@ -2603,6 +2636,20 @@ export class ConversationService {
       if (readOnly && structured?.kind === 'actions') {
         structured.answer = sanitizeAskAnswer(structured.answer);
       }
+      // Task #90: an answer that contradicts its own arithmetic (pre-tax + tax !=
+      // total) must not be presented as fact. Applies in every mode — a wrong
+      // figure is just as damaging when it accompanies a write.
+      if (structured?.kind === 'answer' || structured?.kind === 'actions') {
+        const consistency = annotateAnswerConsistency(structured.answer);
+        if (consistency.issue) {
+          this.logger.warn(
+            `Answer self-inconsistency trace=${traceId} conversation=${conversationId} ` +
+              `kind=${consistency.issue.kind} parts=${consistency.issue.parts.join('/')} ` +
+              `expected=${consistency.issue.expected} stated=${consistency.issue.stated}`,
+          );
+          structured.answer = consistency.answer;
+        }
+      }
       const fallbackText = fullText.trim() || 'I could not generate a response.';
       if (structured?.kind === 'actions') {
         actionsCount = structured.actions.length;
@@ -2610,6 +2657,14 @@ export class ConversationService {
       this.logger.log(
         `AI response trace=${traceId} conversation=${conversationId} called=true provider=${telemetry.provider ?? 'unknown'} modelTier=${telemetry.modelTier ?? 'unknown'} model=${telemetry.model ?? 'unknown'} tokens=${this.formatUsage(telemetry)} durationMs=${Date.now() - startedAt} response="${this.clipForLog(fallbackText)}"`,
       );
+      // Task #92: the line above is the ONLY record of provider/model/token counts,
+      // and logger.log output reaches no file logger — task #86 could not be
+      // root-caused until the user pasted it from their terminal by hand. Persist it.
+      this.recordLlmCallTrace(traceId, telemetry, {
+        durationMs: Date.now() - startedAt,
+        emptyResponse: !fullText.trim(),
+        structuredKind: structured?.kind ?? 'none',
+      });
 
       if (!structured) {
         const deterministicTable = readOnly ? null : tryDeterministicTableCreate(request.message);
@@ -3146,6 +3201,46 @@ export class ConversationService {
       { traceId, route: 'shortcut', tier: 0 },
     );
     endSseResponse(reply);
+  }
+
+  /**
+   * Persist LLM call telemetry into the workflow trace (task #92).
+   *
+   * Provider/model/token counts previously existed only in `logger.log` output,
+   * which no file logger captures — so any LLM failure became undiagnosable the
+   * moment the terminal scrolled. Reasoning-token exhaustion (#86) is called out
+   * explicitly because it is invisible in a plain token count: completion tokens
+   * are spent while the returned content is empty.
+   */
+  private recordLlmCallTrace(
+    traceId: string,
+    telemetry: LlmCallTelemetry,
+    outcome: { durationMs: number; emptyResponse: boolean; structuredKind: string },
+  ): void {
+    const usage = telemetry.usage;
+    const completionTokens = usage?.completionTokens ?? 0;
+    const reasoningExhausted = outcome.emptyResponse && completionTokens > 0;
+    this.workflowTrace.appendNode(traceId, {
+      id: `llm_${Date.now()}`,
+      type: outcome.emptyResponse ? 'error' : 'sse_out',
+      label: reasoningExhausted
+        ? 'LLM returned no content (reasoning-token exhaustion)'
+        : 'LLM call',
+      status: outcome.emptyResponse ? 'failed' : 'success',
+      durationMs: outcome.durationMs,
+      meta: {
+        provider: telemetry.provider ?? 'unknown',
+        model: telemetry.model ?? 'unknown',
+        modelTier: telemetry.modelTier ?? 'unknown',
+        promptTokens: usage?.promptTokens ?? null,
+        completionTokens: usage?.completionTokens ?? null,
+        totalTokens: usage?.totalTokens ?? null,
+        reasoningTokens: usage?.reasoningTokens ?? null,
+        emptyResponse: outcome.emptyResponse,
+        reasoningExhausted,
+        structuredKind: outcome.structuredKind,
+      },
+    });
   }
 
   private formatUsage(telemetry: LlmCallTelemetry): string {

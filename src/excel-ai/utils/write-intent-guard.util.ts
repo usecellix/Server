@@ -17,9 +17,25 @@ const READ_INTENT_OVERRIDE =
 const READ_WHICH_QUESTION =
   /\bwhich\s+(is|are|was|were|of|one|ones|columns?|rows?|sheets?|cells?|values?)\b/i;
 
-/** Compound "ask then mutate" — still write-intent despite a read-style opener. */
+/**
+ * Compound "ask then mutate" — still write-intent despite a read-style opener.
+ *
+ * The verb must be IMPERATIVE. F1 (2026-08-27): "...how many invoices are pending
+ * payment and what they add up to" matched on "and ... add" and routed a pure
+ * question to the write planner, which proposed writing KPI formulas into N2:O5.
+ * Requiring "and/then" to be followed directly by the verb (optionally via "also"
+ * or "please") keeps "and then delete the column" while rejecting "and what they
+ * add up to", where the verb belongs to a subordinate clause.
+ */
 const READ_THEN_WRITE =
-  /\b(and|then)\b.*\b(sort|delete|add|highlight|create|build)\b/i;
+  /\b(?:and|then)\s+(?:also\s+|please\s+|then\s+)?(sort|delete|add|highlight|create|build)\b/i;
+
+/**
+ * Verb occurrences that are part of a question, not a command. Checked before the
+ * verb list so a noun-phrase or idiomatic use cannot trip write intent.
+ * e.g. "what they add up to", "which rows add up", "does it add up".
+ */
+const VERB_IN_QUESTION_IDIOM = /\badds?\s+up\b|\badding\s+up\b/i;
 
 /**
  * Multi-sheet / yearly ledger / main dashboard scaffold without explicit create/build verbs.
@@ -65,11 +81,19 @@ export function hasWriteIntent(message: string): boolean {
     return true;
   }
 
+  // A read-style question wins over an incidental verb match. Checked BEFORE
+  // READ_THEN_WRITE so "what ... and what they add up to" stays a question (F1).
+  const looksLikeQuestion =
+    READ_INTENT_OVERRIDE.test(message) || READ_WHICH_QUESTION.test(message);
+  if (looksLikeQuestion && VERB_IN_QUESTION_IDIOM.test(message)) {
+    return false;
+  }
+
   if (READ_THEN_WRITE.test(message)) {
     return true;
   }
 
-  if (READ_INTENT_OVERRIDE.test(message) || READ_WHICH_QUESTION.test(message)) {
+  if (looksLikeQuestion) {
     return false;
   }
 

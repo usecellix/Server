@@ -40,6 +40,10 @@ import {
   localActionWithoutLlmMessage,
   localWriteUnavailableMessage,
 } from '../utils/pending-write-plan.util';
+import {
+  describeLlmFailureForWrite,
+  type LlmFailure,
+} from '../utils/llm-failure-message.util';
 
 export { LlmRequestError, LlmRequestError as OpenAiRequestError } from '../errors/llm-request.error';
 export type { SheetActionPayload };
@@ -92,6 +96,8 @@ export class ConversationEngineService {
     analysis: SheetAnalysis,
     history: ConversationMessageEntry[],
     workbookMeta?: WorkbookContextInput,
+    /** Why the LLM call failed, when it was attempted and threw (F11). */
+    llmFailure?: LlmFailure,
   ): EngineResponse {
     const normalized = message.trim();
     const lower = normalized.toLowerCase();
@@ -200,6 +206,9 @@ export class ConversationEngineService {
     }
 
     if (analysis.isEmpty && this.isPopulateIntent(lower)) {
+      if (llmFailure && llmFailure.kind !== 'not_configured') {
+        return { kind: 'answer', answer: describeLlmFailureForWrite(llmFailure) };
+      }
       return {
         kind: 'question',
         question:
@@ -222,6 +231,12 @@ export class ConversationEngineService {
       this.isWriteIntent(lower) ||
       pendingWritePlan
     ) {
+      // F11: when the LLM was tried and failed, report the PROVIDER's reason —
+      // never the "set OPENROUTER_API_KEY" copy, which is false whenever a key is
+      // present and working (e.g. a 402 out-of-credits).
+      if (llmFailure && llmFailure.kind !== 'not_configured') {
+        return { kind: 'answer', answer: describeLlmFailureForWrite(llmFailure) };
+      }
       return {
         kind: 'answer',
         answer: pendingWritePlan

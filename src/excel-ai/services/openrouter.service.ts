@@ -5,6 +5,11 @@ import { LlmRequestError } from '../errors/llm-request.error';
 import { ModelRouter } from '../llm/model-router';
 import { extractChatContent } from '../utils/extract-chat-content.util';
 import { isReasoningMandatoryError } from '../utils/reasoning-mandatory.util';
+import {
+  computeReasoningMaxTokens,
+  ensureBudgetForReasoning,
+  escalatedRetryBudget,
+} from '../utils/reasoning-budget.util';
 
 export type OpenRouterChatMessage = {
   role: 'system' | 'user' | 'assistant';
@@ -122,7 +127,11 @@ export class OpenRouterService {
             ? this.config.openRouterModelMedium
             : this.config.openRouterModelMedium);
     const budget = opts.maxTokens ?? 1500;
-    const completionBudget = budget;
+    // Reasoning models share the completion budget between thinking and output.
+    // Raise starved budgets and always cap reasoning so content has room. See F5.
+    const completionBudget = ensureBudgetForReasoning(model, budget);
+    const reasoningCap =
+      opts.reasoningMaxTokens ?? computeReasoningMaxTokens(model, completionBudget);
     const requestedEffort = opts.reasoningEffort ?? 'low';
 
     try {
@@ -144,23 +153,31 @@ export class OpenRouterService {
         temperature: opts.temperature ?? 0.2,
         maxCompletionTokens: completionBudget,
         reasoningEffort: requestedEffort,
-        reasoningMaxTokens: opts.reasoningMaxTokens,
+        reasoningMaxTokens: reasoningCap,
         responseFormat: opts.responseFormat ?? 'json_object',
       });
 
       let text = this.extractCompletionText(response);
       if (!text.trim()) {
         this.logEmptyCompletion(model, response, 'first attempt');
+        // The retry MUST differ from the first attempt or it just burns latency
+        // twice for the same result (F5: two identical 4096-token runs = 85s).
+        // Escalate the budget and tighten the reasoning cap so content has room.
         // Prefer low over none — gpt-5 family rejects effort=none.
-        // Keep at least the requested budget; bump slightly if it was tiny.
-        const retryBudget = Math.min(Math.max(completionBudget, 1024), 8192);
+        const retryBudget = escalatedRetryBudget(completionBudget);
+        const retryReasoningCap =
+          computeReasoningMaxTokens(model, retryBudget) ?? reasoningCap;
+        this.logger.warn(
+          `OpenRouter retrying after empty content (model=${model}, ` +
+            `budget ${completionBudget}->${retryBudget}, reasoningCap ${reasoningCap ?? 'none'}->${retryReasoningCap ?? 'none'})`,
+        );
         response = await this.requestChatCompletion(client, {
           model,
           messages: baseMessages,
           temperature: opts.temperature ?? 0.2,
           maxCompletionTokens: retryBudget,
           reasoningEffort: 'low',
-          reasoningMaxTokens: opts.reasoningMaxTokens,
+          reasoningMaxTokens: retryReasoningCap,
           responseFormat: opts.responseFormat ?? 'json_object',
         });
         text = this.extractCompletionText(response);
@@ -225,11 +242,48 @@ export class OpenRouterService {
     }
   }
 
+  /**
+   * Stream a chat completion, retrying once on a transient fault.
+   *
+   * Task #92: the write path previously had no retry at all — one transient error
+   * dropped the user into the local rule engine, which refuses structural writes,
+   * so a blip meant total failure of the request. The retry is only safe before any
+   * token has been yielded; after that a second stream would duplicate output, so
+   * `streamChatOnce` reports whether it emitted anything.
+   */
   async *streamChat(
     messages: OpenRouterChatMessage[],
     telemetry?: LlmCallTelemetry,
     model = this.config.openRouterModelMedium,
     maxTokens = 4096,
+  ): AsyncGenerator<string> {
+    const progress = { yielded: false };
+    try {
+      yield* this.streamChatOnce(messages, telemetry, model, maxTokens, progress);
+      return;
+    } catch (error: unknown) {
+      const status = this.extractStatus(error);
+      const detail = error instanceof Error ? error.message : 'OpenRouter request failed';
+      // A 402 is deliberately NOT retried (see LlmRequestError.isRetryable) — an
+      // empty wallet is still empty a second later, and retrying only doubles the
+      // wait before the same failure.
+      const retryable =
+        new LlmRequestError(status, detail).isRetryable ||
+        this.isTransientNetworkError(error);
+      if (!retryable || progress.yielded) {
+        throw error;
+      }
+      this.logger.warn(`OpenRouter chat retrying once (${status}): ${detail}`);
+    }
+    yield* this.streamChatOnce(messages, telemetry, model, maxTokens);
+  }
+
+  private async *streamChatOnce(
+    messages: OpenRouterChatMessage[],
+    telemetry?: LlmCallTelemetry,
+    model = this.config.openRouterModelMedium,
+    maxTokens = 4096,
+    progress?: { yielded: boolean },
   ): AsyncGenerator<string> {
     const apiKey = this.config.openRouterApiKey;
     if (!apiKey) {
@@ -249,6 +303,17 @@ export class OpenRouterService {
         appTitle: 'Cellix',
       });
 
+      // Reasoning models share maxCompletionTokens between thinking and output.
+      // Without an explicit cap the model can spend the whole budget reasoning and
+      // stream zero content chunks — the F5 incident (85s, empty answer, reported
+      // to the user as a JSON parse failure). Cap reasoning to reserve content room.
+      const completionBudget = ensureBudgetForReasoning(model, maxTokens);
+      const reasoningCap = computeReasoningMaxTokens(model, completionBudget);
+      this.logger.log(
+        `F5-GUARD streamChat model=${model} maxCompletionTokens=${completionBudget} ` +
+          `reasoningCap=${reasoningCap ?? 'none'}`,
+      );
+
       const stream = await client.chat.send({
         chatRequest: {
           model,
@@ -256,20 +321,48 @@ export class OpenRouterService {
           stream: true,
           streamOptions: { includeUsage: true },
           temperature: 0.25,
-          maxCompletionTokens: maxTokens,
+          maxCompletionTokens: completionBudget,
+          ...(reasoningCap
+            ? // SDK typings may omit max_tokens on reasoning — cast for providers that support it.
+              {
+                reasoning: { effort: 'low' as ReasoningEffort, max_tokens: reasoningCap } as {
+                  effort: ReasoningEffort;
+                },
+              }
+            : {}),
         },
       });
 
+      let streamedChars = 0;
+      let lastUsage: LlmUsage | undefined;
       for await (const chunk of stream) {
         const usage = this.normalizeUsage((chunk as { usage?: Record<string, unknown> }).usage);
-        if (usage && telemetry) {
-          telemetry.usage = usage;
+        if (usage) {
+          lastUsage = usage;
+          if (telemetry) {
+            telemetry.usage = usage;
+          }
         }
 
         const content = chunk.choices?.[0]?.delta?.content;
         if (typeof content === 'string' && content.length > 0) {
+          streamedChars += content.length;
+          // Mark before yielding: once a token is downstream, retrying would duplicate it.
+          if (progress) progress.yielded = true;
           yield content;
         }
+      }
+
+      // Spec 16 / F5: a "successful" stream that produced no content at all is a
+      // reasoning-token exhaustion, not a parse problem. Make it visible.
+      if (streamedChars === 0) {
+        const completionTokens = lastUsage?.completionTokens ?? 0;
+        const reasoningTokens = lastUsage?.reasoningTokens ?? 0;
+        this.logger.error(
+          `ALERT reasoning_token_exhaustion (stream) model=${model} ` +
+            `maxCompletionTokens=${completionBudget} reasoningCap=${reasoningCap ?? 'none'} ` +
+            `completionTokens=${completionTokens} reasoningTokens=${reasoningTokens}`,
+        );
       }
     } catch (error: unknown) {
       const status = this.extractStatus(error);

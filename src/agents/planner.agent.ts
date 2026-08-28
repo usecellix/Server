@@ -352,7 +352,7 @@ export class PlannerAgent {
       confidence: 'low',
       clarificationsNeeded: [
         ...plan.clarificationsNeeded,
-        `Your request has multiple steps (${clauses.map((c) => `"${c.slice(0, 60)}"`).join(' and ')}). I only planned ${plan.subtasks.length} step(s). Should I handle both — annotate/filter first, then any column deletion?`,
+        buildMultiClauseClarification(clauses, missing, plan.subtasks.length),
       ],
       reasoning: `${plan.reasoning} [Spec 22: incomplete multi-clause decomposition]`.trim(),
     };
@@ -546,7 +546,32 @@ export class PlannerAgent {
   }
 }
 
-/** Split compound write prompts on and/then/also connectors. */
+/**
+ * Verbs that make a fragment a COMMAND rather than a continuation of a question.
+ * Kept in sync with the write-intent guard's verb list by intent, not by import —
+ * this one is about "is this fragment an instruction", not "does this prompt write".
+ */
+const CLAUSE_COMMAND_VERB =
+  /\b(sort|filter|delete|remove|insert|add|copy|move|bold|highlight|colou?r|format|merge|split|fill|clear|rename|hide|unhide|freeze|protect|create|build|generate|apply|replace|update|change|set|mark|label|flag)\b/i;
+
+/**
+ * Fragments that are questions, not commands — a clause starting this way is the
+ * tail of an interrogative sentence even when it contains a command-shaped verb.
+ * "…and what they add up to" is one clause with the question before it, not two.
+ */
+const CLAUSE_IS_QUESTION =
+  /^(what|which|how|why|when|where|who|whose|whether|if|do|does|did|is|are|was|were|can|could|should|would)\b/i;
+
+/**
+ * Split compound write prompts on and/then/also connectors.
+ *
+ * Task #91 (2026-08-27): splitting on a bare connector treated "…how many invoices
+ * are pending payment **and** what they add up to" as two clauses — a conjunction
+ * joining two objects of one question, not two instructions — and the coverage check
+ * then raised a false multi-clause gap on a read-only prompt. A fragment now counts
+ * as a clause only if it reads as a command: it must contain a command verb and must
+ * not open like a question.
+ */
 export function splitWriteClauses(prompt: string): string[] {
   const normalized = prompt.replace(/\s+/g, ' ').trim();
   if (!normalized) return [];
@@ -554,7 +579,38 @@ export function splitWriteClauses(prompt: string): string[] {
     .split(/\s+(?:and|, and|then|also)\s+/i)
     .map((p) => p.trim())
     .filter((p) => p.length >= 8);
-  return parts.length >= 2 ? parts : [];
+  if (parts.length < 2) return [];
+
+  const commandClauses = parts.filter(
+    (p) => CLAUSE_COMMAND_VERB.test(p) && !CLAUSE_IS_QUESTION.test(p),
+  );
+  // Only a genuine multi-COMMAND prompt can have an incomplete decomposition.
+  return commandClauses.length >= 2 ? commandClauses : [];
+}
+
+/**
+ * Clarification text built from the user's ACTUAL clauses.
+ *
+ * Task #91 (2026-08-27): this string used to be hardcoded to the Spec 22 scenario
+ * it was written for — "Should I handle both — annotate/filter first, then any
+ * column deletion?" — and was emitted verbatim regardless of prompt. A user who
+ * never mentioned deleting anything was asked about column deletion, which reads as
+ * the agent hallucinating destructive intent. Never mention an operation the user
+ * did not ask for.
+ */
+export function buildMultiClauseClarification(
+  clauses: string[],
+  missing: string[],
+  plannedCount: number,
+): string {
+  const quote = (c: string) => `"${c.length > 60 ? `${c.slice(0, 59)}…` : c}"`;
+  const missingList = (missing.length > 0 ? missing : clauses).map(quote).join(' and ');
+  const stepWord = plannedCount === 1 ? 'step' : 'steps';
+  return (
+    `Your request looks like ${clauses.length} separate instructions, but I only ` +
+    `planned ${plannedCount} ${stepWord}. I don't have a plan for ${missingList}. ` +
+    `Should I handle everything you asked for?`
+  );
 }
 
 export function clauseLikelyCovered(clause: string, description: string): boolean {
