@@ -207,6 +207,12 @@ function virtualSetCell(
   formula: string,
   format?: VirtualCellFormat,
 ): void {
+  // Defence in depth for TASKS.md #156: every downstream reader of
+  // `sheet.cells` parses the key with `address.replace(...)`, so a single
+  // undefined address poisons the shadow and throws far from here. Reject it
+  // at the one door every writer goes through, rather than trusting ten
+  // callers to have validated.
+  if (typeof address !== 'string' || !address.trim()) return;
   const sheet = ensureSheet(wb, sheetName);
   const existing = sheet.cells.get(address) ?? {
     value: null,
@@ -252,6 +258,20 @@ function virtualSetFormulaLegacy(wb: ShadowWorkbook, action: Action): void {
 function virtualBatchSet(wb: ShadowWorkbook, action: Action): void {
   if (!action.sheetName || !Array.isArray(action.operations)) return;
   for (const op of action.operations) {
+    // An operation with no usable `address` is malformed model output, not a
+    // cell to simulate. It used to reach `virtualSetCell` and, further down,
+    // `addr.replace(...)` — throwing "Cannot read properties of undefined
+    // (reading 'replace')" and killing the ENTIRE agentic run from one bad
+    // action, mid-loop, before any card was produced.
+    //
+    // This is TASKS.md #131 made fatal: `BATCH_SET` is advertised to the
+    // Executor by name with no schema, so the model periodically guesses its
+    // shape and omits `address`. That the guess is wrong is #131's problem;
+    // that a wrong guess destroys the whole request is this one's. The shadow
+    // workbook must be robust to malformed actions — it exists to catch bad
+    // output, so it cannot itself be the thing that explodes on it.
+    // TASKS.md #156.
+    if (typeof op?.address !== 'string' || !op.address.trim()) continue;
     virtualSetCell(wb, action.sheetName, op.address, op.value ?? null, op.formula ?? '', op.format);
   }
 }

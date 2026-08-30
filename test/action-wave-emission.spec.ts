@@ -100,7 +100,10 @@ describe('ConversationService.createActionWaveChangeSets', () => {
     expect(results[0].wave.actions).toEqual(actions);
   });
 
-  it('creates one ChangeSet per wave, in order, for a mixed create+write batch', async () => {
+  // TASKS.md #141 — a mixed create+write batch is ONE ChangeSet and one Accept
+  // card now. It used to be two, the second gated behind the first; accepting
+  // only the first left the user with created-but-empty sheets.
+  it('creates a single ChangeSet for a mixed create+write batch', async () => {
     const actions: SheetAction[] = [
       { type: 'ADD_SHEET', name: 'January' } as SheetAction,
       { type: 'SET_CELL', sheetName: 'January', row: 0, col: 0, value: 'Unit No' },
@@ -108,28 +111,23 @@ describe('ConversationService.createActionWaveChangeSets', () => {
 
     const results = await callCreateWaveChangeSets(actions);
 
-    expect(createPreview).toHaveBeenCalledTimes(2);
-    expect(results).toHaveLength(2);
-
-    // First call is the structural wave.
-    expect(createPreview.mock.calls[0][0].actions).toEqual([actions[0]]);
-    // Second call is everything else.
-    expect(createPreview.mock.calls[1][0].actions).toEqual([actions[1]]);
-
-    // The two ChangeSets are genuinely distinct — this is what dependsOnChangeSetId chains.
-    expect(results[0].changeSet.changeSetId).not.toBe(results[1].changeSet.changeSetId);
+    expect(createPreview).toHaveBeenCalledTimes(1);
+    expect(results).toHaveLength(1);
+    expect(createPreview.mock.calls[0][0].actions).toEqual(actions);
   });
 
-  it('passes each wave its own actions as provenance sourceRefs input, not the full list', async () => {
+  it('passes the whole batch as provenance sourceRefs input, creates first', async () => {
     const actions: SheetAction[] = [
-      { type: 'ADD_SHEET', name: 'February' } as SheetAction,
       { type: 'SET_FORMULA', sheetName: 'February', row: 0, col: 1, formula: '=A1' },
+      { type: 'ADD_SHEET', name: 'February' } as SheetAction,
     ];
 
     await callCreateWaveChangeSets(actions);
 
-    const secondCallArgs = createPreview.mock.calls[1][0];
-    expect(secondCallArgs.actions).toHaveLength(1);
-    expect(secondCallArgs.actions[0].type).toBe('SET_FORMULA');
+    const callArgs = createPreview.mock.calls[0][0];
+    expect(callArgs.actions).toHaveLength(2);
+    // The create is hoisted ahead of the write that depends on it.
+    expect(callArgs.actions[0].type).toBe('ADD_SHEET');
+    expect(callArgs.actions[1].type).toBe('SET_FORMULA');
   });
 });
