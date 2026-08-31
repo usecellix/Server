@@ -1,11 +1,20 @@
-import { Body, Controller, Get, Headers, Param, Post, Res } from '@nestjs/common';
+import { Body, Controller, Get, Headers, Param, Post, Res, UseGuards } from '@nestjs/common';
 import { FastifyReply } from 'fastify';
 import { TRACE_ID_HEADER } from '../common/constants/trace-id.constant';
 import { SkipEnvelope } from '../common/decorators/skip-envelope.decorator';
+import { AuthGuard } from '../auth/auth.guard';
 import { ConversationRequestDto } from './dto/conversation-request.dto';
 import { ToolResultDto } from './dto/tool-result.dto';
 import { ConversationService } from './services/conversation.service';
 
+/**
+ * Go-live gap (Aug 28, 2026): AuthGuard existed (Mongo-backed, OAuth wired) but was
+ * applied nowhere — this endpoint spends OpenRouter credits per call and was open to
+ * anyone who could reach the URL. The frontend already sends `credentials: 'include'`
+ * on every call (useConversation.ts) and AuthGate/LoginPage already exist — both
+ * sides were built and neither was connected. See TASKS.md go-live entry.
+ */
+@UseGuards(AuthGuard)
 @Controller('excel-ai')
 export class ConversationController {
   constructor(private readonly conversationService: ConversationService) {}
