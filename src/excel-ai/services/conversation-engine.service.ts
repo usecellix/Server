@@ -18,6 +18,14 @@ import {
 import { ConversationMessageEntry } from '../schemas/conversation.schema';
 import { SheetActionPayload } from '../types/sheet-actions.types';
 import { buildWorkbookContext } from '../utils/workbook-context.util';
+import {
+  groupActionsBySheet,
+  resolveSheetHeaderStates,
+  sheetKeyOf,
+  SheetHeaderStates,
+} from '../utils/sheet-header-state.util';
+import { applyPresentationPass } from '../utils/presentation-pass.util';
+import { applyConsolidationPass } from '../utils/consolidation-pass.util';
 import { formatIndianCurrency } from '../utils/indian-format.util';
 import { DataQueryService, FindMatch } from './data-query.service';
 import { IntentClassifierService, intentIsReadOnly } from './intent-classifier.service';
@@ -487,6 +495,8 @@ Sheet has ${analysis.rowCount} rows, ${analysis.columnCount} columns. Next appen
     richWorkbookContext?: RichWorkbookContext,
     userMessage?: string,
     priorTurnActions?: OverwriteTurnActionRecord[],
+    /** Client-probed host capabilities — TASKS.md #152. */
+    excelCapabilities?: { dynamicArrays?: boolean },
   ): SheetActionPayload[] {
     let finalActions = pruneSpuriousAddSheetActions(actions as never[]) as SheetActionPayload[];
     if (userMessage) {
@@ -520,18 +530,43 @@ Sheet has ${analysis.rowCount} rows, ${analysis.columnCount} columns. Next appen
       }
       finalActions = validation.valid;
     }
-    return this.sanitizeActions(finalActions, analysis);
+    const sanitized = this.sanitizeActions(finalActions, analysis, richWorkbookContext);
+    // Make a consolidated table actually consolidate (TASKS.md #142), then style
+    // what this batch builds (TASKS.md #138). Both append only — neither
+    // reorders or relocates content, so the planner's anchor arithmetic holds.
+    // Consolidation runs first so the styling pass sees the final layout.
+    const consolidated = applyConsolidationPass(sanitized, {
+      dynamicArrays: excelCapabilities?.dynamicArrays,
+    });
+    return applyPresentationPass(consolidated, {
+      userMessage,
+      context: richWorkbookContext,
+    });
   }
 
   private sanitizeActions(
     actions: SheetActionPayload[],
     analysis?: SheetAnalysis,
+    context?: RichWorkbookContext,
   ): SheetActionPayload[] {
-    const withAddRowConversion = this.convertHeaderRowWritesToAddRow(actions, analysis);
+    // Header-row protection is per sheet. `analysis` describes the ACTIVE sheet
+    // only, so using its `isEmpty` for the whole batch grades a 13-sheet build
+    // by whichever tab the user had open. See TASKS.md #137.
+    const headerStates = resolveSheetHeaderStates(actions, context, analysis?.isEmpty ?? false);
+    const activeSheet = context?.activeSheet;
+    const withAddRowConversion = this.convertHeaderRowWritesToAddRow(
+      actions,
+      analysis,
+      headerStates,
+      activeSheet,
+    );
     return withAddRowConversion
       .map((action) => this.sanitizeAction(action))
       .filter((action): action is SheetActionPayload => action !== null)
-      .filter((action) => !this.isHeaderMutation(action, analysis?.isEmpty));
+      .filter((action) => {
+        const sheetIsEmpty = !(headerStates.get(sheetKeyOf(action, activeSheet)) ?? true);
+        return !this.isHeaderMutation(action, sheetIsEmpty);
+      });
   }
 
   private isHeaderMutation(action: SheetActionPayload, sheetIsEmpty = false): boolean {
@@ -563,39 +598,65 @@ Sheet has ${analysis.rowCount} rows, ${analysis.columnCount} columns. Next appen
     return action.row === ConversationEngineService.HEADER_ROW;
   }
 
+  /**
+   * Convert row-1 value writes into an appended row — but only on sheets that
+   * actually have a header row to protect, and only ever merging writes that
+   * share one sheet.
+   *
+   * The merged ADD_ROW carries its group's `sheetName`. Omitting it is what
+   * made the client-side twin of this function so destructive: a sheet-less
+   * write resolves to `getActiveWorksheet()`, so 121 header cells from 13
+   * sheets landed as one row on whichever tab was open. See TASKS.md #137.
+   */
   private convertHeaderRowWritesToAddRow(
     actions: SheetActionPayload[],
-    analysis?: SheetAnalysis,
+    analysis: SheetAnalysis | undefined,
+    headerStates: SheetHeaderStates,
+    activeSheet: string | undefined,
   ): SheetActionPayload[] {
-    if (analysis?.isEmpty) {
-      return actions;
+    const out: SheetActionPayload[] = [];
+
+    for (const [sheetKey, groupActions] of groupActionsBySheet(actions, activeSheet)) {
+      const hasHeaderRow = headerStates.get(sheetKey) ?? true;
+      if (!hasHeaderRow) {
+        out.push(...groupActions);
+        continue;
+      }
+
+      const headerWrites = groupActions.filter(
+        (action) =>
+          (action.type === 'SET_CELL' ||
+            action.type === 'SET_FORMULA' ||
+            action.type === 'CLEAR_CELL') &&
+          action.row === ConversationEngineService.HEADER_ROW,
+      );
+
+      if (!headerWrites.length) {
+        out.push(...groupActions);
+        continue;
+      }
+
+      const columnCount = Math.max(
+        analysis?.columnCount ?? 0,
+        ...headerWrites.map((action) => (action.col ?? 0) + 1),
+        1,
+      );
+      const rowData: unknown[] = Array.from({ length: columnCount }, (_, index) => {
+        const write = headerWrites.find((action) => action.col === index);
+        if (!write) return '';
+        if (write.type === 'SET_FORMULA') return write.formula ?? '';
+        if (write.type === 'SET_CELL') return write.value ?? '';
+        return '';
+      });
+
+      const sheetName = groupActions.find((a) => a.sheetName)?.sheetName;
+      const merged: SheetActionPayload = { type: 'ADD_ROW', data: rowData };
+      if (sheetName) merged.sheetName = sheetName;
+
+      out.push(merged, ...groupActions.filter((action) => !headerWrites.includes(action)));
     }
 
-    const headerWrites = actions.filter(
-      (action) =>
-        (action.type === 'SET_CELL' ||
-          action.type === 'SET_FORMULA' ||
-          action.type === 'CLEAR_CELL') &&
-        action.row === ConversationEngineService.HEADER_ROW,
-    );
-
-    if (!headerWrites.length) return actions;
-
-    const columnCount = Math.max(
-      analysis?.columnCount ?? 0,
-      ...headerWrites.map((action) => (action.col ?? 0) + 1),
-      1,
-    );
-    const rowData: unknown[] = Array.from({ length: columnCount }, (_, index) => {
-      const write = headerWrites.find((action) => action.col === index);
-      if (!write) return '';
-      if (write.type === 'SET_FORMULA') return write.formula ?? '';
-      if (write.type === 'SET_CELL') return write.value ?? '';
-      return '';
-    });
-
-    const rest = actions.filter((action) => !headerWrites.includes(action));
-    return [{ type: 'ADD_ROW', data: rowData }, ...rest];
+    return out;
   }
 
   private sanitizeAction(action: SheetActionPayload): SheetActionPayload | null {

@@ -26,6 +26,19 @@ necessarily the header row; each sheet in "Visible values" below states its own
 Header row index — always use that, never assume row 0):
 ${EXECUTOR_ADVERTISED_ACTION_TYPES.join(', ')}
 
+BATCH_SET schema (write several cells at once — the efficient way to lay down a header row or a block of labels):
+{ "type": "BATCH_SET", "sheetName": "Main", "operations": [
+  { "address": "A18", "value": "Month" },
+  { "address": "B18", "value": "Unit No" },
+  { "address": "C18", "formula": "=SUM(January!G:G)" }
+] }
+- "operations" is REQUIRED and every entry MUST have an "address" in A1 notation.
+- An operation carries "value" OR "formula" (not both). "format" is optional.
+- An operation without "address" is DISCARDED, and a BATCH_SET whose operations are all
+  discarded delivers nothing for the whole subtask — write the addresses explicitly.
+- If you are unsure of the exact addresses, emit individual SET_CELL actions instead;
+  a correct SET_CELL beats a malformed BATCH_SET.
+
 AUTO_FILTER schema (add filter dropdowns to a table's header row — "add filters", "make it filterable"):
 { "type": "AUTO_FILTER", "sheetName": "Purchase Register", "range": "A1:N51" }
 - range MUST cover the full header + data range (the filter dropdowns go on the header row of that range)

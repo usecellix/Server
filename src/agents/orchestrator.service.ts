@@ -15,6 +15,22 @@ export interface OrchestratorRunResult {
   completedSubtasks: Array<{ subtaskId: string; actions: Action[]; verified: boolean }>;
   failedSubtask: { subtaskId: string; reason: string } | null;
   partialProgress: boolean;
+  /**
+   * The plan's own natural-language statements of intent, surfaced so the
+   * Accept card can describe what the build DOES rather than enumerate the
+   * mechanical actions it emits. The Planner already writes exactly the right
+   * text ("Create sheet 'January' ... and set A1:J1 headers [...]"); it was
+   * previously streamed as a transient `status` event and then discarded,
+   * leaving the card to render ~40 action bullets instead. TASKS.md #149.
+   */
+  planSubtasks: Array<{ id: string; description: string; targetSheet: string }>;
+  /**
+   * Subtasks the Planner produced that the Executor delivered no actions for.
+   * Non-empty means the build is incomplete relative to its own plan — the
+   * `estimatedActions` circularity `CODEBASE_ANALYSIS.md` §3.15 describes,
+   * caught here at the one place both numbers are known. TASKS.md #155.
+   */
+  undeliveredSubtasks: Array<{ id: string; description: string; targetSheet: string }>;
 }
 
 @Injectable()
@@ -95,6 +111,8 @@ export class OrchestratorService {
         completedSubtasks: [],
         failedSubtask: null,
         partialProgress: false,
+        planSubtasks: [],
+        undeliveredSubtasks: [],
       };
     }
 
@@ -115,6 +133,8 @@ export class OrchestratorService {
         completedSubtasks: [],
         failedSubtask: null,
         partialProgress: false,
+        planSubtasks: [],
+        undeliveredSubtasks: [],
       };
     }
 
@@ -161,6 +181,33 @@ export class OrchestratorService {
       completedSubtasks,
       failedSubtask,
       partialProgress,
+      // ONLY subtasks that actually produced actions. The Accept card renders
+      // these as its promises (TASKS.md #149), so a subtask the Executor
+      // silently emitted nothing for must not appear there — a live smoke test
+      // caught the card promising "Write Consolidated Transactions header at
+      // Main!A18" for a run whose actions never touched row 18. Describing the
+      // PLAN rather than the DELIVERY is precisely the false-completeness shape
+      // CODEBASE_ANALYSIS.md §3.7 keeps re-teaching. TASKS.md #155.
+      planSubtasks: plan.subtasks
+        .filter((s) =>
+          completedSubtasks.some((c) => c.subtaskId === s.id && c.actions.length > 0),
+        )
+        .map((s) => ({
+          id: s.id,
+          description: s.description,
+          targetSheet: s.targetSheet,
+        })),
+      /** Planned but delivered nothing — surfaced so the gap can be reported. */
+      undeliveredSubtasks: plan.subtasks
+        .filter(
+          (s) =>
+            !completedSubtasks.some((c) => c.subtaskId === s.id && c.actions.length > 0),
+        )
+        .map((s) => ({
+          id: s.id,
+          description: s.description,
+          targetSheet: s.targetSheet,
+        })),
     };
   }
 

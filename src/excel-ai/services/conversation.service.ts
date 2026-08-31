@@ -2291,6 +2291,7 @@ export class ConversationService {
         richWorkbookContext,
         request.message,
         enrichedContext.priorTurnActions,
+        request.excelCapabilities,
       );
       actionsCount = actions.length;
 
@@ -2332,9 +2333,27 @@ export class ConversationService {
 
       emit('answer', { answer, tier: 3 });
 
+      // TASKS.md #155 — a plan whose Executor delivered nothing for some of its
+      // own subtasks is incomplete, and saying so is the §3.7 rule this
+      // codebase keeps re-learning. The Accept card already excludes these from
+      // its promises; this makes the omission visible rather than merely quiet.
+      if (orchestratorResult.undeliveredSubtasks.length > 0) {
+        const missing = orchestratorResult.undeliveredSubtasks;
+        this.logger.warn(
+          `Plan/delivery gap: ${missing.length} planned subtask(s) produced no actions — ` +
+            missing.map((m) => `${m.id} (${m.targetSheet})`).join(', '),
+        );
+        emit('status', {
+          message:
+            missing.length === 1
+              ? `Note: 1 planned step produced no changes — ${missing[0].description.slice(0, 110)}`
+              : `Note: ${missing.length} planned steps produced no changes (e.g. ${missing[0].description.slice(0, 90)})`,
+        });
+      }
+
       let previousChangeSetId: string | undefined;
       let firstUserFacingSummary: ReturnType<typeof buildUserFacingSummary> | undefined;
-      for (const { wave, changeSet } of waveChangeSets) {
+      for (const [waveIndex, { wave, changeSet }] of waveChangeSets.entries()) {
         const isFirstWave = !previousChangeSetId;
         const userFacingSummary = buildUserFacingSummary({
           answer: isFirstWave ? answer : wave.label,
@@ -2342,6 +2361,9 @@ export class ConversationService {
           changes: changeSet.changes,
           assumption: isFirstWave ? routerAssumption : undefined,
           activeSheetName: enrichedContext.activeSheetName,
+          // What the build DOES, in the Planner's own words, instead of a list
+          // of the mechanical actions it emits. TASKS.md #149.
+          planSubtasks: orchestratorResult.planSubtasks,
         });
         firstUserFacingSummary ??= userFacingSummary;
         const internalDetails = buildInternalDetails({
@@ -2362,6 +2384,12 @@ export class ConversationService {
           changes: changeSet.changes,
           irreversibleActionTypes: changeSet.irreversibleActionTypes,
           tier: 3,
+          // Position in a staged build. The thing TASKS.md #141's two-wave
+          // split lacked: without it, accepting step 1 and stopping left a
+          // half-built workbook that looked finished. TASKS.md #160.
+          stepIndex: waveIndex + 1,
+          stepTotal: waveChangeSets.length,
+          stepLabel: wave.label,
           // Gate: the frontend must not let this wave's Accept fire until the
           // wave named here has been accepted (its sheets/ranges must exist).
           ...(previousChangeSetId ? { dependsOnChangeSetId: previousChangeSetId } : {}),
