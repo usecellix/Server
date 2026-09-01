@@ -26,6 +26,7 @@ import {
 } from '../utils/sheet-header-state.util';
 import { applyPresentationPass } from '../utils/presentation-pass.util';
 import { applyConsolidationPass } from '../utils/consolidation-pass.util';
+import { applyChartPlacementPass } from '../utils/chart-placement.util';
 import { formatIndianCurrency } from '../utils/indian-format.util';
 import { DataQueryService, FindMatch } from './data-query.service';
 import { IntentClassifierService, intentIsReadOnly } from './intent-classifier.service';
@@ -538,7 +539,10 @@ Sheet has ${analysis.rowCount} rows, ${analysis.columnCount} columns. Next appen
     const consolidated = applyConsolidationPass(sanitized, {
       dynamicArrays: excelCapabilities?.dynamicArrays,
     });
-    return applyPresentationPass(consolidated, {
+    // Keep charts off the tables they plot (TASKS.md #133/#163) before styling,
+    // so the presentation pass sees final anchors.
+    const charted = applyChartPlacementPass(consolidated);
+    return applyPresentationPass(charted, {
       userMessage,
       context: richWorkbookContext,
     });
