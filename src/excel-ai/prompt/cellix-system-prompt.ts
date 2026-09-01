@@ -16,8 +16,15 @@ const staticPromptCache = new Map<string, string>();
 /**
  * Get or build the static (non-context-dependent) portion of the prompt.
  * Cached and keyed by empty-sheet state to avoid rebuilding on every request.
+ *
+ * Exported so callers can send it as its own leading message, separate from
+ * the per-request WorkbookContext — OpenAI's automatic prompt caching (via
+ * OpenRouter) only fires when the leading ~1024+ tokens of a request are
+ * byte-identical across calls. Concatenating this with per-request context
+ * into one string (the old buildCellixSystemPrompt behaviour) made every
+ * request's prefix unique and defeated caching entirely. See TASKS.md #163.
  */
-function getStaticPromptSection(sheetIsEmpty: boolean): string {
+export function getStaticPromptSection(sheetIsEmpty: boolean): string {
   const key = `static_${sheetIsEmpty ? 'empty' : 'data'}`;
   if (staticPromptCache.has(key)) {
     return staticPromptCache.get(key)!;
@@ -55,6 +62,11 @@ export function buildCellixSystemPrompt(ctx: WorkbookContext, sheetIsEmpty = fal
   return `${staticSection}
 
 ${contextSection}`;
+}
+
+/** The per-request (workbook-dependent) portion only — pairs with getStaticPromptSection. */
+export function buildWorkbookContextSection(ctx: WorkbookContext): string {
+  return formatWorkbookContextForPrompt(ctx);
 }
 
 const AI_FIRST_RULES = `AI-FIRST BEHAVIOUR (like Cursor for Excel):

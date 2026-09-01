@@ -8,26 +8,31 @@ export interface ModelConfig {
   costPer1kCompletion: number;
 }
 
+// Pricing and maxTokens must track the models actually configured in .env
+// (OPENROUTER_MODEL_LOW/MEDIUM/HIGH). These feed both the HIGH-tier cost-cap
+// downgrade in model-router.ts and every audit-log/dashboard cost figure —
+// stale values here make real spend invisible, not just cosmetically wrong.
+// Verified against OpenRouter's published per-model pricing (2026-09-01).
 export const MODEL_CONFIGS: Record<LLMTier, ModelConfig> = {
   low: {
     tier: 'low',
-    model: 'google/gemini-flash-1.5',
+    model: 'openai/gpt-5-nano',
     maxTokens: 2048,
-    costPer1kPrompt: 0.000075,
-    costPer1kCompletion: 0.0003,
+    costPer1kPrompt: 0.00005,
+    costPer1kCompletion: 0.0004,
   },
   medium: {
     tier: 'medium',
-    model: 'openai/gpt-4o-mini',
+    model: 'openai/gpt-5-mini',
     maxTokens: 4096,
-    costPer1kPrompt: 0.00015,
-    costPer1kCompletion: 0.0006,
+    costPer1kPrompt: 0.00025,
+    costPer1kCompletion: 0.002,
   },
   high: {
     tier: 'high',
-    model: 'openai/gpt-4o',
+    model: 'openai/gpt-5',
     maxTokens: 8192,
-    costPer1kPrompt: 0.0025,
+    costPer1kPrompt: 0.00125,
     costPer1kCompletion: 0.01,
   },
 };

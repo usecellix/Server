@@ -1,9 +1,20 @@
-import { Body, Controller, Get, Headers, Param, Post, Res, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Headers,
+  Param,
+  Post,
+  Query,
+  Res,
+  UseGuards,
+} from '@nestjs/common';
 import { FastifyReply } from 'fastify';
 import { TRACE_ID_HEADER } from '../common/constants/trace-id.constant';
 import { SkipEnvelope } from '../common/decorators/skip-envelope.decorator';
-import { AuthGuard } from '../auth/auth.guard';
+import { AuthGuard, AuthUserSession, Session } from '../auth/auth.guard';
 import { ConversationRequestDto } from './dto/conversation-request.dto';
+import { ListConversationsQueryDto } from './dto/list-conversations-query.dto';
 import { ToolResultDto } from './dto/tool-result.dto';
 import { ConversationService } from './services/conversation.service';
 
@@ -13,6 +24,10 @@ import { ConversationService } from './services/conversation.service';
  * anyone who could reach the URL. The frontend already sends `credentials: 'include'`
  * on every call (useConversation.ts) and AuthGate/LoginPage already exist — both
  * sides were built and neither was connected. See TASKS.md go-live entry.
+ *
+ * The guard runs on every route in this controller, so `@Session()` is always
+ * populated — that is what makes it safe for TASKS.md #170's `userId` to come
+ * from the session rather than from the request body.
  */
 @UseGuards(AuthGuard)
 @Controller('excel-ai')
@@ -25,8 +40,14 @@ export class ConversationController {
     @Body() body: ConversationRequestDto,
     @Headers(TRACE_ID_HEADER) traceId: string | undefined,
     @Res() reply: FastifyReply,
+    @Session() session: AuthUserSession | undefined,
   ): Promise<void> {
-    await this.conversationService.handleConversation(body, reply, traceId);
+    await this.conversationService.handleConversation(
+      body,
+      reply,
+      traceId,
+      session?.user?.id,
+    );
   }
 
   @Get('conversation')
@@ -35,14 +56,37 @@ export class ConversationController {
     return {
       ok: true,
       message:
-        'Use POST /excel-ai/conversation to send messages, or GET /excel-ai/conversation/:conversationId to load a conversation.',
+        'Use POST /excel-ai/conversation to send messages, GET /excel-ai/conversations to list your past conversations, or GET /excel-ai/conversation/:conversationId to load one.',
     };
+  }
+
+  /**
+   * The signed-in user's past conversations, newest first (TASKS.md #171).
+   *
+   * Route sits above `conversation/:conversationId` in the file for readability
+   * only — it is a distinct path (`conversations`, plural) so there is no
+   * ordering hazard between them.
+   */
+  @Get('conversations')
+  @SkipEnvelope()
+  async listConversations(
+    @Query() query: ListConversationsQueryDto,
+    @Session() session: AuthUserSession | undefined,
+  ) {
+    return this.conversationService.listConversations(session!.user.id, {
+      limit: query.limit,
+      cursor: query.cursor,
+      workbookId: query.workbookId,
+    });
   }
 
   @Get('conversation/:conversationId')
   @SkipEnvelope()
-  async getConversation(@Param('conversationId') conversationId: string) {
-    return this.conversationService.getConversation(conversationId);
+  async getConversation(
+    @Param('conversationId') conversationId: string,
+    @Session() session: AuthUserSession | undefined,
+  ) {
+    return this.conversationService.getConversation(conversationId, session?.user?.id);
   }
 
   @Post('conversation/tool-result')

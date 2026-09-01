@@ -19,9 +19,12 @@ import { TELEMETRY_CATEGORIES } from '../src/common/logging/dto/frontend-log-bat
  * a test that reads the other side's source and fails when they disagree.
  */
 describe('frontend telemetry category parity (TASKS.md #159)', () => {
+  // The add-in lives in `frontend/`, not `client/` — this path was stale and the
+  // suite had been failing on ENOENT, which meant this drift detector was itself
+  // dead. Exactly the failure mode the docblock above warns about.
   const CLIENT_SOURCE = path.resolve(
     __dirname,
-    '../../client/src/services/frontendTelemetry.ts',
+    '../../frontend/src/services/frontendTelemetry.ts',
   );
 
   function clientCategories(): string[] {

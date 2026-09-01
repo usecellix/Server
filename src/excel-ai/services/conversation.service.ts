@@ -10,6 +10,7 @@ import { FastifyReply } from 'fastify';
 import { Model } from 'mongoose';
 import { ConversationRequestDto } from '../dto/conversation-request.dto';
 import {
+  CONVERSATION_TTL_MS,
   Conversation,
   ConversationDocument,
   ConversationMessageEntry,
@@ -102,11 +103,27 @@ import {
   type LlmFailure,
 } from '../utils/llm-failure-message.util';
 import { annotateAnswerConsistency } from '../utils/answer-consistency.util';
+import { deriveConversationTitle, truncateTitle } from '../utils/conversation-title.util';
 import { WorkflowTraceService } from '../../common/logging/workflow-trace.service';
 import type { WorkflowTraceStatus } from '../../common/logging/schemas/workflow-trace.schema';
 
 const MAX_MESSAGES = 50;
-const CONVERSATION_TTL_MS = Number(process.env.CONVERSATION_TTL_HOURS ?? 168) * 60 * 60 * 1000;
+
+/** History list page size ceiling (TASKS.md #171) — never return unbounded history. */
+const HISTORY_MAX_LIMIT = 50;
+const HISTORY_DEFAULT_LIMIT = 25;
+
+/** One row of the history list — summary only, no message bodies (TASKS.md #171). */
+export interface ConversationSummary {
+  conversationId: string;
+  workbookId?: string;
+  title: string;
+  firstMessage: string;
+  lastMessage: string;
+  messageCount: number;
+  status: string;
+  updatedAt: Date | null;
+}
 
 @Injectable()
 export class ConversationService {
@@ -397,14 +414,25 @@ export class ConversationService {
     });
   }
 
+  /**
+   * @param userId Owner of this conversation, resolved from the session by the
+   *   controller (TASKS.md #170). Deliberately a separate parameter rather than
+   *   a DTO field — a client-supplied userId would let a caller write into, and
+   *   later list, another user's history.
+   */
   async handleConversation(
     request: ConversationRequestDto,
     reply: FastifyReply,
     traceId = '-',
+    userId?: string,
   ): Promise<void> {
     this.validateRequest(request);
 
-    const conversation = await this.getOrCreateConversation(request.conversationId, request.workbookId);
+    const conversation = await this.getOrCreateConversation(
+      request.conversationId,
+      request.workbookId,
+      userId,
+    );
     const activeRequestRaw = await this.applyRefinementContext(request);
     let activeRequest: ConversationRequestDto = {
       ...activeRequestRaw,
@@ -3037,6 +3065,7 @@ export class ConversationService {
   private async getOrCreateConversation(
     conversationId?: string,
     workbookId?: string,
+    userId?: string,
   ): Promise<ConversationDocument> {
     if (conversationId) {
       const existing = await this.conversationModel.findOne({ conversationId });
@@ -3046,14 +3075,33 @@ export class ConversationService {
       if (existing.expiresAt && existing.expiresAt.getTime() < Date.now()) {
         throw new GoneException('CONVERSATION_EXPIRED');
       }
+      // Ownership check (TASKS.md #171). A conversation that already has an
+      // owner can only be continued by that owner — otherwise a guessed or
+      // leaked conversationId would let one user append to, and read back,
+      // another's thread. Reported as NOT_FOUND rather than FORBIDDEN so the
+      // response doesn't confirm the id exists.
+      if (userId && existing.userId && existing.userId !== userId) {
+        throw new NotFoundException('CONVERSATION_NOT_FOUND');
+      }
       if (existing.messages.length >= MAX_MESSAGES) {
         throw new BadRequestException('CONTEXT_TOO_LARGE');
       }
       // Backfill only — never overwrite an already-recorded workbookId (mirrors
       // the frontend's own mint-once discipline from TASKS.md #21). Covers a
       // conversation that started before the client had minted/persisted one.
+      let dirty = false;
       if (workbookId && !existing.workbookId) {
         existing.workbookId = workbookId;
+        dirty = true;
+      }
+      // Same backfill discipline for userId: claims a pre-#170 conversation for
+      // the user continuing it, but never reassigns one that already has an
+      // owner (that case threw above).
+      if (userId && !existing.userId) {
+        existing.userId = userId;
+        dirty = true;
+      }
+      if (dirty) {
         await existing.save();
       }
       return existing;
@@ -3066,12 +3114,24 @@ export class ConversationService {
       status: 'active',
       expiresAt: new Date(Date.now() + CONVERSATION_TTL_MS),
       ...(workbookId ? { workbookId } : {}),
+      ...(userId ? { userId } : {}),
     });
   }
 
-  async getConversation(conversationId: string) {
+  /**
+   * Full conversation body, scoped to its owner (TASKS.md #171).
+   *
+   * `userId` is the *caller's* id, resolved from the session by the controller —
+   * requesting a conversation owned by someone else is rejected as NOT_FOUND,
+   * not silently returned. Unowned (pre-#170) conversations stay readable by id,
+   * which is exactly the access level they had before this change.
+   */
+  async getConversation(conversationId: string, userId?: string) {
     const doc = await this.conversationModel.findOne({ conversationId }).lean();
     if (!doc) {
+      throw new NotFoundException('CONVERSATION_NOT_FOUND');
+    }
+    if (userId && doc.userId && doc.userId !== userId) {
       throw new NotFoundException('CONVERSATION_NOT_FOUND');
     }
     if (doc.expiresAt && doc.expiresAt.getTime() < Date.now()) {
@@ -3081,8 +3141,80 @@ export class ConversationService {
       conversationId: doc.conversationId,
       messages: doc.messages ?? [],
       status: doc.status,
+      title: doc.title ?? deriveConversationTitle(doc.messages ?? []),
+      workbookId: doc.workbookId,
       sheetSnapshot: doc.sheetSnapshot,
       updatedAt: (doc as { updatedAt?: Date }).updatedAt ?? doc.expiresAt,
+    };
+  }
+
+  /**
+   * A user's past conversations, newest first (TASKS.md #171).
+   *
+   * Returns summaries only — id, title, previews, counts — never message bodies:
+   * the list has to stay small enough to load on panel open, and full content is
+   * one `getConversation` call away once the user picks one.
+   *
+   * Pagination is cursor-based on `updatedAt` rather than skip/limit, so a
+   * conversation being updated mid-scroll can't shift rows across page
+   * boundaries and cause a duplicate or a skip.
+   */
+  async listConversations(
+    userId: string,
+    options: { limit?: number; cursor?: string; workbookId?: string } = {},
+  ): Promise<{ conversations: ConversationSummary[]; nextCursor: string | null }> {
+    const limit = Math.min(
+      Math.max(Math.trunc(options.limit ?? HISTORY_DEFAULT_LIMIT), 1),
+      HISTORY_MAX_LIMIT,
+    );
+
+    const filter: Record<string, unknown> = { userId };
+    // #173 is still open (global vs per-workbook history). The list is global by
+    // default — the ChatGPT/Cursor model the request was modelled on — but the
+    // filter is accepted now so answering #173 the other way is a caller change,
+    // not a schema or query rewrite.
+    if (options.workbookId) {
+      filter.workbookId = options.workbookId;
+    }
+    if (options.cursor) {
+      const cursorDate = new Date(options.cursor);
+      if (Number.isNaN(cursorDate.getTime())) {
+        throw new BadRequestException('INVALID_CURSOR');
+      }
+      filter.updatedAt = { $lt: cursorDate };
+    }
+
+    // limit + 1 so "is there another page" is answered by the query itself
+    // rather than by a second count() that could disagree with it.
+    const docs = await this.conversationModel
+      .find(filter)
+      .sort({ updatedAt: -1 })
+      .limit(limit + 1)
+      .select('conversationId workbookId title messages status updatedAt createdAt')
+      .lean();
+
+    const hasMore = docs.length > limit;
+    const page = hasMore ? docs.slice(0, limit) : docs;
+
+    const conversations = page.map((doc) => {
+      const messages = doc.messages ?? [];
+      const updatedAt = (doc as { updatedAt?: Date }).updatedAt;
+      return {
+        conversationId: doc.conversationId,
+        workbookId: doc.workbookId,
+        title: doc.title ?? deriveConversationTitle(messages),
+        firstMessage: truncateTitle(messages.find((m) => m.role === 'user')?.content ?? ''),
+        lastMessage: truncateTitle(messages[messages.length - 1]?.content ?? ''),
+        messageCount: messages.length,
+        status: doc.status,
+        updatedAt: updatedAt ?? (doc as { createdAt?: Date }).createdAt ?? null,
+      };
+    });
+
+    const last = page[page.length - 1] as { updatedAt?: Date } | undefined;
+    return {
+      conversations,
+      nextCursor: hasMore && last?.updatedAt ? last.updatedAt.toISOString() : null,
     };
   }
 
@@ -3094,6 +3226,14 @@ export class ConversationService {
     conversationId: string,
     message: ConversationMessageEntry,
   ): Promise<void> {
+    // Title is set from the first user message and never rewritten afterwards
+    // (TASKS.md #171) — `$setOnInsert` doesn't apply here since the doc already
+    // exists, so the "only if absent" condition lives in the filter instead.
+    const titleUpdate =
+      message.role === 'user' && message.content?.trim()
+        ? { title: truncateTitle(message.content) }
+        : {};
+
     await this.conversationModel.updateOne(
       { conversationId },
       {
@@ -3101,6 +3241,16 @@ export class ConversationService {
         $set: { updatedAt: new Date(), expiresAt: this.conversationExpiresAt() },
       },
     );
+
+    if (Object.keys(titleUpdate).length > 0) {
+      await this.conversationModel.updateOne(
+        {
+          conversationId,
+          $or: [{ title: { $exists: false } }, { title: null }, { title: '' }],
+        },
+        { $set: titleUpdate },
+      );
+    }
   }
 
   private async getRecentMessages(conversationId: string): Promise<ConversationMessageEntry[]> {

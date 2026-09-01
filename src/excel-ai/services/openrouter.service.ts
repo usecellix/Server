@@ -21,6 +21,10 @@ export type LlmUsage = {
   completionTokens?: number;
   totalTokens?: number;
   reasoningTokens?: number;
+  /** Prompt tokens served from the provider's cache (see TASKS.md #163) — a
+   *  non-zero value is the only real proof caching is working; the dashboard
+   *  total lags too much to catch a regression in the moment. */
+  cachedTokens?: number;
 };
 
 /**
@@ -72,6 +76,9 @@ type ChatCompletionResult = {
     totalTokens?: number;
     completionTokensDetails?: {
       reasoningTokens?: number | null;
+    };
+    promptTokensDetails?: {
+      cachedTokens?: number | null;
     };
   };
 };
@@ -197,6 +204,15 @@ export class OpenRouterService {
               `structured output from this call may parse but be incomplete.`,
           );
         }
+      }
+
+      const cachedTokens = response.usage?.promptTokensDetails?.cachedTokens ?? 0;
+      const promptTokens = response.usage?.promptTokens ?? 0;
+      if (promptTokens > 0) {
+        this.logger.log(
+          `PROMPT_CACHE model=${model} promptTokens=${promptTokens} cachedTokens=${cachedTokens} ` +
+            `hitRate=${((cachedTokens / promptTokens) * 100).toFixed(1)}%`,
+        );
       }
 
       return text;
@@ -532,6 +548,9 @@ export class OpenRouterService {
     const completionDetails = usage.completionTokensDetails as
       | Record<string, unknown>
       | undefined;
+    const promptDetails = (usage.promptTokensDetails ?? usage.prompt_tokens_details) as
+      | Record<string, unknown>
+      | undefined;
 
     return {
       promptTokens: this.numberValue(usage.promptTokens) ?? this.numberValue(usage.prompt_tokens),
@@ -541,6 +560,9 @@ export class OpenRouterService {
       reasoningTokens:
         this.numberValue(completionDetails?.reasoningTokens) ??
         this.numberValue(completionDetails?.reasoning_tokens),
+      cachedTokens:
+        this.numberValue(promptDetails?.cachedTokens) ??
+        this.numberValue(promptDetails?.cached_tokens),
     };
   }
 

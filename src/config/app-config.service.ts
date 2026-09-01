@@ -10,7 +10,7 @@ export class AppConfigService {
   }
 
   get port(): number {
-    return this.configService.get<number>('PORT', 4001);
+    return this.configService.get<number>('PORT', 5000);
   }
 
   get mongoUrl(): string {
@@ -41,6 +41,18 @@ export class AppConfigService {
 
   get openRouterModelHigh(): string {
     return this.configService.get<string>('OPENROUTER_MODEL_HIGH', 'openai/gpt-5');
+  }
+
+  /**
+   * Tier 1 emits real SheetAction JSON that writes to cells directly, skipping
+   * the Planner/Verifier pipeline that would catch a malformed or mis-ranged
+   * action. Deliberately decoupled from the shared LOW tier (TASKS.md #162) —
+   * LOW is safe on the cheapest model because the router only picks a route
+   * label, but a bad Tier 1 write is the #87 failure class. Defaults to the
+   * MEDIUM model; override independently via OPENROUTER_MODEL_TIER1 if needed.
+   */
+  get openRouterModelTier1(): string {
+    return this.configService.get<string>('OPENROUTER_MODEL_TIER1', this.openRouterModelMedium);
   }
 
   get openRouterHttpReferer(): string {
