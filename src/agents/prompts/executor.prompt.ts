@@ -132,6 +132,7 @@ CREATE_TABLE schema:
 
 CREATE_CHART schema:
 { "type": "CREATE_CHART", "sheetName": "Dashboard", "sourceSheetName": "Dashboard", "sourceRange": "A4:B9", "chartType": "ColumnClustered", "title": "Top Suppliers", "startCell": "D4", "endCell": "K18", "chartId": "Chart_topSuppliers" }
+- startCell MUST be at least two columns past the source range's LAST column (source ends at B → D is correct here; a source ending at D would need F). Never reuse this example's "D4" against a wider table — that places the chart over its own data.
 - sheetName is where the chart is placed; sourceSheetName/sourceRange identify its data (usually an AGGREGATE_TABLE output).
 - chartType: ColumnClustered, BarClustered (horizontal bar), Line, Pie, Doughnut — "bar" maps to BarClustered.
 - Always set chartId so follow-up UPDATE_CHART can target it.

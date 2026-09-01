@@ -2389,9 +2389,15 @@ export class ConversationService {
           changes: changeSet.changes,
           assumption: isFirstWave ? routerAssumption : undefined,
           activeSheetName: enrichedContext.activeSheetName,
-          // What the build DOES, in the Planner's own words, instead of a list
-          // of the mechanical actions it emits. TASKS.md #149.
-          planSubtasks: orchestratorResult.planSubtasks,
+          // Plan intent describes the WHOLE build, so it belongs only on a
+          // single-card change. On a staged build each card must describe its
+          // OWN step — otherwise "Create 13 sheets" promises the formulas and
+          // charts that come three steps later, which is TASKS.md #155's
+          // over-promising in a new shape. Staged steps fall back to the
+          // per-step action rollup (#140); the step label already carries the
+          // semantics. TASKS.md #161.
+          planSubtasks:
+            waveChangeSets.length === 1 ? orchestratorResult.planSubtasks : undefined,
         });
         firstUserFacingSummary ??= userFacingSummary;
         const internalDetails = buildInternalDetails({
