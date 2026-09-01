@@ -23,6 +23,13 @@ const SINGLE_ACTION_PATTERNS: Array<{ pattern: RegExp; tier: ComplexityTier; act
   // Tier 1 — single LLM call, no verification, low stakes
   { pattern: /\b(sort|filter)\b.*\bby\b/i, tier: 1, actionHint: 'SORT_OR_FILTER' },
   { pattern: /\bfind\s*(and)?\s*replace\b/i, tier: 1, actionHint: 'FIND_REPLACE' },
+  // Spec 24: header-row cosmetics before generic highlight → FORMAT_RANGE, not FORMAT_MATCHING_ROWS
+  {
+    pattern:
+      /\b(header|headers)\b.*\b(row|bg|background|fill|highlight|bold|colou?r|green|red|yellow|blue)\b|\b(highlight|fill|bg|background|bold|colou?r)\b.*\b(header|headers)\b/i,
+    tier: 1,
+    actionHint: 'HEADER_FORMAT',
+  },
   { pattern: /\b(highlights?|conditional formats?)\b/i, tier: 1, actionHint: 'CONDITIONAL_FORMAT' },
   {
     pattern: /\b(remove|remvoe|clear|unhighlight)\b.*\b(highlights?|fills?|colou?rs?)\b/i,
@@ -50,6 +57,11 @@ const SINGLE_ACTION_PATTERNS: Array<{ pattern: RegExp; tier: ComplexityTier; act
 
 const COMPOUND_SIGNALS =
   /\band then\b|\bafter that\b|,\s*(then|and)\s|\bfor each sheet\b|\bacross (all|every) sheets?\b/i;
+
+/** True when the message has multi-clause/compound phrasing implying more than one requested feature. */
+export function hasCompoundSignals(message: string): boolean {
+  return COMPOUND_SIGNALS.test(message);
+}
 
 export const NUMERIC_FINANCIAL_HINT = /\b(gst|gstin|amount|total|balance|invoice|tax|₹|rs\.?)\b/i;
 

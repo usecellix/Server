@@ -1,20 +1,15 @@
 import { GoneException, NotFoundException } from '@nestjs/common';
 import { ConversationService } from '../src/excel-ai/services/conversation.service';
 
+/**
+ * getConversation reads only the Mongoose model — every other injected dependency is
+ * unused here. Deriving the arity keeps this suite from breaking each time an
+ * unrelated dependency is added to the constructor.
+ */
 function createService(model: { findOne: jest.Mock }) {
-  return new ConversationService(
-    model as never,
-    {} as never,
-    {} as never,
-    {} as never,
-    {} as never,
-    {} as never,
-    {} as never,
-    {} as never,
-    {} as never,
-    {} as never,
-    {} as never,
-  );
+  type Deps = ConstructorParameters<typeof ConversationService>;
+  const deps = [model, ...Array.from({ length: 32 }, () => ({}))] as unknown as Deps;
+  return new ConversationService(...deps);
 }
 
 describe('ConversationService.getConversation', () => {

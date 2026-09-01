@@ -58,6 +58,19 @@ function buildSheetContext(
       return meta?.numberFormat ?? '';
     }),
   );
+  // TASKS.md #64 — same column-broadcast pattern as numberFormats above, from
+  // ColumnMeta.format (itself read client-side from the column's first data row).
+  const formats: SheetContext['formats'] = Array.from({ length: values.length }, () =>
+    Array.from({ length: columnCount }, (_, colIdx) => {
+      const format = richSheet?.columnMeta?.[colIdx]?.format;
+      return {
+        bold: format?.bold,
+        italic: format?.italic,
+        fontColor: format?.fontColor,
+        fillColor: format?.fillColor,
+      };
+    }),
+  );
 
   const usedRange =
     richSheet?.usedRange ??
@@ -78,7 +91,9 @@ function buildSheetContext(
     values,
     formulas,
     numberFormats,
+    formats,
     structure: inferStructure(analysis.headers, richSheet?.structure),
+    headerRowIndex: analysis.headerRowIndex ?? 0,
     compressionMeta: richSheet?.compressionMeta,
     dataTruncated,
   };
@@ -112,7 +127,9 @@ export function buildAgentWorkbookContext(
           rowCount: richSheet.rowCount,
           columnCount: richSheet.colCount,
           headers: richSheet.headers,
-          headerRowIndex: 0,
+          // Non-active sheets have no live sheetData to re-detect from here — trust
+          // the add-in's own detection when it sent one, rather than assuming row 0.
+          headerRowIndex: richSheet.headerRowIndex ?? 0,
           isEmpty: richSheet.rowCount === 0,
           columnLetters: Array.from({ length: richSheet.colCount }, (_, i) =>
             String.fromCharCode(65 + (i % 26)),
@@ -129,6 +146,7 @@ export function buildAgentWorkbookContext(
       formula: n.formula,
     })),
     tables: (richContext.tables ?? []).map((t) => t.name),
+    conditionalFormats: richContext.conditionalFormats ?? [],
     selectedRange: richContext.selectedRange,
     onDemandFetchEnabled,
   };

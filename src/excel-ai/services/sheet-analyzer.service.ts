@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { parseIndianNumber } from '../utils/indian-format.util';
+import { findHeaderRowIndex } from '../utils/header-row-detection.util';
 
 export interface SheetAnalysis {
   rowCount: number;
@@ -46,7 +47,7 @@ export class SheetAnalyzerService {
       ? this.alignHeaders(options.knownHeaders, columnCount)
       : detected.headers;
     const headerRowIndex = options?.knownHeaders?.length
-      ? this.findHeaderRowIndex(rows, options.knownHeaders, detected.headerRowIndex)
+      ? this.reconcileHeaderRowIndexFromKnownHeaders(rows, options.knownHeaders, detected.headerRowIndex)
       : detected.headerRowIndex;
 
     return {
@@ -218,8 +219,13 @@ export class SheetAnalyzerService {
     };
   }
 
-  countBlank(sheetData: unknown[][], columnIndex: number, hasHeader = true): number {
-    const startRow = hasHeader ? 1 : 0;
+  countBlank(
+    sheetData: unknown[][],
+    columnIndex: number,
+    hasHeader = true,
+    headerRowIndex = 0,
+  ): number {
+    const startRow = hasHeader ? headerRowIndex + 1 : 0;
     let blank = 0;
     for (let row = startRow; row < sheetData.length; row += 1) {
       const value = sheetData[row]?.[columnIndex];
@@ -230,8 +236,8 @@ export class SheetAnalyzerService {
     return blank;
   }
 
-  countDataRows(sheetData: unknown[][], hasHeader = true): number {
-    const startRow = hasHeader ? 1 : 0;
+  countDataRows(sheetData: unknown[][], hasHeader = true, headerRowIndex = 0): number {
+    const startRow = hasHeader ? headerRowIndex + 1 : 0;
     let count = 0;
     for (let row = startRow; row < sheetData.length; row += 1) {
       const rowData = sheetData[row];
@@ -242,8 +248,13 @@ export class SheetAnalyzerService {
     return count;
   }
 
-  findDuplicates(sheetData: unknown[][], columnIndex: number, hasHeader = true): DuplicateEntry[] {
-    const startRow = hasHeader ? 1 : 0;
+  findDuplicates(
+    sheetData: unknown[][],
+    columnIndex: number,
+    hasHeader = true,
+    headerRowIndex = 0,
+  ): DuplicateEntry[] {
+    const startRow = hasHeader ? headerRowIndex + 1 : 0;
     const map = new Map<string, number[]>();
 
     for (let row = startRow; row < sheetData.length; row += 1) {
@@ -261,8 +272,13 @@ export class SheetAnalyzerService {
       .sort((a, b) => b.count - a.count);
   }
 
-  findBlankRows(sheetData: unknown[][], columnIndex?: number, hasHeader = true): number[] {
-    const startRow = hasHeader ? 1 : 0;
+  findBlankRows(
+    sheetData: unknown[][],
+    columnIndex?: number,
+    hasHeader = true,
+    headerRowIndex = 0,
+  ): number[] {
+    const startRow = hasHeader ? headerRowIndex + 1 : 0;
     const blankRows: number[] = [];
 
     for (let row = startRow; row < sheetData.length; row += 1) {
@@ -282,8 +298,13 @@ export class SheetAnalyzerService {
     return blankRows;
   }
 
-  detectTextStoredNumbers(sheetData: unknown[][], columnIndex: number, hasHeader = true): boolean {
-    const startRow = hasHeader ? 1 : 0;
+  detectTextStoredNumbers(
+    sheetData: unknown[][],
+    columnIndex: number,
+    hasHeader = true,
+    headerRowIndex = 0,
+  ): boolean {
+    const startRow = hasHeader ? headerRowIndex + 1 : 0;
     let textNumeric = 0;
     let realNumeric = 0;
 
@@ -303,43 +324,17 @@ export class SheetAnalyzerService {
     rows: unknown[][],
     columnCount: number,
   ): { headerRowIndex: number; headers: string[] } {
-    for (let rowIndex = 0; rowIndex < Math.min(rows.length, 8); rowIndex += 1) {
-      const row = rows[rowIndex];
-      if (!Array.isArray(row)) continue;
-
-      const nonEmpty = row.filter(
-        (cell) => cell !== null && cell !== undefined && String(cell).trim() !== '',
-      );
-      if (nonEmpty.length === 0) continue;
-
-      const stringLike = nonEmpty.filter((cell) => {
-        const text = String(cell).trim();
-        if (!text) return false;
-        return Number.isNaN(Number(text.replace(/,/g, '')));
-      });
-
-      if (stringLike.length / nonEmpty.length >= 0.6) {
-        return {
-          headerRowIndex: rowIndex,
-          headers: Array.from({ length: columnCount }, (_, index) =>
-            this.formatHeader(row[index], index),
-          ),
-        };
-      }
-    }
-
-    const firstRow = rows[0];
+    const rowIndex = findHeaderRowIndex(rows, columnCount);
+    const row = rows[rowIndex];
     return {
-      headerRowIndex: 0,
-      headers: Array.isArray(firstRow)
-        ? Array.from({ length: columnCount }, (_, index) =>
-            this.formatHeader(firstRow[index], index),
-          )
+      headerRowIndex: rowIndex,
+      headers: Array.isArray(row)
+        ? Array.from({ length: columnCount }, (_, index) => this.formatHeader(row[index], index))
         : [],
     };
   }
 
-  private findHeaderRowIndex(
+  private reconcileHeaderRowIndexFromKnownHeaders(
     rows: unknown[][],
     knownHeaders: string[],
     fallback: number,

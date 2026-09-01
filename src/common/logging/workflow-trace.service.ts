@@ -16,6 +16,8 @@ const MAX_PAYLOAD_CHARS = 4096;
 export interface StartWorkflowTraceInput {
   traceId: string;
   conversationId?: string;
+  /** Durable per-workbook identity (TASKS.md #25). Optional and additive. */
+  workbookId?: string;
   message: string;
   mode?: string;
   /** Raw request body / sheet summary — sanitized before store. */
@@ -156,6 +158,7 @@ export class WorkflowTraceService {
           ts: now,
           traceId: input.traceId,
           conversationId: input.conversationId,
+          ...(input.workbookId ? { workbookId: input.workbookId } : {}),
           message: input.message.slice(0, 2000),
           mode: input.mode,
           status: 'running' as WorkflowTraceStatus,

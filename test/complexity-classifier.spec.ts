@@ -107,6 +107,16 @@ describe('classifyComplexity', () => {
       });
     });
 
+    it('matches HEADER_FORMAT for header-row cosmetics, not CONDITIONAL_FORMAT', () => {
+      expect(classifyComplexity('Highlight the header row with light bg green').match).toEqual({
+        tier: 1,
+        actionHint: 'HEADER_FORMAT',
+        matchedBy: 'regex',
+      });
+      expect(classifyComplexity('bold the header row').match?.actionHint).toBe('HEADER_FORMAT');
+      expect(classifyComplexity('make headers fill red').match?.actionHint).toBe('HEADER_FORMAT');
+    });
+
     it('matches COPY_FILL', () => {
       expect(classifyComplexity('fill down the formula in column D').match?.actionHint).toBe('COPY_FILL');
     });

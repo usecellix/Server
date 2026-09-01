@@ -6,8 +6,11 @@ export function buildWorkbookContext(
   analysis: SheetAnalysis,
   options?: { activeSheet?: string; sheets?: string[] },
 ): WorkbookContext {
-  const headerRow = 1;
-  const dataStartRow = analysis.isEmpty ? headerRow + 1 : headerRow + 1;
+  // 1-based Excel row number. analysis.headerRowIndex is 0-based and defaults to 0
+  // (row 1) for sheets where SheetAnalyzerService couldn't detect a better row —
+  // this no longer hardcodes row 1 regardless of what was actually detected.
+  const headerRow = (analysis.headerRowIndex ?? 0) + 1;
+  const dataStartRow = headerRow + 1;
   const lastDataRow = Math.max(analysis.rowCount, headerRow);
   const totalRows = Math.max(0, lastDataRow - headerRow);
 
@@ -17,7 +20,9 @@ export function buildWorkbookContext(
   });
 
   const endCol = analysis.columnLetters[analysis.columnCount - 1] ?? 'A';
-  const dataRange = analysis.isEmpty ? 'A1' : `A1:${endCol}${lastDataRow}`;
+  // Range starts at the detected header row, not always A1 — rows above it are
+  // preamble/title rows, not part of the table.
+  const dataRange = analysis.isEmpty ? 'A1' : `A${headerRow}:${endCol}${lastDataRow}`;
 
   return {
     activeSheet: options?.activeSheet ?? 'Sheet1',

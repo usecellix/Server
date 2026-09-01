@@ -19,6 +19,7 @@ const mockContext: WorkbookContext = {
       formulas: [['', ''], ['', '']],
       numberFormats: [['General', 'General']],
       structure: 'data_table',
+      headerRowIndex: 0,
     },
   ],
   namedRanges: [],

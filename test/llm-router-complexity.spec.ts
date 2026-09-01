@@ -100,15 +100,9 @@ describe('LlmRouterService complexity integration', () => {
     expect(openRouter.complete).not.toHaveBeenCalled();
   });
 
-  it('defaults write complexity to tier 3 when LLM omits it', async () => {
-    openRouter.complete.mockResolvedValue(
-      JSON.stringify({
-        route: 'write',
-        confidence: 0.82,
-        reasoning: 'User wants to rename a sheet',
-      }),
-    );
-
+  it('escalates an unclassified write to tier 3 without consulting the LLM', async () => {
+    // "rename" is a WRITE_INTENT_VERB that classifyComplexity does not recognize,
+    // so the pre-LLM write-intent guard decides the route by regex alone.
     const decision = await service.route({
       ...baseInput,
       message: 'rename this sheet to Q1 Summary',
@@ -116,40 +110,24 @@ describe('LlmRouterService complexity integration', () => {
 
     expect(decision.route).toBe('write');
     expect(decision.complexity).toBe(3);
-    expect(decision.matchedBy).toBe('llm-fallback');
-    expect(openRouter.complete).toHaveBeenCalledTimes(1);
+    expect(decision.matchedBy).toBe('regex');
+    expect(decision.overridden).toBe(true);
+    expect(openRouter.complete).not.toHaveBeenCalled();
   });
 
-  it('uses LLM-provided complexity for write routes', async () => {
-    openRouter.complete.mockResolvedValue(
-      JSON.stringify({
-        route: 'write',
-        complexity: 2,
-        confidence: 0.9,
-        reasoning: 'Single formula write',
-        actionHint: 'FORMULA_GEN',
-      }),
-    );
-
+  it('escalates an unrecognized formula-style write to tier 3 by regex', async () => {
     const decision = await service.route({
       ...baseInput,
       message: 'add margin column based on revenue and cost',
     });
 
     expect(decision.route).toBe('write');
-    expect(decision.complexity).toBe(2);
-    expect(decision.matchedBy).toBe('llm-fallback');
+    expect(decision.complexity).toBe(3);
+    expect(decision.matchedBy).toBe('regex');
+    expect(openRouter.complete).not.toHaveBeenCalled();
   });
 
-  it('does not add complexity for non-write LLM routes', async () => {
-    openRouter.complete.mockResolvedValue(
-      JSON.stringify({
-        route: 'export',
-        confidence: 0.88,
-        reasoning: 'Find and copy matching rows',
-      }),
-    );
-
+  it('routes a copy-to-new-sheet request to write rather than a read-only lane', async () => {
     const decision = await service.route({
       ...baseInput,
       message: 'copy all paid invoices to a new sheet',
@@ -160,14 +138,6 @@ describe('LlmRouterService complexity integration', () => {
   });
 
   it('Spec 20 repro — create sheet + copy paid rows routes to write', async () => {
-    openRouter.complete.mockResolvedValue(
-      JSON.stringify({
-        route: 'export',
-        confidence: 0.9,
-        reasoning: 'Misclassified: find+export/copy rows',
-      }),
-    );
-
     const decision = await service.route({
       ...baseInput,
       message:
@@ -178,16 +148,19 @@ describe('LlmRouterService complexity integration', () => {
     expect(decision.overridden).toBe(true);
   });
 
-  it('adds complexity 3 on fallback write decisions', async () => {
-    openRouter.complete.mockRejectedValue(new Error('router down'));
-
+  // In action mode the pre-LLM write-intent guard intercepts every verb that
+  // fallbackDecision would call a write, so the LLM-failure path can no longer
+  // produce one. The write-intent override in non-action modes is what still can.
+  it('adds complexity 3 when a non-action mode request is overridden to write', async () => {
     const decision = await service.route({
       ...baseInput,
+      mode: 'ask',
       message: 'format column C as currency',
     });
 
     expect(decision.route).toBe('write');
     expect(decision.complexity).toBe(3);
     expect(decision.matchedBy).toBe('llm-fallback');
+    expect(decision.overridden).toBe(true);
   });
 });

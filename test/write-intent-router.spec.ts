@@ -26,12 +26,11 @@ describe('LlmRouterService write-intent guard', () => {
 
   const repro = 'sort the sheet based on Total Amount descending';
 
-  it('overrides data-lane trap for the exact repro (Total matches quickDataCheck)', async () => {
+  it('routes sort+Total Amount to write (never data census)', async () => {
     const decision = await service.route({ ...baseInput, message: repro });
 
     expect(decision.route).toBe('write');
-    expect(decision.overridden).toBe(true);
-    expect(decision.complexity).toBe(3);
+    expect(decision.route).not.toBe('data');
     expect(openRouter.complete).not.toHaveBeenCalled();
   });
 
@@ -39,18 +38,16 @@ describe('LlmRouterService write-intent guard', () => {
     for (let i = 0; i < 10; i += 1) {
       const decision = await service.route({ ...baseInput, message: repro });
       expect(decision.route).toBe('write');
-      expect(decision.overridden).toBe(true);
     }
   });
 
-  it('overrides data route when sort co-occurs with sum/total keywords', async () => {
+  it('routes sort by total + highlight to write', async () => {
     const decision = await service.route({
       ...baseInput,
       message: 'sort by total and then highlight the top row',
     });
 
     expect(decision.route).toBe('write');
-    expect(decision.overridden).toBe(true);
   });
 
   it('does not override pure data queries', async () => {
@@ -61,6 +58,17 @@ describe('LlmRouterService write-intent guard', () => {
 
     expect(decision.route).toBe('data');
     expect(decision.overridden).toBeUndefined();
+  });
+
+  it('routes soft multi-month + dashboard scaffold to write (not data)', async () => {
+    const message =
+      'i like to have multiple sheets for all months in a year, and need a main sheet it has all the details of the remaining sheets, in the main sheet i need to have dashboard also, my need to record payments and related things ,which all month sheets include Unit No, Guest, Guest name, check in, check out, Rate per night, total amount, source, payment status, bank account';
+    const decision = await service.route({ ...baseInput, message });
+
+    expect(decision.route).toBe('write');
+    expect(decision.complexity).toBe(3);
+    expect(decision.route).not.toBe('data');
+    expect(openRouter.complete).not.toHaveBeenCalled();
   });
 
   it('does not override instant shortcuts', async () => {

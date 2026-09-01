@@ -61,6 +61,7 @@ const FIELD_FIXTURES: Record<SheetActionType, Record<string, unknown>> = {
   SET_COLUMN_WIDTH: { type: 'SET_COLUMN_WIDTH', sheetName: 'Dashboard', col: 0, width: 15 },
   FREEZE_PANES: { type: 'FREEZE_PANES', sheetName: 'Dashboard', freezeRows: 1, freezeColumns: 0 },
   UNFREEZE_PANES: { type: 'UNFREEZE_PANES', sheetName: 'Dashboard' },
+  AUTO_FILTER: { type: 'AUTO_FILTER', sheetName: 'Dashboard', range: 'A1:N51' },
   SET_ZOOM: { type: 'SET_ZOOM', sheetName: 'Dashboard', zoomPercent: 120 },
   PROTECT_SHEET: { type: 'PROTECT_SHEET', sheetName: 'Dashboard' },
   UNPROTECT_SHEET: { type: 'UNPROTECT_SHEET', sheetName: 'Dashboard' },
@@ -154,6 +155,11 @@ const FIELD_FIXTURES: Record<SheetActionType, Record<string, unknown>> = {
     sheetName: 'Dashboard',
     operations: [{ address: 'A1', value: 1 }],
   },
+  DELETE_TABLE: {
+    type: 'DELETE_TABLE',
+    sheetName: 'Dashboard',
+    tableName: 'T1',
+  },
   CREATE_TABLE: {
     type: 'CREATE_TABLE',
     sheetName: 'Dashboard',
@@ -201,6 +207,13 @@ const FIELD_FIXTURES: Record<SheetActionType, Record<string, unknown>> = {
     hasHeaders: true,
     columnName: 'Amount',
   },
+  SET_RANGE_VALUES: {
+    type: 'SET_RANGE_VALUES',
+    sheetName: 'Dashboard',
+    range: 'A2:B4',
+    operations: [{ address: 'A2', value: 'x' }],
+    explicitOverwriteConfirmed: true,
+  },
   COPY_FILTERED_RANGE: {
     type: 'COPY_FILTERED_RANGE',
     sourceSheet: 'Purchase Register',
@@ -219,6 +232,15 @@ const FIELD_FIXTURES: Record<SheetActionType, Record<string, unknown>> = {
     hasHeaders: true,
     filter: { column: 'Status', operator: 'equals', value: 'Open' },
     format: { fillColor: '#FFEEEE' },
+  },
+  SET_MATCHING_ROWS: {
+    type: 'SET_MATCHING_ROWS',
+    sheetName: 'Purchase Register',
+    range: 'A1:L200',
+    hasHeaders: true,
+    filter: { column: 'Payment Status', operator: 'equals', value: 'Paid' },
+    targetColumn: 'Remarks',
+    value: 'Cleared',
   },
   MOVE_RANGE: {
     type: 'MOVE_RANGE',
@@ -248,6 +270,22 @@ const FIELD_FIXTURES: Record<SheetActionType, Record<string, unknown>> = {
     chartId: 'Chart_TotalTaxByDate',
     chartType: 'BarClustered',
     colorScheme: 'green',
+  },
+  CONDITIONAL_FORMAT: {
+    type: 'CONDITIONAL_FORMAT',
+    sheetName: 'Purchase Register',
+    range: 'J2:J51',
+    rule: { kind: 'cellValue', operator: 'greaterThan', value: 1000, format: { fillColor: '#FFC7CE' } },
+  },
+  DELETE_CONDITIONAL_FORMAT: {
+    type: 'DELETE_CONDITIONAL_FORMAT',
+    sheetName: 'Purchase Register',
+    ruleId: 'cf-1',
+  },
+  DELETE_CHART: {
+    type: 'DELETE_CHART',
+    sheetName: 'Dashboard',
+    chartId: 'Chart_spend',
   },
 };
 

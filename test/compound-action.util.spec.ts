@@ -51,6 +51,7 @@ const gstContext: WorkbookContext = {
       formulas: [],
       numberFormats: [],
       structure: 'data_table',
+      headerRowIndex: 0,
     },
   ],
   namedRanges: [],

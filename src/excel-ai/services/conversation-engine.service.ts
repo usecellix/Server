@@ -18,6 +18,14 @@ import {
 import { ConversationMessageEntry } from '../schemas/conversation.schema';
 import { SheetActionPayload } from '../types/sheet-actions.types';
 import { buildWorkbookContext } from '../utils/workbook-context.util';
+import {
+  groupActionsBySheet,
+  resolveSheetHeaderStates,
+  sheetKeyOf,
+  SheetHeaderStates,
+} from '../utils/sheet-header-state.util';
+import { applyPresentationPass } from '../utils/presentation-pass.util';
+import { applyConsolidationPass } from '../utils/consolidation-pass.util';
 import { formatIndianCurrency } from '../utils/indian-format.util';
 import { DataQueryService, FindMatch } from './data-query.service';
 import { IntentClassifierService, intentIsReadOnly } from './intent-classifier.service';
@@ -26,9 +34,24 @@ import { SheetAnalysis, SheetAnalyzerService } from './sheet-analyzer.service';
 import { pruneSpuriousAddSheetActions } from '../../agents/utils/compound-action.util';
 import { annotateClearIntentOverwrite } from '../../agents/utils/clear-intent-overwrite.util';
 import {
+  buildSheetOverview,
+  formatSheetOverviewMarkdown,
+  isSheetOverviewRequest,
+} from '../utils/sheet-overview.util';
+import {
   annotateExplicitOverwriteConfirmation,
   type OverwriteTurnActionRecord,
 } from '../utils/overwrite-confirmation.util';
+import {
+  findPendingWritePlan,
+  isAffirmationMessage,
+  localActionWithoutLlmMessage,
+  localWriteUnavailableMessage,
+} from '../utils/pending-write-plan.util';
+import {
+  describeLlmFailureForWrite,
+  type LlmFailure,
+} from '../utils/llm-failure-message.util';
 
 export { LlmRequestError, LlmRequestError as OpenAiRequestError } from '../errors/llm-request.error';
 export type { SheetActionPayload };
@@ -81,6 +104,8 @@ export class ConversationEngineService {
     analysis: SheetAnalysis,
     history: ConversationMessageEntry[],
     workbookMeta?: WorkbookContextInput,
+    /** Why the LLM call failed, when it was attempted and threw (F11). */
+    llmFailure?: LlmFailure,
   ): EngineResponse {
     const normalized = message.trim();
     const lower = normalized.toLowerCase();
@@ -100,10 +125,28 @@ export class ConversationEngineService {
       return this.handlePendingSumColumn(normalized, sheetData, analysis);
     }
 
+    const pendingWritePlan = findPendingWritePlan(history);
+
+    // Short affirmations must never fall through to the sheet-census "I see N rows".
+    if (isAffirmationMessage(normalized)) {
+      return {
+        kind: 'answer',
+        answer: localWriteUnavailableMessage(pendingWritePlan),
+      };
+    }
+
     const classification = this.intentClassifier.classify(normalized);
 
     if (intentIsReadOnly(classification.intent)) {
       if (classification.intent === 'EXPLAIN') {
+        // Spec 23: broad overview uses real aggregates, not structural letter dumps.
+        if (isSheetOverviewRequest(normalized)) {
+          const sheetName = ctx.activeSheet || 'Sheet';
+          const answer = formatSheetOverviewMarkdown(
+            buildSheetOverview(sheetData, analysis, sheetName),
+          );
+          return { kind: 'answer', answer };
+        }
         return { kind: 'answer', answer: this.buildSheetExplanation(sheetData, analysis, ctx) };
       }
       if (classification.intent === 'DATA_QUESTION') {
@@ -171,6 +214,9 @@ export class ConversationEngineService {
     }
 
     if (analysis.isEmpty && this.isPopulateIntent(lower)) {
+      if (llmFailure && llmFailure.kind !== 'not_configured') {
+        return { kind: 'answer', answer: describeLlmFailureForWrite(llmFailure) };
+      }
       return {
         kind: 'question',
         question:
@@ -184,6 +230,26 @@ export class ConversationEngineService {
         kind: 'answer',
         answer:
           'Your worksheet is empty. Ask me to **generate sample GST data**, **create a purchase register**, or describe what columns and rows you need — I will build it for you.',
+      };
+    }
+
+    // Write / resume prompts must never die on a structural sheet census.
+    if (
+      classification.intent === 'ACTION' ||
+      this.isWriteIntent(lower) ||
+      pendingWritePlan
+    ) {
+      // F11: when the LLM was tried and failed, report the PROVIDER's reason —
+      // never the "set OPENROUTER_API_KEY" copy, which is false whenever a key is
+      // present and working (e.g. a 402 out-of-credits).
+      if (llmFailure && llmFailure.kind !== 'not_configured') {
+        return { kind: 'answer', answer: describeLlmFailureForWrite(llmFailure) };
+      }
+      return {
+        kind: 'answer',
+        answer: pendingWritePlan
+          ? localWriteUnavailableMessage(pendingWritePlan)
+          : localActionWithoutLlmMessage(),
       };
     }
 
@@ -429,6 +495,8 @@ Sheet has ${analysis.rowCount} rows, ${analysis.columnCount} columns. Next appen
     richWorkbookContext?: RichWorkbookContext,
     userMessage?: string,
     priorTurnActions?: OverwriteTurnActionRecord[],
+    /** Client-probed host capabilities — TASKS.md #152. */
+    excelCapabilities?: { dynamicArrays?: boolean },
   ): SheetActionPayload[] {
     let finalActions = pruneSpuriousAddSheetActions(actions as never[]) as SheetActionPayload[];
     if (userMessage) {
@@ -444,24 +512,61 @@ Sheet has ${analysis.rowCount} rows, ${analysis.columnCount} columns. Next appen
       finalActions = injectMissingFormats(finalActions, richWorkbookContext);
       const validation = validateCrossSheetActions(finalActions, richWorkbookContext);
       if (validation.errors.length > 0) {
-        this.logger.warn(
-          `Cross-sheet action validation errors: ${validation.errors.join('; ')}`,
+        // These actions are DISCARDED, so a multi-sheet build silently delivers
+        // less than planned — the user sees a partial result with no explanation.
+        // Log at error level with the offending sheets so it is diagnosable.
+        const missingSheets = [
+          ...new Set(
+            validation.invalid
+              .map((action) => action.sheetName ?? richWorkbookContext.activeSheet)
+              .filter((name): name is string => Boolean(name)),
+          ),
+        ];
+        this.logger.error(
+          `Dropped ${validation.invalid.length} action(s) targeting sheet(s) that neither exist ` +
+            `nor are created in this batch: ${missingSheets.join(', ')}. ` +
+            `Details: ${validation.errors.join('; ')}`,
         );
       }
       finalActions = validation.valid;
     }
-    return this.sanitizeActions(finalActions, analysis);
+    const sanitized = this.sanitizeActions(finalActions, analysis, richWorkbookContext);
+    // Make a consolidated table actually consolidate (TASKS.md #142), then style
+    // what this batch builds (TASKS.md #138). Both append only — neither
+    // reorders or relocates content, so the planner's anchor arithmetic holds.
+    // Consolidation runs first so the styling pass sees the final layout.
+    const consolidated = applyConsolidationPass(sanitized, {
+      dynamicArrays: excelCapabilities?.dynamicArrays,
+    });
+    return applyPresentationPass(consolidated, {
+      userMessage,
+      context: richWorkbookContext,
+    });
   }
 
   private sanitizeActions(
     actions: SheetActionPayload[],
     analysis?: SheetAnalysis,
+    context?: RichWorkbookContext,
   ): SheetActionPayload[] {
-    const withAddRowConversion = this.convertHeaderRowWritesToAddRow(actions, analysis);
+    // Header-row protection is per sheet. `analysis` describes the ACTIVE sheet
+    // only, so using its `isEmpty` for the whole batch grades a 13-sheet build
+    // by whichever tab the user had open. See TASKS.md #137.
+    const headerStates = resolveSheetHeaderStates(actions, context, analysis?.isEmpty ?? false);
+    const activeSheet = context?.activeSheet;
+    const withAddRowConversion = this.convertHeaderRowWritesToAddRow(
+      actions,
+      analysis,
+      headerStates,
+      activeSheet,
+    );
     return withAddRowConversion
       .map((action) => this.sanitizeAction(action))
       .filter((action): action is SheetActionPayload => action !== null)
-      .filter((action) => !this.isHeaderMutation(action, analysis?.isEmpty));
+      .filter((action) => {
+        const sheetIsEmpty = !(headerStates.get(sheetKeyOf(action, activeSheet)) ?? true);
+        return !this.isHeaderMutation(action, sheetIsEmpty);
+      });
   }
 
   private isHeaderMutation(action: SheetActionPayload, sheetIsEmpty = false): boolean {
@@ -493,39 +598,65 @@ Sheet has ${analysis.rowCount} rows, ${analysis.columnCount} columns. Next appen
     return action.row === ConversationEngineService.HEADER_ROW;
   }
 
+  /**
+   * Convert row-1 value writes into an appended row — but only on sheets that
+   * actually have a header row to protect, and only ever merging writes that
+   * share one sheet.
+   *
+   * The merged ADD_ROW carries its group's `sheetName`. Omitting it is what
+   * made the client-side twin of this function so destructive: a sheet-less
+   * write resolves to `getActiveWorksheet()`, so 121 header cells from 13
+   * sheets landed as one row on whichever tab was open. See TASKS.md #137.
+   */
   private convertHeaderRowWritesToAddRow(
     actions: SheetActionPayload[],
-    analysis?: SheetAnalysis,
+    analysis: SheetAnalysis | undefined,
+    headerStates: SheetHeaderStates,
+    activeSheet: string | undefined,
   ): SheetActionPayload[] {
-    if (analysis?.isEmpty) {
-      return actions;
+    const out: SheetActionPayload[] = [];
+
+    for (const [sheetKey, groupActions] of groupActionsBySheet(actions, activeSheet)) {
+      const hasHeaderRow = headerStates.get(sheetKey) ?? true;
+      if (!hasHeaderRow) {
+        out.push(...groupActions);
+        continue;
+      }
+
+      const headerWrites = groupActions.filter(
+        (action) =>
+          (action.type === 'SET_CELL' ||
+            action.type === 'SET_FORMULA' ||
+            action.type === 'CLEAR_CELL') &&
+          action.row === ConversationEngineService.HEADER_ROW,
+      );
+
+      if (!headerWrites.length) {
+        out.push(...groupActions);
+        continue;
+      }
+
+      const columnCount = Math.max(
+        analysis?.columnCount ?? 0,
+        ...headerWrites.map((action) => (action.col ?? 0) + 1),
+        1,
+      );
+      const rowData: unknown[] = Array.from({ length: columnCount }, (_, index) => {
+        const write = headerWrites.find((action) => action.col === index);
+        if (!write) return '';
+        if (write.type === 'SET_FORMULA') return write.formula ?? '';
+        if (write.type === 'SET_CELL') return write.value ?? '';
+        return '';
+      });
+
+      const sheetName = groupActions.find((a) => a.sheetName)?.sheetName;
+      const merged: SheetActionPayload = { type: 'ADD_ROW', data: rowData };
+      if (sheetName) merged.sheetName = sheetName;
+
+      out.push(merged, ...groupActions.filter((action) => !headerWrites.includes(action)));
     }
 
-    const headerWrites = actions.filter(
-      (action) =>
-        (action.type === 'SET_CELL' ||
-          action.type === 'SET_FORMULA' ||
-          action.type === 'CLEAR_CELL') &&
-        action.row === ConversationEngineService.HEADER_ROW,
-    );
-
-    if (!headerWrites.length) return actions;
-
-    const columnCount = Math.max(
-      analysis?.columnCount ?? 0,
-      ...headerWrites.map((action) => (action.col ?? 0) + 1),
-      1,
-    );
-    const rowData: unknown[] = Array.from({ length: columnCount }, (_, index) => {
-      const write = headerWrites.find((action) => action.col === index);
-      if (!write) return '';
-      if (write.type === 'SET_FORMULA') return write.formula ?? '';
-      if (write.type === 'SET_CELL') return write.value ?? '';
-      return '';
-    });
-
-    const rest = actions.filter((action) => !headerWrites.includes(action));
-    return [{ type: 'ADD_ROW', data: rowData }, ...rest];
+    return out;
   }
 
   private sanitizeAction(action: SheetActionPayload): SheetActionPayload | null {
@@ -764,7 +895,7 @@ Sheet has ${analysis.rowCount} rows, ${analysis.columnCount} columns. Next appen
       };
     }
 
-    const total = this.sheetAnalyzer.sumColumn(sheetData, columnIndex);
+    const total = this.sheetAnalyzer.sumColumn(sheetData, columnIndex, true, analysis.headerRowIndex ?? 0);
     const columnLabel = analysis.headers[columnIndex] || analysis.columnLetters[columnIndex];
     const totalRow = this.buildSummaryRow(analysis, columnIndex, total, `Total ${columnLabel}`);
     return {
@@ -790,7 +921,12 @@ Sheet has ${analysis.rowCount} rows, ${analysis.columnCount} columns. Next appen
 
     const explicitColumn = this.extractColumnReference(normalized, analysis);
     if (explicitColumn !== null) {
-      const total = this.sheetAnalyzer.sumColumn(sheetData, explicitColumn);
+      const total = this.sheetAnalyzer.sumColumn(
+        sheetData,
+        explicitColumn,
+        true,
+        analysis.headerRowIndex ?? 0,
+      );
       const columnLabel = analysis.headers[explicitColumn] || analysis.columnLetters[explicitColumn];
       if (this.isWriteResultIntent(lower)) {
         return {
@@ -907,7 +1043,12 @@ Sheet has ${analysis.rowCount} rows, ${analysis.columnCount} columns. Next appen
     sheetData: unknown[][],
     analysis: SheetAnalysis,
   ): EngineResponse {
-    const blankRows = this.sheetAnalyzer.findBlankRows(sheetData);
+    const blankRows = this.sheetAnalyzer.findBlankRows(
+      sheetData,
+      undefined,
+      true,
+      analysis.headerRowIndex ?? 0,
+    );
     if (blankRows.length === 0) {
       return { kind: 'answer', answer: 'No completely blank rows found in your data.' };
     }
@@ -1004,9 +1145,10 @@ Sheet has ${analysis.rowCount} rows, ${analysis.columnCount} columns. Next appen
         'Most cells look **empty** or free-form — add headers and structured rows to get column-level insight.',
       );
     } else {
+      // Column names + samples only — avoid letter dumps (A:, B:) for user-facing EXPLAIN.
       const lines = detailed.map((c) => {
         const h = safe(c.header);
-        return `• **${h}** (${c.letter}): ${c.preview}`;
+        return `• **${h}**: ${c.preview}`;
       });
       blocks.push(
         `**${detailed.length}** of **${columnsWithData.length}** columns show sample values:\n${lines.join('\n')}`,

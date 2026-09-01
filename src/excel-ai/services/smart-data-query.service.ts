@@ -43,8 +43,16 @@ export class SmartDataQueryService {
       `SmartDataQuery: sheet=${sheet.sheetName} cols=${sheet.headers.join(',')} rows=${sheet.totalRows}`,
     );
 
+    const MAX_COLUMNS_IN_MESSAGE = 4;
+    const columnSummary =
+      sheet.headers.length > MAX_COLUMNS_IN_MESSAGE
+        ? `${sheet.headers.slice(0, MAX_COLUMNS_IN_MESSAGE).join(', ')} + ${
+            sheet.headers.length - MAX_COLUMNS_IN_MESSAGE
+          } more columns`
+        : sheet.headers.join(', ');
+
     emit('thinking', {
-      message: `Reading ${sheet.sheetName} and analyzing ${sheet.headers.join(', ')}`,
+      message: `Reading ${sheet.sheetName} (${sheet.totalRows} rows) — analyzing ${columnSummary}`,
     });
 
     const systemPrompt = buildDataQuerySystemPrompt();

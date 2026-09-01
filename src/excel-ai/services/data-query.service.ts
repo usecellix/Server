@@ -531,7 +531,7 @@ export class DataQueryService {
       return { answer: 'Which column should I check for blank cells?' };
     }
 
-    const blank = this.analyzer.countBlank(sheetData, columnIndex);
+    const blank = this.analyzer.countBlank(sheetData, columnIndex, true, analysis.headerRowIndex ?? 0);
     const label = analysis.headers[columnIndex] || analysis.columnLetters[columnIndex];
 
     return {
@@ -550,7 +550,12 @@ export class DataQueryService {
       return { answer: 'Which column should I check for duplicates?' };
     }
 
-    const dupes = this.analyzer.findDuplicates(sheetData, columnIndex);
+    const dupes = this.analyzer.findDuplicates(
+      sheetData,
+      columnIndex,
+      true,
+      analysis.headerRowIndex ?? 0,
+    );
     const label = analysis.headers[columnIndex] || analysis.columnLetters[columnIndex];
 
     if (dupes.length === 0) {
@@ -580,7 +585,7 @@ export class DataQueryService {
     }
 
     const threshold = this.extractThreshold(lower) ?? 100000;
-    const total = this.analyzer.countDataRows(sheetData);
+    const total = this.analyzer.countDataRows(sheetData, true, analysis.headerRowIndex ?? 0);
     const above = this.countAboveThreshold(sheetData, columnIndex, threshold);
     const pct = total > 0 ? (above / total) * 100 : 0;
     const label = analysis.headers[columnIndex] || analysis.columnLetters[columnIndex];

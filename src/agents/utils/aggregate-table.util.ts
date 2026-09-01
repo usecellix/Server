@@ -1,4 +1,4 @@
-export type AggregateFn = 'sum' | 'count' | 'average' | 'max' | 'min';
+export type AggregateFn = 'sum' | 'count' | 'average' | 'max' | 'min' | 'first';
 
 /** Derived grouping key transforms (computed in code during aggregation). */
 export type GroupByTransform = 'none' | 'month' | 'year' | 'monthYear' | 'weekday' | 'quarter';
@@ -34,7 +34,7 @@ function findCol(headerRow: unknown[], name: string): number {
   return headerRow.findIndex((cell) => String(cell ?? '').trim().toLowerCase() === target);
 }
 
-function aggregateValues(values: number[], fn: AggregateFn): number {
+function aggregateValues(values: number[], fn: Exclude<AggregateFn, 'first'>): number {
   if (fn === 'count') return values.length;
   if (values.length === 0) return 0;
   if (fn === 'sum') return values.reduce((a, b) => a + b, 0);
@@ -159,6 +159,14 @@ export function buildAggregateTable(params: AggregateTableParams): unknown[][] {
   for (const [key, bucket] of groups) {
     const cells: unknown[] = [key];
     for (const agg of aggCols) {
+      if (agg.fn === 'first') {
+        // Passthrough for a label/identity column that's 1:1 with the group key
+        // (e.g. carrying a Supplier Name column alongside a GSTIN group-by, for
+        // a GSTR-2A/2B-style reconciliation report) — not a numeric reduction,
+        // so it never goes through aggregateValues.
+        cells.push(bucket[0]?.[agg.idx] ?? '');
+        continue;
+      }
       const nums =
         agg.fn === 'count'
           ? bucket.map(() => 1)

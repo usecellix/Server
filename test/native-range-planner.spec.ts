@@ -56,6 +56,7 @@ describe('native range planner contract', () => {
           formulas: [['']],
           numberFormats: [['General']],
           structure: 'unknown',
+          headerRowIndex: 0,
         },
       ],
       namedRanges: [],

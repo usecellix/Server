@@ -1,5 +1,11 @@
 import { compareSortValues } from '../agents/utils/sort-value.util';
-import { buildOutputRows, filterDataRows, applyFilterOperator } from '../agents/utils/range-filter.util';
+import {
+  buildOutputRows,
+  filterDataRows,
+  applyFilterOperator,
+  resolveFilterColumnIndex,
+  findMatchingRowOffsets,
+} from '../agents/utils/range-filter.util';
 import { buildAggregateTable } from '../agents/utils/aggregate-table.util';
 import { Logger } from '@nestjs/common';
 import { Action } from '../agents/types/agent.types';
@@ -70,6 +76,9 @@ function applyAction(wb: ShadowWorkbook, action: Action): void {
     case 'COPY_SHEET':
       virtualCopySheet(wb, action);
       break;
+    case 'DELETE_SHEET':
+      virtualDeleteSheet(wb, action.sheetName ?? '');
+      break;
     case 'DEFINE_NAMED_RANGE':
       if (action.name && action.formula) {
         wb.namedRanges.set(action.name, action.formula);
@@ -87,23 +96,71 @@ function applyAction(wb: ShadowWorkbook, action: Action): void {
     case 'FORMAT_MATCHING_ROWS':
       // Format-only — shadow workbook has no fill state to update.
       break;
+    case 'CONDITIONAL_FORMAT':
+      virtualAddConditionalFormat(wb, action);
+      break;
     case 'MOVE_RANGE':
       virtualMoveRange(wb, action);
       break;
     case 'AGGREGATE_TABLE':
       virtualAggregateTable(wb, action);
       break;
+    case 'FILL_DOWN':
+      virtualFillDown(wb, action);
+      break;
+    case 'FILL_RIGHT':
+      virtualFillRight(wb, action);
+      break;
+    // ---- Deliberately not simulated — see virtual-apply-catalog.ts for the
+    // documented reason behind every one of these, enforced by
+    // test/virtual-apply-catalog.spec.ts so a new action type can't silently
+    // land here without a recorded decision (TASKS.md #41). ----
     case 'FORMAT_RANGE':
     case 'AUTOFIT_COLUMNS':
-    case 'FILL_DOWN':
-    case 'FILL_RIGHT':
     case 'CREATE_TABLE':
+    case 'DELETE_TABLE':
+    case 'DELETE_CONDITIONAL_FORMAT':
     case 'CREATE_CHART':
     case 'UPDATE_CHART':
+    case 'DELETE_CHART':
     case 'CLARIFY':
     case 'CHECKPOINT':
     case 'HIGHLIGHT_CELL':
     case 'CLEAR_CELL':
+    case 'HIDE_ROW':
+    case 'UNHIDE_ROW':
+    case 'SHOW_ROW':
+    case 'HIDE_COLUMN':
+    case 'UNHIDE_COLUMN':
+    case 'SHOW_COLUMN':
+    case 'SET_ROW_HEIGHT':
+    case 'SET_COLUMN_WIDTH':
+    case 'AUTO_FILTER':
+    case 'FREEZE_PANES':
+    case 'UNFREEZE_PANES':
+    case 'HIDE_SHEET':
+    case 'SHOW_SHEET':
+    case 'SET_SHEET_COLOR':
+    case 'PROTECT_SHEET':
+    case 'UNPROTECT_SHEET':
+    case 'SET_ZOOM':
+    case 'ADD_COMMENT':
+    case 'DELETE_COMMENT':
+    case 'CLEAR_FORMAT':
+    case 'UNMERGE_CELLS':
+      break;
+    // ---- TASKS.md #66: real simulations, found as gaps during #41's audit ----
+    case 'CLEAR_CONTENT':
+      virtualClearRange(wb, action, false);
+      break;
+    case 'CLEAR_ALL':
+      virtualClearRange(wb, action, true);
+      break;
+    case 'SET_MATCHING_ROWS':
+      virtualSetMatchingRows(wb, action);
+      break;
+    case 'MERGE_CELLS':
+      virtualMergeCells(wb, action);
       break;
     default:
       break;
@@ -133,13 +190,29 @@ function markChanged(wb: ShadowWorkbook, sheetName: string, address: string): vo
   wb.changedCells.add(`${sheetName}!${address}`);
 }
 
+/** Subset of FormatSpec the shadow workbook tracks per cell (TASKS.md #10/#64). */
+interface VirtualCellFormat {
+  numberFormat?: string;
+  bold?: boolean;
+  italic?: boolean;
+  fontColor?: string;
+  fillColor?: string;
+}
+
 function virtualSetCell(
   wb: ShadowWorkbook,
   sheetName: string,
   address: string,
   value: unknown,
   formula: string,
+  format?: VirtualCellFormat,
 ): void {
+  // Defence in depth for TASKS.md #156: every downstream reader of
+  // `sheet.cells` parses the key with `address.replace(...)`, so a single
+  // undefined address poisons the shadow and throws far from here. Reject it
+  // at the one door every writer goes through, rather than trusting ten
+  // callers to have validated.
+  if (typeof address !== 'string' || !address.trim()) return;
   const sheet = ensureSheet(wb, sheetName);
   const existing = sheet.cells.get(address) ?? {
     value: null,
@@ -150,6 +223,11 @@ function virtualSetCell(
     ...existing,
     value: formula ? `[formula: ${formula}]` : value,
     formula,
+    ...(format?.numberFormat !== undefined ? { numberFormat: format.numberFormat } : {}),
+    ...(format?.bold !== undefined ? { bold: format.bold } : {}),
+    ...(format?.italic !== undefined ? { italic: format.italic } : {}),
+    ...(format?.fontColor !== undefined ? { fontColor: format.fontColor } : {}),
+    ...(format?.fillColor !== undefined ? { fillColor: format.fillColor } : {}),
   });
   markChanged(wb, sheetName, address);
   updateSheetBounds(sheet);
@@ -157,36 +235,44 @@ function virtualSetCell(
 
 function virtualSetCellLegacy(wb: ShadowWorkbook, action: Action): void {
   if (action.address && action.sheetName) {
-    virtualSetCell(wb, action.sheetName, action.address, action.value ?? null, '');
+    virtualSetCell(wb, action.sheetName, action.address, action.value ?? null, '', action.format);
     return;
   }
   if (action.row === undefined || action.col === undefined) return;
   const sheetName = action.sheetName ?? wb.activeSheetName;
   const address = `${colIndexToLetter(action.col)}${action.row + 1}`;
-  virtualSetCell(wb, sheetName, address, action.value ?? null, '');
+  virtualSetCell(wb, sheetName, address, action.value ?? null, '', action.format);
 }
 
 function virtualSetFormulaLegacy(wb: ShadowWorkbook, action: Action): void {
   if (action.address && action.sheetName) {
-    virtualSetCell(wb, action.sheetName, action.address, null, action.formula ?? '');
+    virtualSetCell(wb, action.sheetName, action.address, null, action.formula ?? '', action.format);
     return;
   }
   if (action.row === undefined || action.col === undefined || !action.formula) return;
   const sheetName = action.sheetName ?? wb.activeSheetName;
   const address = `${colIndexToLetter(action.col)}${action.row + 1}`;
-  virtualSetCell(wb, sheetName, address, null, action.formula);
+  virtualSetCell(wb, sheetName, address, null, action.formula, action.format);
 }
 
 function virtualBatchSet(wb: ShadowWorkbook, action: Action): void {
   if (!action.sheetName || !Array.isArray(action.operations)) return;
   for (const op of action.operations) {
-    virtualSetCell(
-      wb,
-      action.sheetName,
-      op.address,
-      op.value ?? null,
-      op.formula ?? '',
-    );
+    // An operation with no usable `address` is malformed model output, not a
+    // cell to simulate. It used to reach `virtualSetCell` and, further down,
+    // `addr.replace(...)` — throwing "Cannot read properties of undefined
+    // (reading 'replace')" and killing the ENTIRE agentic run from one bad
+    // action, mid-loop, before any card was produced.
+    //
+    // This is TASKS.md #131 made fatal: `BATCH_SET` is advertised to the
+    // Executor by name with no schema, so the model periodically guesses its
+    // shape and omits `address`. That the guess is wrong is #131's problem;
+    // that a wrong guess destroys the whole request is this one's. The shadow
+    // workbook must be robust to malformed actions — it exists to catch bad
+    // output, so it cannot itself be the thing that explodes on it.
+    // TASKS.md #156.
+    if (typeof op?.address !== 'string' || !op.address.trim()) continue;
+    virtualSetCell(wb, action.sheetName, op.address, op.value ?? null, op.formula ?? '', op.format);
   }
 }
 
@@ -231,6 +317,7 @@ function virtualAddRowAfter(
   sheet.cells = newCells;
   sheet.rowCount += 1;
   sheet.columnCount = Math.max(sheet.columnCount, values.length);
+  wb.structuralLog.push({ opType: 'INSERT_ROW', sheetName, index: afterRow + 1, count: 1 });
 }
 
 function virtualDeleteRowLegacy(wb: ShadowWorkbook, action: Action): void {
@@ -275,6 +362,13 @@ function virtualDeleteRows(wb: ShadowWorkbook, sheetName: string, rows: number[]
 
   sheet.cells = newCells;
   sheet.rowCount = Math.max(0, sheet.rowCount - rows.length);
+
+  // Logged in descending row order so `structuralOpsToInverseActions`'s standard
+  // "undo newest-first" reversal re-inserts ascending — the same convention DELETE_COLUMN
+  // gets for free from its own right-to-left processing loop (see TASKS.md #13/#14).
+  for (const r of [...rows].sort((a, b) => b - a)) {
+    wb.structuralLog.push({ opType: 'DELETE_ROW', sheetName, index: r, count: 1 });
+  }
 }
 
 function virtualInsertRowLegacy(wb: ShadowWorkbook, action: Action): void {
@@ -388,6 +482,7 @@ function virtualInsertColumn(
 
   sheet.cells = newCells;
   sheet.columnCount += count;
+  wb.structuralLog.push({ opType: 'INSERT_COLUMN', sheetName, index: insertAt, count });
 }
 
 function virtualDeleteColumnLegacy(wb: ShadowWorkbook, action: Action): void {
@@ -443,6 +538,7 @@ function virtualDeleteColumnLegacy(wb: ShadowWorkbook, action: Action): void {
     }
     sheet.cells = newCells;
     sheet.columnCount = Math.max(0, sheet.columnCount - 1);
+    wb.structuralLog.push({ opType: 'DELETE_COLUMN', sheetName, index: colIndex, count: 1 });
   }
 }
 
@@ -498,6 +594,293 @@ function virtualCopySheet(wb: ShadowWorkbook, action: Action): void {
   const newName = action.newSheetName ?? action.newName;
   if (!sourceName || !newName) return;
   virtualAddSheet(wb, newName, sourceName);
+}
+
+function virtualDeleteSheet(wb: ShadowWorkbook, sheetName: string): void {
+  if (!sheetName || !wb.sheets.has(sheetName)) return;
+  wb.sheets.delete(sheetName);
+  if (wb.activeSheetName === sheetName) {
+    const next = wb.sheets.keys().next();
+    if (!next.done) wb.activeSheetName = next.value;
+  }
+}
+
+/**
+ * Shift relative A1 references by rowDelta/colDelta, leaving $-anchored
+ * refs fixed — the same shape of logic virtualInsertColumnLegacy already
+ * uses for its own formula template, generalized for fill-down/fill-right.
+ * Naive regex, not a full formula parser — matches the sophistication
+ * already accepted elsewhere in this file.
+ */
+function shiftFormulaRefs(formula: string, rowDelta: number, colDelta: number): string {
+  return formula.replace(
+    /(\$?)([A-Za-z]{1,3})(\$?)(\d+)/g,
+    (_match, colDollar: string, col: string, rowDollar: string, row: string) => {
+      const newCol =
+        colDollar === '$' ? col : colIndexToLetter(letterToColIndex(col) + colDelta);
+      const newRow = rowDollar === '$' ? row : String(Number(row) + rowDelta);
+      return `${colDollar}${newCol}${rowDollar}${newRow}`;
+    },
+  );
+}
+
+/**
+ * TASKS.md #42: populate the shadow with the correctly-shifted formula/value
+ * for each filled cell, so FormulaValidatorService.checkPostApply's
+ * error-string scan and reference-bounds re-check (both of which read
+ * straight off the shadow, not the real workbook) can catch a bad reference
+ * shift before the real Excel write — not by evaluating formulas (the shadow
+ * never does that), just by making sure it actually holds what a fill would
+ * really produce, instead of silently no-op'ing like before.
+ */
+function virtualFillDown(wb: ShadowWorkbook, action: Action): void {
+  const sheetName = action.sheetName ?? wb.activeSheetName;
+  const sheet = getSheet(wb, sheetName);
+  if (!sheet) return;
+
+  // Two distinct shapes reach virtualApply — this runs on the raw,
+  // pre-normalization Action, before the wire ever sees it. The Executor's
+  // own prompt examples use row/col/endRow (single column, e.g.
+  // {"type":"FILL_DOWN","col":3,"row":1,"endRow":847}); sourceRange/
+  // targetRange (A1 strings, possibly multi-column) is the canonical
+  // shared/action.types.ts shape used elsewhere. Handling only one of these
+  // silently no-ops for whichever shape wasn't checked — confirmed the
+  // row/col/endRow shape is what the Executor is actually told to emit, so
+  // it must not be the unhandled one.
+  let srcRow: number;
+  let srcColStart: number;
+  let targetColStart: number;
+  let targetColEnd: number;
+  let targetRowStart: number;
+  let targetRowEnd: number;
+
+  if (action.sourceRange && action.targetRange) {
+    const sourceBounds = parseA1Range(stripSheetPrefix(action.sourceRange));
+    const targetBounds = parseA1Range(stripSheetPrefix(action.targetRange));
+    if (!sourceBounds || !targetBounds) return;
+    srcRow = sourceBounds.startRow;
+    srcColStart = sourceBounds.startCol;
+    targetColStart = targetBounds.startCol;
+    targetColEnd = targetBounds.endCol;
+    targetRowStart = targetBounds.startRow;
+    targetRowEnd = targetBounds.endRow;
+  } else if (
+    typeof action.row === 'number' &&
+    typeof action.col === 'number' &&
+    typeof action.endRow === 'number'
+  ) {
+    srcRow = action.row;
+    srcColStart = action.col;
+    targetColStart = action.col;
+    targetColEnd = action.col;
+    targetRowStart = action.row + 1;
+    targetRowEnd = action.endRow;
+  } else {
+    return;
+  }
+
+  for (let r = targetRowStart; r <= targetRowEnd; r += 1) {
+    for (let c = targetColStart; c <= targetColEnd; c += 1) {
+      const srcCol = srcColStart + (c - targetColStart);
+      const srcCell = sheet.cells.get(`${colIndexToLetter(srcCol)}${srcRow + 1}`);
+      if (!srcCell) continue;
+
+      const rowDelta = r - srcRow;
+      const isFormula = Boolean(srcCell.formula && srcCell.formula.startsWith('='));
+      const formula = isFormula ? shiftFormulaRefs(srcCell.formula, rowDelta, 0) : '';
+      const address = `${colIndexToLetter(c)}${r + 1}`;
+
+      sheet.cells.set(address, {
+        value: isFormula ? null : srcCell.value,
+        formula,
+        numberFormat: srcCell.numberFormat,
+      });
+      markChanged(wb, sheetName, address);
+    }
+  }
+  updateSheetBounds(sheet);
+}
+
+/**
+ * Resolve a rectangular span from either the row/col/rowCount/colCount shape
+ * (confirmed via cellix-system-prompt.ts's own examples — the same
+ * pre-normalization shape discovered for FILL_DOWN — to be what
+ * MERGE_CELLS/CLEAR_CONTENT/CLEAR_ALL actually carry) or an A1 range
+ * string, whichever the action has.
+ */
+function resolveSpan(
+  action: Action,
+): { startRow: number; startCol: number; endRow: number; endCol: number } | null {
+  if (typeof action.row === 'number' && typeof action.col === 'number') {
+    const rowCount =
+      typeof action.rowCount === 'number' && action.rowCount > 0 ? action.rowCount : 1;
+    const colCount =
+      typeof action.colCount === 'number' && action.colCount > 0 ? action.colCount : 1;
+    return {
+      startRow: action.row,
+      startCol: action.col,
+      endRow: action.row + rowCount - 1,
+      endCol: action.col + colCount - 1,
+    };
+  }
+  if (action.range) {
+    const bounds = parseA1Range(stripSheetPrefix(action.range));
+    if (bounds) return bounds;
+  }
+  return null;
+}
+
+/** TASKS.md #66 — CLEAR_CONTENT / CLEAR_ALL: actually clear values (and format, for CLEAR_ALL) in the shadow. */
+function virtualClearRange(wb: ShadowWorkbook, action: Action, clearFormat: boolean): void {
+  const sheetName = action.sheetName ?? wb.activeSheetName;
+  const sheet = getSheet(wb, sheetName);
+  if (!sheet) return;
+
+  const span = resolveSpan(action);
+  if (!span) return;
+
+  for (let r = span.startRow; r <= span.endRow; r += 1) {
+    for (let c = span.startCol; c <= span.endCol; c += 1) {
+      const address = `${colIndexToLetter(c)}${r + 1}`;
+      const existing = sheet.cells.get(address);
+      if (!existing) continue; // nothing there to clear
+      sheet.cells.set(address, {
+        value: null,
+        formula: '',
+        numberFormat: clearFormat ? 'General' : existing.numberFormat,
+      });
+      markChanged(wb, sheetName, address);
+    }
+  }
+}
+
+/** TASKS.md #66 — SET_MATCHING_ROWS: write `value` into `targetColumn` for every row matching `filter` (or all data rows if omitted). */
+function virtualSetMatchingRows(wb: ShadowWorkbook, action: Action): void {
+  const sheetName = action.sheetName ?? wb.activeSheetName;
+  const sheet = getSheet(wb, sheetName);
+  if (!sheet || !action.targetColumn) return;
+
+  const rangeStr = action.range ?? action.sourceRange;
+  if (!rangeStr) return;
+  const bounds = parseA1Range(stripSheetPrefix(rangeStr));
+  if (!bounds) return;
+
+  const rows = readRangeValues(sheet, rangeStr);
+  if (rows.length === 0) return;
+
+  const hasHeaders = action.hasHeaders !== false;
+  const headerRow = hasHeaders ? rows[0] : null;
+  if (!headerRow) return; // matching by header name requires a header row, same as the real Office.js handler
+
+  let targetColIndex: number;
+  try {
+    targetColIndex = resolveFilterColumnIndex(headerRow, action.targetColumn);
+  } catch {
+    return;
+  }
+
+  const matchOffsets = action.filter
+    ? findMatchingRowOffsets(rows, hasHeaders, action.filter)
+    : rows.map((_, i) => i).filter((i) => i >= (hasHeaders ? 1 : 0));
+
+  for (const offset of matchOffsets) {
+    const address = `${colIndexToLetter(bounds.startCol + targetColIndex)}${bounds.startRow + offset + 1}`;
+    virtualSetCell(wb, sheetName, address, action.value ?? null, '');
+  }
+}
+
+/**
+ * TASKS.md #66 — MERGE_CELLS: real Excel keeps only the top-left cell's
+ * value and discards the rest. Modeling that (not "no change") is what lets
+ * the existing generic before/after diff — the same mechanism the preview
+ * UI already surfaces to the user — show the discarded values as a real
+ * change instead of them silently vanishing with no signal at all.
+ */
+function virtualMergeCells(wb: ShadowWorkbook, action: Action): void {
+  const sheetName = action.sheetName ?? wb.activeSheetName;
+  const sheet = getSheet(wb, sheetName);
+  if (!sheet) return;
+
+  const span = resolveSpan(action);
+  if (!span) return;
+  if (span.startRow === span.endRow && span.startCol === span.endCol) return; // single cell, nothing to merge
+
+  for (let r = span.startRow; r <= span.endRow; r += 1) {
+    for (let c = span.startCol; c <= span.endCol; c += 1) {
+      if (r === span.startRow && c === span.startCol) continue; // top-left survives untouched
+      const address = `${colIndexToLetter(c)}${r + 1}`;
+      const existing = sheet.cells.get(address);
+      if (!existing) continue;
+      sheet.cells.set(address, { value: null, formula: '', numberFormat: existing.numberFormat });
+      markChanged(wb, sheetName, address);
+    }
+  }
+}
+
+/**
+ * TASKS.md #39 — presence-only tracking, NOT a real fill simulation. The
+ * shadow has no cell-format/fill state to evaluate the rule against (same
+ * reasoning FORMAT_RANGE/HIGHLIGHT_CELL already document), so this records
+ * that a rule was applied to a range — sheet/range/kind — for a verifier
+ * check to confirm the action landed, without pretending to compute which
+ * cells the rule would actually highlight.
+ */
+function virtualAddConditionalFormat(wb: ShadowWorkbook, action: Action): void {
+  const sheetName = action.sheetName ?? wb.activeSheetName;
+  if (!action.range || !action.rule) return;
+  wb.conditionalFormats.push({
+    sheetName,
+    range: stripSheetPrefix(action.range),
+    ruleKind: action.rule.kind,
+  });
+}
+
+/** TASKS.md #42 — same purpose as virtualFillDown, shifting columns instead of rows. */
+function virtualFillRight(wb: ShadowWorkbook, action: Action): void {
+  const sheetName = action.sheetName ?? wb.activeSheetName;
+  const sheet = getSheet(wb, sheetName);
+  if (!sheet) return;
+
+  let srcRow: number;
+  let srcCol: number;
+  let endCol: number;
+
+  if (action.sourceRange && action.targetRange) {
+    const sourceBounds = parseA1Range(stripSheetPrefix(action.sourceRange));
+    const targetBounds = parseA1Range(stripSheetPrefix(action.targetRange));
+    if (!sourceBounds || !targetBounds) return;
+    srcRow = sourceBounds.startRow;
+    srcCol = sourceBounds.startCol;
+    endCol = targetBounds.endCol;
+  } else if (
+    typeof action.row === 'number' &&
+    typeof action.col === 'number' &&
+    typeof action.endCol === 'number'
+  ) {
+    srcRow = action.row;
+    srcCol = action.col;
+    endCol = action.endCol;
+  } else {
+    return;
+  }
+
+  const srcCell = sheet.cells.get(`${colIndexToLetter(srcCol)}${srcRow + 1}`);
+  if (!srcCell) return;
+
+  for (let c = srcCol + 1; c <= endCol; c += 1) {
+    const colDelta = c - srcCol;
+    const isFormula = Boolean(srcCell.formula && srcCell.formula.startsWith('='));
+    const formula = isFormula ? shiftFormulaRefs(srcCell.formula, 0, colDelta) : '';
+    const address = `${colIndexToLetter(c)}${srcRow + 1}`;
+
+    sheet.cells.set(address, {
+      value: isFormula ? null : srcCell.value,
+      formula,
+      numberFormat: srcCell.numberFormat,
+    });
+    markChanged(wb, sheetName, address);
+  }
+  updateSheetBounds(sheet);
 }
 
 function virtualWriteTable(wb: ShadowWorkbook, action: Action): void {

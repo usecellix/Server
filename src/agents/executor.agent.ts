@@ -15,6 +15,7 @@ import { StepRetryContext } from './types/verifier.types';
 import { StepRetryExhaustedError } from './errors';
 import { StructuredLogger } from './logging/structured-logger';
 import { isExecutorBlockedSignal } from './utils/verifier-partial-parse.util';
+import { resolveExecutorMaxTokens } from './utils/executor-token-budget.util';
 
 const JSON_RETRY_SUFFIX =
   '\n\nIMPORTANT: Your previous response was not valid JSON. Reply with ONLY a single JSON object matching the schema — no markdown fences, no commentary.';
@@ -44,13 +45,17 @@ export class ExecutorAgent {
     const startedAt = Date.now();
     const model = this.modelName;
     const userMessage = buildExecutorUserMessage(subtask, context, previousActions);
+    // A subtask asking for many writes (e.g. a formula table spanning several
+    // sheets) needs a bigger completion budget — a flat 2000 tokens truncated
+    // large tables mid-way, and every retry hit the same fixed ceiling.
+    const maxTokens = resolveExecutorMaxTokens(subtask.estimatedActions);
 
     let raw = await this.llm.complete({
       systemPrompt: EXECUTOR_SYSTEM_PROMPT,
       userMessage,
       model,
       temperature: 0.1,
-      maxTokens: 2000,
+      maxTokens,
     });
     this.structuredLogger.debugRawResponse(correlationId, 'executor', model, raw);
 
@@ -71,13 +76,14 @@ export class ExecutorAgent {
         userMessage: userMessage + JSON_RETRY_SUFFIX,
         model,
         temperature: 0.05,
-        maxTokens: 2000,
+        maxTokens,
       });
       this.structuredLogger.debugRawResponse(correlationId, 'executor', model, raw);
       result = this.tryParseExecutor(raw, subtask);
     }
 
     if (result) {
+      this.warnOnDroppedActions(result, subtask);
       if (result.actions.length === 0 && !result.isDone) {
         // Spec 17 Bug C: never paper over an honest block with SORT_RANGE.
         if (isExecutorBlockedSignal(result.nextStep)) {
@@ -270,5 +276,19 @@ export class ExecutorAgent {
   private clip(value: string, max = 400): string {
     const normalized = value.replace(/\s+/g, ' ').trim();
     return normalized.length <= max ? normalized : `${normalized.slice(0, max)}...`;
+  }
+
+  /**
+   * An action the model emitted but normalization could not use is a silent
+   * correctness hole — the subtask reports success while doing less than asked.
+   */
+  private warnOnDroppedActions(result: ExecutorOutput, subtask: SubTask): void {
+    if (!result.droppedActions?.length) return;
+    const summary = result.droppedActions
+      .map((dropped) => `${dropped.rawType ?? '(no type)'} [${dropped.reason}]`)
+      .join(', ');
+    this.logger.warn(
+      `Executor emitted ${result.droppedActions.length} unusable action(s) for subtask ${subtask.id} — dropped: ${summary}`,
+    );
   }
 }

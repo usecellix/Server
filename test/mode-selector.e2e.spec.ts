@@ -66,6 +66,12 @@ describe('mode-selector.e2e', () => {
         {} as never,
         tier2GenerateVerify as unknown as Tier2GenerateVerifyService,
         { logTierDecision: jest.fn() } as unknown as StructuredLogger,
+        {
+          startTrace: jest.fn(),
+          appendNode: jest.fn(),
+          setMeta: jest.fn(),
+          finalize: jest.fn(),
+        } as never,
       );
 
       jest.spyOn(service as never, 'saveMessage' as never).mockResolvedValue(undefined as never);

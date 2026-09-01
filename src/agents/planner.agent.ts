@@ -4,7 +4,10 @@ import { truncateForPlannerLog } from '../common/logging/planner-file-logger.uti
 import { WorkflowTraceService } from '../common/logging/workflow-trace.service';
 import { AppConfigService } from '../config/app-config.service';
 import { PLANNER_RULES_ADDITION } from '../excel-ai/prompt/cellix-system-prompt';
-import { OpenRouterService } from '../excel-ai/services/openrouter.service';
+import {
+  LlmCompletionOutcome,
+  OpenRouterService,
+} from '../excel-ai/services/openrouter.service';
 import {
   PLANNER_EXHAUSTED_USER_MESSAGE,
   PlannerExhaustedError,
@@ -12,6 +15,7 @@ import {
 import { PLANNER_SYSTEM_PROMPT, buildPlannerUserMessage } from './prompts/planner.prompt';
 import { parseAgentJson } from './utils/parse-agent-json.util';
 import { buildCompoundFallbackSubtasks } from './utils/compound-action.util';
+import { ensureNumberFormatPlanSafety } from './utils/preserve-number-format.util';
 import {
   PLANNER_LAST_RESORT_MAX_TOKENS,
   PLANNER_REASONING_MAX_TOKENS,
@@ -61,26 +65,40 @@ export class PlannerAgent {
       reasoningMaxTokens: PLANNER_REASONING_MAX_TOKENS,
     };
 
+    // A plan cut off by the token budget frequently still parses — the model
+    // closes the JSON it has emitted so far — so parse success alone is NOT
+    // evidence the plan is complete. Treat truncation as a failure to be
+    // retried on a bigger budget, exactly like a parse failure.
+    const outcome: LlmCompletionOutcome = {};
     let raw = await this.llm.complete({
       ...completeOpts,
       userMessage,
       temperature: 0.2,
+      outcome,
     });
     this.structuredLogger.debugRawResponse(correlationId, 'planner', model, raw);
 
     let retried = false;
     let lastResort = false;
-    let parsed = this.tryParsePlanner(raw, correlationId, model);
+    let truncated = outcome.truncated === true;
+    let parsed = truncated ? null : this.tryParsePlanner(raw, correlationId, model);
     if (!parsed) {
       retried = true;
-      this.logger.warn(`Planner JSON parse failed — retrying once. Raw snippet: ${this.clip(raw)}`);
+      this.logger.warn(
+        truncated
+          ? `Planner output truncated at maxTokens=${maxTokens} (parseable but incomplete) — retrying once.`
+          : `Planner JSON parse failed — retrying once. Raw snippet: ${this.clip(raw)}`,
+      );
+      const retryOutcome: LlmCompletionOutcome = {};
       raw = await this.llm.complete({
         ...completeOpts,
         userMessage: userMessage + JSON_RETRY_SUFFIX,
         temperature: 0.1,
+        outcome: retryOutcome,
       });
       this.structuredLogger.debugRawResponse(correlationId, 'planner', model, raw);
-      parsed = this.tryParsePlanner(raw, correlationId, model);
+      truncated = retryOutcome.truncated === true;
+      parsed = truncated ? null : this.tryParsePlanner(raw, correlationId, model);
     }
 
     if (!parsed) {
@@ -88,22 +106,39 @@ export class PlannerAgent {
       this.logger.warn(
         `Planner still empty/unparseable — last-resort retry with maxTokens=${PLANNER_LAST_RESORT_MAX_TOKENS}`,
       );
+      const lastResortOutcome: LlmCompletionOutcome = {};
       raw = await this.llm.complete({
         ...completeOpts,
         userMessage: userMessage + JSON_RETRY_SUFFIX,
         temperature: 0.1,
         maxTokens: PLANNER_LAST_RESORT_MAX_TOKENS,
         reasoningMaxTokens: Math.min(PLANNER_REASONING_MAX_TOKENS, 768),
+        outcome: lastResortOutcome,
       });
       this.structuredLogger.debugRawResponse(correlationId, 'planner', model, raw);
+      truncated = lastResortOutcome.truncated === true;
+      // Last resort: a truncated plan here is still better than no plan, so we
+      // keep it rather than failing the request outright — but it must not pass
+      // as complete. Flag it so the caller/log records that this plan may be
+      // short, instead of the silent under-planning this whole check exists for.
       parsed = this.tryParsePlanner(raw, correlationId, model);
+      if (parsed && truncated) {
+        this.logger.error(
+          `Planner output STILL truncated at last-resort maxTokens=${PLANNER_LAST_RESORT_MAX_TOKENS} — ` +
+            `proceeding with a possibly incomplete plan (${parsed.subtasks.length} subtasks). ` +
+            `The request may be under-planned; consider splitting it.`,
+        );
+      }
     }
 
     if (parsed) {
       this.logger.log(
         `Planner produced ${parsed.subtasks.length} subtasks, confidence: ${parsed.confidence}`,
       );
-      const covered = this.ensureMultiClauseCoverage(prompt, parsed);
+      const covered = ensureNumberFormatPlanSafety(
+        prompt,
+        this.ensureMultiClauseCoverage(prompt, parsed),
+      );
       this.structuredLogger.logAgentEvent({
         correlationId,
         agent: 'planner',
@@ -317,7 +352,7 @@ export class PlannerAgent {
       confidence: 'low',
       clarificationsNeeded: [
         ...plan.clarificationsNeeded,
-        `Your request has multiple steps (${clauses.map((c) => `"${c.slice(0, 60)}"`).join(' and ')}). I only planned ${plan.subtasks.length} step(s). Should I handle both — annotate/filter first, then any column deletion?`,
+        buildMultiClauseClarification(clauses, missing, plan.subtasks.length),
       ],
       reasoning: `${plan.reasoning} [Spec 22: incomplete multi-clause decomposition]`.trim(),
     };
@@ -409,8 +444,23 @@ export class PlannerAgent {
   }
 
   private normalizePlannerOutput(parsed: Partial<PlannerOutput>): PlannerOutput {
-    const subtasks = Array.isArray(parsed.subtasks)
-      ? parsed.subtasks
+    const rawSubtasks = Array.isArray(parsed.subtasks) ? parsed.subtasks : [];
+    // Dropping a malformed subtask silently is how a truncated plan passed as
+    // complete: the model's last subtask was cut mid-string (no targetSheet),
+    // this filter removed it, and the caller saw a clean, shorter plan with no
+    // indication anything was missing. Count and report what we discard.
+    const droppedSubtasks = rawSubtasks.filter(
+      (s) => !(s?.id && s?.description && s?.targetSheet),
+    );
+    if (droppedSubtasks.length > 0) {
+      this.logger.warn(
+        `Planner emitted ${rawSubtasks.length} subtask(s) but ${droppedSubtasks.length} were ` +
+          `malformed and dropped (missing id/description/targetSheet) — ` +
+          `ids: [${droppedSubtasks.map((s) => String(s?.id ?? '(no id)')).join(', ')}]. ` +
+          `This usually means the plan was cut off mid-generation; the remaining plan may be incomplete.`,
+      );
+    }
+    const subtasks = rawSubtasks
           .filter((s): s is SubTask => Boolean(s?.id && s?.description && s?.targetSheet))
           .map((s) => {
             const subtask: SubTask = {
@@ -425,8 +475,7 @@ export class PlannerAgent {
               subtask.suggestedActionType = s.suggestedActionType.trim();
             }
             return subtask;
-          })
-      : [];
+          });
 
     const clarificationsNeeded = Array.isArray(parsed.clarificationsNeeded)
       ? parsed.clarificationsNeeded.map(String).filter(Boolean)
@@ -497,7 +546,32 @@ export class PlannerAgent {
   }
 }
 
-/** Split compound write prompts on and/then/also connectors. */
+/**
+ * Verbs that make a fragment a COMMAND rather than a continuation of a question.
+ * Kept in sync with the write-intent guard's verb list by intent, not by import —
+ * this one is about "is this fragment an instruction", not "does this prompt write".
+ */
+const CLAUSE_COMMAND_VERB =
+  /\b(sort|filter|delete|remove|insert|add|copy|move|bold|highlight|colou?r|format|merge|split|fill|clear|rename|hide|unhide|freeze|protect|create|build|generate|apply|replace|update|change|set|mark|label|flag)\b/i;
+
+/**
+ * Fragments that are questions, not commands — a clause starting this way is the
+ * tail of an interrogative sentence even when it contains a command-shaped verb.
+ * "…and what they add up to" is one clause with the question before it, not two.
+ */
+const CLAUSE_IS_QUESTION =
+  /^(what|which|how|why|when|where|who|whose|whether|if|do|does|did|is|are|was|were|can|could|should|would)\b/i;
+
+/**
+ * Split compound write prompts on and/then/also connectors.
+ *
+ * Task #91 (2026-08-27): splitting on a bare connector treated "…how many invoices
+ * are pending payment **and** what they add up to" as two clauses — a conjunction
+ * joining two objects of one question, not two instructions — and the coverage check
+ * then raised a false multi-clause gap on a read-only prompt. A fragment now counts
+ * as a clause only if it reads as a command: it must contain a command verb and must
+ * not open like a question.
+ */
 export function splitWriteClauses(prompt: string): string[] {
   const normalized = prompt.replace(/\s+/g, ' ').trim();
   if (!normalized) return [];
@@ -505,7 +579,38 @@ export function splitWriteClauses(prompt: string): string[] {
     .split(/\s+(?:and|, and|then|also)\s+/i)
     .map((p) => p.trim())
     .filter((p) => p.length >= 8);
-  return parts.length >= 2 ? parts : [];
+  if (parts.length < 2) return [];
+
+  const commandClauses = parts.filter(
+    (p) => CLAUSE_COMMAND_VERB.test(p) && !CLAUSE_IS_QUESTION.test(p),
+  );
+  // Only a genuine multi-COMMAND prompt can have an incomplete decomposition.
+  return commandClauses.length >= 2 ? commandClauses : [];
+}
+
+/**
+ * Clarification text built from the user's ACTUAL clauses.
+ *
+ * Task #91 (2026-08-27): this string used to be hardcoded to the Spec 22 scenario
+ * it was written for — "Should I handle both — annotate/filter first, then any
+ * column deletion?" — and was emitted verbatim regardless of prompt. A user who
+ * never mentioned deleting anything was asked about column deletion, which reads as
+ * the agent hallucinating destructive intent. Never mention an operation the user
+ * did not ask for.
+ */
+export function buildMultiClauseClarification(
+  clauses: string[],
+  missing: string[],
+  plannedCount: number,
+): string {
+  const quote = (c: string) => `"${c.length > 60 ? `${c.slice(0, 59)}…` : c}"`;
+  const missingList = (missing.length > 0 ? missing : clauses).map(quote).join(' and ');
+  const stepWord = plannedCount === 1 ? 'step' : 'steps';
+  return (
+    `Your request looks like ${clauses.length} separate instructions, but I only ` +
+    `planned ${plannedCount} ${stepWord}. I don't have a plan for ${missingList}. ` +
+    `Should I handle everything you asked for?`
+  );
 }
 
 export function clauseLikelyCovered(clause: string, description: string): boolean {

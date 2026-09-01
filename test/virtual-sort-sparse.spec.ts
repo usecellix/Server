@@ -21,6 +21,7 @@ describe('virtualSortRange sparse / compressed sheets', () => {
           formulas: [[], [], []],
           numberFormats: [[], [], []],
           structure: 'data_table',
+      headerRowIndex: 0,
         },
       ],
       namedRanges: [],

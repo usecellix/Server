@@ -26,6 +26,7 @@ const baseContext: WorkbookContext = {
       formulas: [['', '', ''], ['', '', ''], ['', '', '']],
       numberFormats: [['General', 'General', 'General']],
       structure: 'data_table',
+      headerRowIndex: 0,
     },
   ],
   namedRanges: [],
@@ -416,6 +417,7 @@ describe('AgenticLoopService verifier retry', () => {
           formulas: [],
           numberFormats: [],
           structure: 'data_table',
+      headerRowIndex: 0,
         },
       ],
       namedRanges: [],
@@ -697,6 +699,7 @@ describe('AgenticLoopService verifier retry', () => {
           rowCount: 3,
           columnCount: 12,
           structure: 'data_table',
+      headerRowIndex: 0,
           values: [
             [
               'Date',

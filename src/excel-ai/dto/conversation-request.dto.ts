@@ -112,6 +112,11 @@ export class ConversationRequestDto {
   @IsString()
   conversationId?: string;
 
+  /** Durable per-workbook identity minted client-side (TASKS.md #22-23). Optional. */
+  @IsOptional()
+  @IsString()
+  workbookId?: string;
+
   @IsString()
   @MaxLength(5000)
   message!: string;
@@ -143,6 +148,15 @@ export class ConversationRequestDto {
   @IsOptional()
   @IsBoolean()
   previewEnabled?: boolean;
+
+  /**
+   * What the user's Excel can actually do, probed client-side (TASKS.md #152).
+   * Absent means "unprobed", which downstream must treat as unsupported rather
+   * than assumed-supported — a wrong guess is a silent `#NAME?`.
+   */
+  @IsOptional()
+  @Allow()
+  excelCapabilities?: { dynamicArrays?: boolean; probed?: boolean };
 
   /** Compressed workbook context string for LLM prompts (from add-in deep reader). */
   @IsOptional()

@@ -16,6 +16,7 @@ const emptyContext = (): WorkbookContext => ({
       columnCount: 12,
       usedRange: 'A1:L51',
       structure: 'data_table',
+      headerRowIndex: 0,
       values: [[]],
       formulas: [[]],
       numberFormats: [[]],
@@ -86,5 +87,37 @@ describe('compound sheet name extraction (paid purchases / Sheet2 bug)', () => {
       emptyContext(),
     );
     expect(name).toBe('PaidPurchases');
+  });
+
+  it('skips COPY of header-only month sheets deterministically', () => {
+    const ctx = emptyContext();
+    ctx.sheets.push({
+      name: 'January 2026',
+      rowCount: 1,
+      columnCount: 10,
+      usedRange: 'A1:J1',
+      structure: 'data_table',
+      headerRowIndex: 0,
+      values: [['Unit No', 'Guest']],
+      formulas: [[]],
+      numberFormats: [[]],
+    });
+    const result = buildDeterministicSubtaskActions(
+      {
+        id: 's12',
+        description:
+          "Copy all data rows (excluding header) from 'January 2026' to 'Main' starting at A21, appending below existing rows",
+        targetSheet: 'Main',
+        dependsOn: [],
+        estimatedActions: 1,
+        suggestedActionType: 'COPY_FILTERED_RANGE',
+      },
+      ctx,
+    );
+    expect(result).toEqual({
+      subtaskId: 's12',
+      actions: [],
+      isDone: true,
+    });
   });
 });

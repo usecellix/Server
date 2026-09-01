@@ -24,6 +24,14 @@ export interface BuildUserFacingSummaryInput {
   changes?: CellChange[];
   assumption?: string;
   activeSheetName?: string;
+  /**
+   * The plan's own subtasks, when this response came from Tier 3. When present
+   * these become the card's bullets, because they describe INTENT ("Create
+   * sheet and set A1:J1 headers - 12 sheets") rather than mechanics ("Freeze
+   * Panes on June"). Absent for Tier 0-2, which fall back to the action
+   * rollup. TASKS.md #149.
+   */
+  planSubtasks?: PlanIntent[];
 }
 
 export interface BuildInternalDetailsInput {
@@ -38,7 +46,30 @@ export interface BuildInternalDetailsInput {
 
 /** Strings that must never appear in the default user-facing headline. */
 export const INTERNAL_COPY_MARKERS =
-  /\b(Tier\s*[0-3]|single-action|no verification|Direct Change|Planner|Executor|Verifier|CONDITIONAL_FORMAT|SET_FORMULA|WRITE_TABLE|openai\/)/i;
+  /\b(Tier\s*[0-3]|single-action|no verification|Direct Change|Planner|Executor|Verifier|CONDITIONAL_FORMAT|FORMAT_MATCHING_ROWS|findMatchingRowOffsets|hasHeaders\s*:|SET_FORMULA|WRITE_TABLE|openai\/)/i;
+
+/** Spec 24: full answers must not leak action-type / validation stack fragments. */
+export function sanitizeAnswerForUser(answer: string): string {
+  if (!answer) return answer;
+  let text = answer;
+  if (
+    /findMatchingRowOffsets|FORMAT_MATCHING_ROWS\s*:|hasHeaders\s*:\s*true|Spreadsheet update failed/i.test(
+      text,
+    )
+  ) {
+    return "I couldn't apply that formatting. Please try again or describe the range differently.";
+  }
+  // Drop lines that look like internal ActionType: message dumps
+  text = text
+    .split('\n')
+    .filter((line) => !/^[A-Z][A-Z0-9_]+\s*:\s*.+/.test(line.trim()))
+    .join('\n')
+    .trim();
+  if (INTERNAL_COPY_MARKERS.test(text) && !text.includes(' ')) {
+    return "I couldn't apply that formatting. Please try again or describe the range differently.";
+  }
+  return text || answer;
+}
 
 function colToLetter(col: number): string {
   let n = col + 1;
@@ -106,7 +137,7 @@ export function describeRangeCompactly(changes: CellChange[]): string | undefine
 }
 
 export function sanitizeAnswerForHeadline(answer: string): string {
-  let text = answer
+  let text = sanitizeAnswerForUser(answer)
     .replace(/\*\*([^*]+)\*\*/g, '$1')
     .replace(/\*([^*]+)\*/g, '$1')
     .replace(/`([^`]+)`/g, '$1')
@@ -164,6 +195,167 @@ function describeOneAction(action: SheetAction): string {
   }
 }
 
+/**
+ * A plan subtask, reduced to what the Accept card needs.
+ */
+export interface PlanIntent {
+  id: string;
+  description: string;
+  targetSheet: string;
+}
+
+/** Longest a single intent bullet may run before it is trimmed. */
+const MAX_INTENT_BULLET_CHARS = 150;
+
+function trimIntent(text: string): string {
+  const clean = text.replace(/\s+/g, ' ').trim();
+  if (clean.length <= MAX_INTENT_BULLET_CHARS) return clean;
+  // Cut on a word boundary so a truncated formula list does not end mid-token.
+  const cut = clean.slice(0, MAX_INTENT_BULLET_CHARS);
+  const lastSpace = cut.lastIndexOf(' ');
+  return `${(lastSpace > 60 ? cut.slice(0, lastSpace) : cut).trimEnd()}...`;
+}
+
+const REGEXP_SPECIALS = new Set([
+  '.', '*', '+', '?', '^', '$', '{', '}', '(', ')', '|', '[', ']', '/',
+  String.fromCharCode(92),
+]);
+
+/**
+ * Escape a sheet name for literal use inside a RegExp. Written as an explicit
+ * character walk rather than a character-class replace so the escaping is
+ * readable and cannot itself be mis-escaped — sheet names are arbitrary user
+ * strings and routinely contain `(`, `)`, `.` and `-`.
+ */
+function escapeForRegExp(value: string): string {
+  let out = '';
+  for (const ch of value) {
+    out += REGEXP_SPECIALS.has(ch) ? String.fromCharCode(92) + ch : ch;
+  }
+  return out;
+}
+
+/** Strip every mention of `sheet` (quoted or bare) from `text`. */
+function stripSheetName(text: string, sheet: string): string {
+  if (!sheet) return text.replace(/\s+/g, ' ').trim();
+  const quote = String.fromCharCode(96);
+  const pattern = '[' + String.fromCharCode(39) + '"' + quote + ']?' + escapeForRegExp(sheet) + '[' + String.fromCharCode(39) + '"' + quote + ']?';
+  return text
+    .replace(new RegExp(pattern, 'gi'), ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * Group key for a subtask: its description with its own target sheet removed,
+ * so twelve structurally identical month subtasks collapse to one entry.
+ *
+ * Deliberately generic - it keys off `targetSheet`, never a hardcoded month
+ * list, so it works equally for "a sheet per region", "per client", "per
+ * department". Repeated shape is what long prompts almost always produce, and
+ * it is exactly what makes their Accept cards unreadable today.
+ */
+function intentGroupKey(subtask: PlanIntent): string {
+  return stripSheetName(subtask.description, subtask.targetSheet?.trim() ?? '').toLowerCase();
+}
+
+/** Human list: "January, February, March +9 more". */
+function describeSheetGroup(sheets: string[]): string {
+  const shown = sheets.slice(0, 3).join(', ');
+  const rest = sheets.length - 3;
+  return rest > 0 ? `${shown} +${rest} more` : shown;
+}
+
+/**
+ * Turn a plan into a short list of intent statements - what the build DOES.
+ *
+ * This is the semantic half of the Accept card. The Planner already writes the
+ * right sentences; they were streamed as transient `status` events and then
+ * thrown away, leaving the card to enumerate ~40 mechanical actions instead.
+ * Repeated-shape subtasks are grouped and counted rather than listed, which is
+ * what takes a 19-subtask monthly-ledger plan down to a handful of readable
+ * lines. The full action list still lives behind "Show details". TASKS.md #149.
+ */
+export function summarizePlanIntent(subtasks: PlanIntent[]): string[] {
+  if (!subtasks?.length) return [];
+
+  const groups = new Map<string, { first: PlanIntent; sheets: string[] }>();
+  for (const subtask of subtasks) {
+    if (!subtask?.description?.trim()) continue;
+    const key = intentGroupKey(subtask);
+    const sheet = subtask.targetSheet?.trim();
+    const existing = groups.get(key);
+    if (existing) {
+      if (sheet && !existing.sheets.includes(sheet)) existing.sheets.push(sheet);
+    } else {
+      groups.set(key, { first: subtask, sheets: sheet ? [sheet] : [] });
+    }
+  }
+
+  return [...groups.values()].map(({ first, sheets }) => {
+    if (sheets.length <= 1) return trimIntent(first.description);
+    // Strip the one sheet the description happens to name, then say how many
+    // sheets this actually covers - otherwise the line reads as if it applied
+    // to January alone.
+    // Trim the description BEFORE appending the count, never after: the
+    // "- 12 sheets (January, February, March +9 more)" suffix is the single
+    // most informative part of the line, and trimming the assembled string
+    // silently ate it for any description already near the cap.
+    const generic = trimIntent(stripSheetName(first.description, sheets[0]));
+    return `${generic} - ${sheets.length} sheets (${describeSheetGroup(sheets)})`;
+  });
+}
+
+/**
+ * Intent bullets describe distinct build steps, so a long build legitimately
+ * needs more of them than the mechanical action rollup does. Overflow past this
+ * collapses into a single "+N more steps" line instead of discarding the list.
+ */
+const MAX_INTENT_BULLETS = 8;
+
+function capIntentLines(lines: string[]): string[] {
+  if (lines.length <= MAX_INTENT_BULLETS) return lines;
+  const shown = lines.slice(0, MAX_INTENT_BULLETS - 1);
+  return [...shown, `+${lines.length - shown.length} more steps`];
+}
+
+/**
+ * Most bullets a card body may carry before the list stops being a summary and
+ * starts being the wall of text the details disclosure exists for. A 13-sheet
+ * build produced ~40 distinct lines ("Freeze Panes on January", "Freeze Panes
+ * on February", …) and rendered every one of them in the card. TASKS.md #140.
+ */
+const MAX_SUMMARY_BULLETS = 6;
+
+/**
+ * Collapse per-sheet repetition into one line per kind of change.
+ *
+ * `describeOneAction` appends " on <sheet>", so the same operation repeated
+ * across twelve month sheets reads as twelve distinct lines. Group by the
+ * sheet-less description and report the sheet *count* instead — "Freeze panes
+ * on 13 sheets" says what forty lines said, in one.
+ */
+export function rollUpActionsForUser(actions: SheetAction[]): string[] {
+  const byVerb = new Map<string, Set<string>>();
+
+  for (const action of actions) {
+    const verb = describeOneAction({ ...action, sheetName: undefined });
+    const sheets = byVerb.get(verb);
+    const sheetName = action.sheetName?.trim();
+    if (sheets) {
+      if (sheetName) sheets.add(sheetName);
+    } else {
+      byVerb.set(verb, new Set(sheetName ? [sheetName] : []));
+    }
+  }
+
+  return [...byVerb.entries()].map(([verb, sheets]) => {
+    if (sheets.size === 0) return verb;
+    if (sheets.size === 1) return `${verb} on ${[...sheets][0]}`;
+    return `${verb} on ${sheets.size} sheets`;
+  });
+}
+
 /** Distinct plain-English lines for actions (used for bullets / fallback headline). */
 export function describeActionsForUser(actions: SheetAction[]): string[] {
   const seen = new Set<string>();
@@ -219,8 +411,30 @@ export function buildUserFacingSummary(input: BuildUserFacingSummaryInput): User
         : 'Ready to apply changes.';
   }
 
+  // The card body summarizes; the details disclosure enumerates.
+  //
+  // Preference order, most meaningful first:
+  //   1. Plan intent  - what the build DOES (Tier 3 only; TASKS.md #149)
+  //   2. Rolled-up actions - one line per kind of change (TASKS.md #140)
+  //   3. Nothing - headline + meta only, when even the rollup is too long
+  const intentLines = summarizePlanIntent(input.planSubtasks ?? []);
+  const rolledLines =
+    actionLines.length > MAX_SUMMARY_BULLETS ? rollUpActionsForUser(actions) : actionLines;
+  // Intent lines get a larger budget than the action rollup, and overflow into
+  // a "+N more steps" tail rather than being dropped wholesale. A long build
+  // legitimately HAS eight or nine distinct steps; showing them is the point,
+  // and an all-or-nothing cap silently produced a card with no bullets at all
+  // for exactly the prompts that need them most.
+  const candidate =
+    intentLines.length > 0 ? capIntentLines(intentLines) : rolledLines;
+  // Two or more, always: a lone bullet only restates the headline, which is the
+  // pre-existing invariant the 9-cell/1-action regression test pins.
+  const withinBudget =
+    intentLines.length > 0 ? candidate.length <= MAX_INTENT_BULLETS : candidate.length <= MAX_SUMMARY_BULLETS;
   const bullets =
-    actionLines.length >= 2 ? actionLines.map((l) => (l.endsWith('.') ? l.slice(0, -1) : l)) : undefined;
+    candidate.length >= 2 && withinBudget
+      ? candidate.map((l) => (l.endsWith('.') ? l.slice(0, -1) : l))
+      : undefined;
 
   let supportingDetail: string | undefined;
   if (changes.length > 0) {

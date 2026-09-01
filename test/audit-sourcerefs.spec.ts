@@ -7,6 +7,17 @@ import { ChangeSetService } from '../src/audit/change-set.service';
 import { Action, WorkbookContext } from '../src/agents/types/agent.types';
 import { CellChange } from '../src/audit/types/change-set.types';
 
+/** ChangeSetService records accept/revert terminals on the workflow trace. */
+const workflowTraceStub = () => ({
+  appendTerminalByChangeSet: jest.fn(),
+  appendTerminalByConversationId: jest.fn(),
+});
+
+/** createPreview resolves workbookId by conversationId (TASKS.md #24) — no conversation found here. */
+const conversationModelStub = () => ({
+  findOne: jest.fn(() => ({ lean: () => ({ exec: () => Promise.resolve(null) }) })),
+});
+
 describe('formula precedents', () => {
   it('extracts sheet-qualified ranges from formulas', () => {
     expect(extractFormulaPrecedents('=SUM(Sheet2!C4:C40)', 'Sheet1')).toEqual([
@@ -80,6 +91,7 @@ describe('ChangeSetService.createPreview provenance', () => {
           ['General', 'General', 'General'],
         ],
         structure: 'data_table',
+      headerRowIndex: 0,
       },
     ],
     namedRanges: [],
@@ -99,7 +111,11 @@ describe('ChangeSetService.createPreview provenance', () => {
       }),
     };
 
-    const service = new ChangeSetService(model as never);
+    const service = new ChangeSetService(
+      model as never,
+      conversationModelStub() as never,
+      workflowTraceStub() as never,
+    );
     const actions: Action[] = [
       { type: 'SET_FORMULA', sheetName: 'Sheet1', row: 1, col: 2, formula: '=B2*C2' },
     ];
@@ -134,7 +150,11 @@ describe('ChangeSetService.createPreview provenance', () => {
   });
 
   it('rejects domain-tool createPreview without sourceRefs', async () => {
-    const service = new ChangeSetService({ create: jest.fn() } as never);
+    const service = new ChangeSetService(
+      { create: jest.fn() } as never,
+      conversationModelStub() as never,
+      workflowTraceStub() as never,
+    );
     await expect(
       service.createPreview({
         conversationId: 'conv-1',
@@ -155,7 +175,11 @@ describe('ChangeSetService.createPreview provenance', () => {
         return { ...doc, status: 'previewed', timestamp: new Date() };
       }),
     };
-    const service = new ChangeSetService(model as never);
+    const service = new ChangeSetService(
+      model as never,
+      conversationModelStub() as never,
+      workflowTraceStub() as never,
+    );
     await service.createPreview({
       conversationId: 'conv-1',
       traceId: 'trace-1',

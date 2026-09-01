@@ -1,5 +1,6 @@
 import {
   hasWriteIntent,
+  isWorkbookScaffoldIntent,
   WRITE_INTENT_CATALOG_VERBS,
 } from '../src/excel-ai/utils/write-intent-guard.util';
 
@@ -75,6 +76,24 @@ describe('hasWriteIntent', () => {
       expect(hasWriteIntent('what is the sum of column B')).toBe(false);
       expect(hasWriteIntent('find invoice INV-100')).toBe(false);
       expect(hasWriteIntent('how many invoices are there')).toBe(false);
+    });
+  });
+
+  describe('workbook scaffold (multi-month + main dashboard)', () => {
+    const repro =
+      'i like to have multiple sheets for all months in a year, and need a main sheet it has all the details of the remaining sheets, in the main sheet i need to have dashboard also, my need to record payments and related things ,which all month sheets include Unit No, Guest, Guest name, check in, check out, Rate per night, total amount, source, payment status, bank account';
+
+    it('detects write/scaffold intent for soft multi-sheet phrasing', () => {
+      expect(isWorkbookScaffoldIntent(repro)).toBe(true);
+      expect(hasWriteIntent(repro)).toBe(true);
+    });
+
+    it('does not treat bare which-question as read when full scaffold is present', () => {
+      expect(
+        hasWriteIntent(
+          'need multiple sheets for all months and a main dashboard which all month sheets include total amount',
+        ),
+      ).toBe(true);
     });
   });
 });

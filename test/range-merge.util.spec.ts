@@ -21,6 +21,7 @@ describe('range-merge.util', () => {
       formulas: [['', '', '']],
       numberFormats: [['General', 'General', 'General']],
       structure: 'data_table',
+      headerRowIndex: 0,
       dataTruncated: true,
     };
 

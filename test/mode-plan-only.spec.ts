@@ -65,6 +65,13 @@ describe('ConversationService plan mode (streamPlanOnly)', () => {
       analyzeSheet: jest.fn().mockReturnValue({}),
     };
 
+    const workflowTrace = {
+      startTrace: jest.fn(),
+      appendNode: jest.fn(),
+      setMeta: jest.fn(),
+      finalize: jest.fn(),
+    };
+
     service = new ConversationService(
       {} as never,
       {} as SheetAnalyzerService,
@@ -84,6 +91,7 @@ describe('ConversationService plan mode (streamPlanOnly)', () => {
       {} as never,
       tier2GenerateVerify as unknown as Tier2GenerateVerifyService,
       structuredLogger as unknown as StructuredLogger,
+      workflowTrace as never,
     );
 
     jest.spyOn(service as never, 'saveMessage' as never).mockResolvedValue(undefined as never);

@@ -22,6 +22,7 @@ describe('virtualApply AGGREGATE_TABLE', () => {
           formulas: [[], [], [], [], []],
           numberFormats: [[], [], [], [], []],
           structure: 'data_table',
+      headerRowIndex: 0,
         },
       ],
       namedRanges: [],

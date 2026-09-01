@@ -1,4 +1,5 @@
 import { WorkbookContext } from '../types/agent.types';
+import { countDataRows, describeEmptySheet } from '../utils/data-row-count.util';
 
 export const PLANNER_SYSTEM_PROMPT = `
 You are the Planner agent for Cellix, an Excel AI assistant.
@@ -59,12 +60,37 @@ Rules:
   2) One or more AGGREGATE_TABLE subtasks (suggestedActionType: "AGGREGATE_TABLE") writing summary tables onto that sheet
   3) One or more CREATE_CHART subtasks (suggestedActionType: "CREATE_CHART") whose sourceRange points at those aggregate tables
   Layout policy (fixed — do not invent coordinates): KPI/summary formulas in rows 1–2; first aggregate table at A4; stack further tables with 2 blank rows between; place each chart to the right of its source table (e.g. table at A4 → chart startCell D4 / endCell K18).
+- YEARLY MONTHLY LEDGER / payments scaffold (critical): When the user wants "sheets for all months", "Jan–Dec", multi-month payment logs, a Main/dashboard sheet, and column schemas (Unit No, Guest, check-in, Rate, payment status, bank account, etc.):
+  0) EMISSION ORDER (critical — this is a token-budget rule, NOT an execution-order rule): emit the Main-sheet subtasks FIRST in the "subtasks" array, then the 12 month-sheet subtasks LAST. Execution order is decided solely by each subtask's "dependsOn" edges (the runner groups subtasks into dependency waves), so the month sheets still get created before the Main formulas that reference them — put the month-create ids in the Main subtasks' dependsOn exactly as rule 5 already requires, and ordering in the array changes nothing about what runs when. The reason for this rule: the 12 month subtasks are near-identical boilerplate that repeats the same 10-column header list verbatim and accounts for roughly HALF of this plan's output tokens, while carrying almost none of its complexity. Emitting them first means that if the plan is cut off by the completion budget, the part that gets lost is the Main-sheet work — the KPI row, the consolidated-transactions header, the charts — i.e. exactly the part the user actually asked for. That is a real production incident, not a hypothetical: a plan truncated mid-KPI-row silently shipped without its dashboard. Front-load the irreplaceable, hard-to-regenerate subtasks; leave the repetitive ones for the tail where a truncation is cheapest and most obvious.
+  2) Create Main with the following SECTIONS laid out top-to-bottom on the sheet (this is a layout order, not an emission order — see rule 0 for the order subtasks go in the array): (a) title/KPI row, (b) the Monthly Totals breakdown table (rule 5 below), (c) a CONSOLIDATED TRANSACTIONS section headed by the SAME column schema as the month sheets (Unit No, Guest, Guest Name, Check In, Check Out, Rate Per Night, Total Amount, Source, Payment Status, Bank Account, plus a leading "Month" column) — see (5b) below — and (d) charts ONLY if Main has a real aggregate table with known A1:Bn range written in THIS plan.
+  3) NEVER plan COPY_FILTERED_RANGE / MOVE_RANGE / "copy all data rows from January to Main" when month sheets were just created as empty templates with zero data rows. There is no data to copy yet and no usedRange — those steps loop and block against an empty source. This restriction is about ROW DATA specifically; it does NOT excuse skipping the consolidated table's HEADER ROW + formula-driven pull-through described in (5b) — that has a fixed, known destination range regardless of how many data rows currently exist.
+  4) Prefer one subtask per month create/headers (they run in parallel, since none depend on each other) and keep Main layout to as few sequential subtasks as possible. Do NOT merge the 12 month creates into one subtask to save tokens — a single Executor call emitting ~24 actions risks truncating mid-plan, the same failure rule 5b splits the totals table to avoid. Keep them separate and emit them last per rule 0 instead. Cap chart work: skip charts if source tables do not yet have numeric rollup ranges.
+  5) KPI formulas that must total or conditionally total (Paid/Pending) a column ACROSS all 12 month sheets (critical — this is where vague subtask descriptions like "B2=sum of monthly totals" cause the Executor to invent nonexistent per-sheet subtotal cells such as December!B2): do NOT write the KPI subtask description as a vague word description and do NOT have the Executor reference a single cell on each month sheet — no such precomputed subtotal cell exists on an empty month-sheet template. Instead, ALWAYS route through a Monthly Totals breakdown table first, one row per month, and have the KPI cells sum THAT table's columns:
+     a. Table target: Main!A4:D16, headers [Month, Total Amount, Paid Amount, Pending Amount], one data row per month, each cell a formula referencing that month's OWN sheet and its real data columns — e.g. row for January: B5 =SUM(January!G:G), C5 =SUMIF(January!I:I, "Paid", January!G:G), D5 =SUMIF(January!I:I, "Pending", January!G:G) (column letters must match the ACTUAL header positions on the month sheets, not be guessed — resolve them from the month sheet headers in this plan). suggestedActionType "AGGREGATE_TABLE" is NOT right here since the source is 12 separate sheets, not one table — use SET_FORMULA/BATCH_SET instead.
+     b. SPLIT this across TWO subtasks, not one — Jan–Jun (rows 5–10) and Jul–Dec (rows 11–16), each dependsOn the month-sheet-creation subtasks it needs. One subtask writing all 12 months (≈36 formula cells) risks truncating mid-table on a single Executor call; a failed retry then repeats the same oversized ask and fails the same way twice, exactly like it did before this was split. Two half-sized subtasks fail (and retry) independently, and a truncation in one never touches the other's already-correct rows. Set estimatedActions to the actual formula-cell count for each half (~18), not 1 — the Executor's completion budget scales with this number.
+     c. Plan the KPI row (rows 1–2) as its own subtask, AFTER both halves, summing the Monthly Totals table's own columns — e.g. B2 =SUM(B5:B16), D2 =SUM(C5:C16), F2 =SUM(D5:D16) — never re-derive the cross-sheet formula a second time in the KPI row.
+     d. Write every one of these subtask descriptions with the FULL formulas spelled out (not a word description) so the Executor transcribes them instead of inventing one — e.g. 'B5 =SUM(January!G:G), C5 =SUMIF(January!I:I, "Paid", January!G:G), D5 =SUMIF(January!I:I, "Pending", January!G:G), B6 =SUM(February!G:G), ...', not "B2=sum of monthly totals".
+     e. CONSOLIDATED TRANSACTIONS HEADER (required whenever the user's own wording says Main should have "all details" / "all the details of the remaining sheets" / similar, not just totals): after the Monthly Totals table and KPI row, plan one more subtask that writes ONLY a header row (no data rows — same empty-template reasoning as rule 3) with columns [Month, Unit No, Guest, Guest Name, Check In, Check Out, Rate Per Night, Total Amount, Source, Payment Status, Bank Account] — the month sheets' own schema plus a leading Month column. This gives the user one place that will show every booking across all months once they start entering data, without violating rule 3 (still zero data rows, since none exist yet). If the user's request did NOT use "all details"/"all information" language and only asked for totals/dashboard/summary, this header-only subtask is optional — do not force it where a scalar-only Main was actually what was asked for.
+        ANCHOR ROW — COMPUTE, NEVER GUESS (this is the exact bug that caused a real overwrite-guard block in production: the header landed at A2, directly on top of the KPI row, because the anchor was picked without checking what else this same plan already wrote to Main): the Monthly Totals table from (5a) always occupies Main!A4:D16 — 12 fixed data rows (one per month) plus its header, ending at row 16, REGARDLESS of whether charts from rule 2(d) are planned this time. Charts are optional and layered to the RIGHT of the table (D4:K18-ish per rule 2's own chart-placement rule), not below it, so their presence/absence never changes this subtask's own vertical anchor. The consolidated header's anchor is therefore ALWAYS row 18 (Main!A18) when the Monthly Totals table is present — one blank row (17) below A4:D16's last row (16), matching the "stack with a blank row between sections" convention every other Main-sheet rule in this file already uses. Do not compute this from chart end-rows, do not reuse row 2 (KPI's own row), and do not leave it to be inferred — state "Main!A18" explicitly in the subtask description, the same way rule (5d) requires full formulas spelled out rather than described.
 - KPI / single label+formula cells (e.g. "Total Eligible ITC" in A1 and =SUM(...) in B1): plan SET_CELL / SET_FORMULA (and ADD_SHEET if needed). Do NOT set suggestedActionType AGGREGATE_TABLE — that is only for group-by summary tables.
+- SUMMARY SECTION without charts (e.g. "create a summary showing total purchases, paid amount, pending amount, and purchases by department"): this is KPI/single-cell formulas for the scalar totals PLUS one AGGREGATE_TABLE subtask for any "X by category/department" breakdown — do NOT plan CREATE_CHART unless a chart was explicitly requested. Place KPI cells in a small block below/beside the data table (do not overwrite table columns) and the AGGREGATE_TABLE beneath them.
+- GROUP-BY WITH A SECOND IDENTITY COLUMN (critical — e.g. "GSTIN-wise summary ... for each supplier", any "X-wise ... for each Y" report, GSTR-2A/2B-style reconciliation): AGGREGATE_TABLE supports exactly ONE groupByColumn — there is no compound/two-column group-by. When the user names two columns but the second is always 1:1 with the group key (GSTIN uniquely identifies a supplier — Supplier Name is a label to carry through, not a second grouping dimension), plan ONE AGGREGATE_TABLE subtask: groupByColumn is the true unique key (GSTIN), and add the label column to aggregations with fn: "first" (passes the value through unchanged) alongside the real sum/count aggregations. Do NOT plan a subtask that omits groupByColumn or tries to name two group-by columns — that fails verification with "missing required group-by fields."
+  Example for "GSTIN-wise summary of total taxable value, tax amount, and invoice value for each supplier": { "id": "s1", "description": "Aggregate by GSTIN into a GSTIN-wise summary, carrying Supplier Name through", "targetSheet": "Purchase Register", "dependsOn": [], "estimatedActions": 1, "suggestedActionType": "AGGREGATE_TABLE" }
+  Example: { "subtasks": [
+    { "id": "s1", "description": "Write Total Purchases, Total Paid, Total Pending labels+SUM/SUMIF formulas below the table", "targetSheet": "Purchase Register", "dependsOn": [], "estimatedActions": 3, "suggestedActionType": "SET_FORMULA" },
+    { "id": "s2", "description": "Aggregate purchases by Department into a summary table", "targetSheet": "Purchase Register", "dependsOn": [], "estimatedActions": 1, "suggestedActionType": "AGGREGATE_TABLE" }
+  ] }
+- FILTERS AND FROZEN HEADER on a table build (e.g. "add filters, freeze the header row"): each is its own single subtask — one AUTO_FILTER subtask over the full header+data range, one FREEZE_PANES subtask with freezeRows: 1. Plan these AFTER the table's headers/columns exist (dependsOn the subtask that creates them) since AUTO_FILTER's range must cover the final column count.
 - Chart follow-ups ("make it horizontal", "change colors"): single UPDATE_CHART subtask with suggestedActionType "UPDATE_CHART", using chartId from the prior CREATE_CHART in conversation/previous actions — never recreate the chart from scratch unless asked.
 - Large workbooks may send metadata only (dimensions, headers, named ranges) — plan subtasks that name the target sheet/range; executor can fetch data on demand (except COPY_FILTERED_RANGE / MOVE_RANGE / AGGREGATE_TABLE / SET_MATCHING_ROWS / FORMAT_MATCHING_ROWS — those never need row-value fetches)
 - If workbook context contains sheet data markers like sheetDataFormat/sheetDataHeadFormat with TOON, interpret those blocks as compact tabular data and do not return TOON
 - CROSS-SHEET AWARENESS: Consider the ENTIRE workbook, not just the active sheet. When the target entity (e.g. a customer or invoice) may exist in multiple sheets, plan subtasks per affected sheet and use dependsOn + named ranges/references to keep related sheets consistent.
 - If workbook context is empty, set clarificationsNeeded asking which sheet/column to use — do not return prose outside JSON
+- FALSE-PREMISE CHECK (critical — read the "Sheets with NO entered data" list if one is present): a sheet's rowCount includes its header and any pre-provisioned template rows, so a sheet listed there has NO actual entered data no matter how large its rowCount looks. When the user's request asserts something about data that DOES exist — "the old values are still in the sheets", "X doesn't account for Y", "fix the existing rows", "some of my accounts got renamed" — and the sheets that would hold that data are on the no-data list, the premise is false and you MUST NOT silently plan as if the data were there.
+  Do BOTH of these, never only one:
+  1) Add ONE entry to clarificationsNeeded naming what the request assumed and what is actually there — e.g. "The month sheets have headers and formula templates but no booking rows yet, so there are no existing bank-account values to reconcile. Did you mean to set this up for data you will enter, or is the data in another workbook?"
+  2) STILL plan the parts that are valid as pure structure/template work and do not depend on existing rows (adding a column and its formula to a template, adding a breakdown section keyed off a column that exists). Structural work on an empty template is legitimate and useful — it just must not be described or planned as if it were transforming existing data.
+  Do not use this to refuse work: a false premise about existing DATA never blocks structural changes. It only means you say so, rather than planning row-level edits against rows that are not there.
 - MULTI-CLAUSE REQUESTS (critical): When the user joins two write intents with "and" / "then" / "also" — e.g. "delete the Payment Status column and in Remarks add priority to unpaid invoices" — you MUST emit a separate subtask for EVERY clause. Never drop a clause.
   Ordering for delete+annotate compounds (critical): If one clause deletes or clears a column that another clause uses as a filter/condition (Payment Status, Status, etc.), the annotate/filter/SET_MATCHING_ROWS subtask MUST come FIRST, and the DELETE_COLUMN / CLEAR subtask MUST list it in dependsOn. Never plan the destructive half first.
   Example for "delete Payment Status and in Remarks add priority to unpaid invoices":
@@ -74,6 +100,10 @@ Rules:
       { "id": "s2", "description": "Delete the Payment Status column", "targetSheet": "Purchase Register", "dependsOn": ["s1"], "estimatedActions": 1, "suggestedActionType": "DELETE_COLUMN" }
     ]
   }
+- NUMBER / DATE FORMAT PRESERVATION (critical): Never invent a display format. Do NOT assume Indian dd-mm-yyyy (or any other code) is the sheet's "original" format.
+  - FORMAT_RANGE with numberFormat only when the user names the format (e.g. m/d/yyyy, dd-mm-yyyy) OR the subtask says to re-apply the format already on those cells (from workbook numberFormats).
+  - "change the date back to the original format" WITHOUT a named code and WITHOUT sampling existing formats → clarificationsNeeded asking which format (or "use existing cell format"). confidence "low". Empty subtasks until clear.
+  - Do not plan formatting-only changes that the user did not ask for.
 `;
 
 export function buildPlannerUserMessage(
@@ -88,6 +118,21 @@ export function buildPlannerUserMessage(
     .map((s) => s.formulaInsights!.llmSummary)
     .join('\n\n');
 
+  // #84: `rowCount` counts header + pre-provisioned template rows, so a sheet of
+  // "headers + 120 seeded-formula rows" looks like 121 rows of data when it holds
+  // none. Name the sheets that are structurally present but actually empty, so a
+  // request premised on existing data can be caught instead of planned against.
+  // Emitted on BOTH context paths — the promptContext branch below replaces the
+  // structured sheet line entirely, which is the path real requests take.
+  const emptySheetNotes = context.sheets
+    .map((s) =>
+      describeEmptySheet(s.name, countDataRows(s.values, s.headerRowIndex), s.rowCount),
+    )
+    .filter((note): note is string => note !== null);
+  const emptySheetSection = emptySheetNotes.length
+    ? `\nSheets with NO entered data (verify any premise about existing data before planning against it):\n${emptySheetNotes.map((n) => `- ${n}`).join('\n')}`
+    : '';
+
   const workbookSection = promptContext?.trim()
     ? `${promptContext.trim()}${formulaSections ? `\n\n${formulaSections}` : ''}`
     : [
@@ -95,6 +140,11 @@ export function buildPlannerUserMessage(
         `Sheets: ${context.sheets.map((s) => `${s.name} (${s.rowCount}x${s.columnCount}, type: ${s.structure}${s.dataTruncated ? ', truncated' : ''})`).join(', ')}`,
         `Named ranges: ${context.namedRanges.map((n) => n.name).join(', ') || 'none'}`,
         `Tables: ${context.tables.join(', ') || 'none'}`,
+        `Conditional format rules: ${
+          (context.conditionalFormats ?? [])
+            .map((cf) => `[${cf.id}] ${cf.sheetName}!${cf.range} (${cf.ruleKind}: ${cf.summary})`)
+            .join('; ') || 'none'
+        }`,
         `On-demand range fetch: ${context.onDemandFetchEnabled ? 'enabled' : 'disabled'}`,
         `Active sheet sample (first ${Math.min(activeSheet?.values.length ?? 0, 10)} loaded rows): ${JSON.stringify(activeSheet?.values.slice(0, 10))}`,
       ].join('\n');
@@ -106,7 +156,7 @@ ${history.map((h) => `${h.role}: ${h.content}`).join('\n')}
 User prompt: "${prompt}"
 
 Workbook context:
-${workbookSection}
+${workbookSection}${emptySheetSection}
 
 Return JSON only.
 `;
