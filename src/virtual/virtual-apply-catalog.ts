@@ -39,6 +39,12 @@ export const VIRTUAL_APPLY_CATALOG: Record<SheetActionType, VirtualApplyCatalogE
   MOVE_RANGE: { simulated: true },
   COPY_FILTERED_RANGE: { simulated: true },
   AGGREGATE_TABLE: { simulated: true },
+  DATA_VALIDATION: {
+    simulated: false,
+    reason:
+      'A validation rule constrains what a user may later TYPE; it writes no value and changes no formula, so the shadow workbook has nothing to diff. Note the deliberate limit: the shadow therefore cannot tell whether a value written by a later action would violate a rule an earlier one installed. TASKS.md #166.',
+  },
+  HIDE_GRIDLINES: { simulated: false, reason: COSMETIC_VIEW_ONLY },
   DEFINE_NAMED_RANGE: { simulated: true },
   ADD_SHEET: { simulated: true },
   CREATE_SHEET: { simulated: true },

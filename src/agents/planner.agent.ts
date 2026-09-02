@@ -9,7 +9,9 @@ import {
   OpenRouterService,
 } from '../excel-ai/services/openrouter.service';
 import {
+  PLANNER_COST_CAP_USER_MESSAGE,
   PLANNER_EXHAUSTED_USER_MESSAGE,
+  PlannerCostCapExceededError,
   PlannerExhaustedError,
 } from './errors';
 import { PLANNER_SYSTEM_PROMPT, buildPlannerUserMessage } from './prompts/planner.prompt';
@@ -21,6 +23,12 @@ import {
   PLANNER_REASONING_MAX_TOKENS,
   resolvePlannerMaxTokens,
 } from './utils/planner-token-budget.util';
+import {
+  COST_CAP_USD,
+  estimateLlmCallCostUsd,
+  resolvePricingForModel,
+} from '../excel-ai/llm/model-router';
+import { addUsage, UsageTotals } from './utils/usage-accumulator.util';
 import { PlannerOutput, SubTask, WorkbookContext } from './types/agent.types';
 import { StructuredLogger } from './logging/structured-logger';
 
@@ -47,16 +55,68 @@ export class PlannerAgent {
     correlationId = `req_${Date.now()}`,
     routerAssumption?: string,
     complexity?: 0 | 1 | 2 | 3,
+    /** Out-param, same pattern as `LlmCompletionOutcome` — accumulates real
+     * promptTokens/completionTokens across every attempt this call makes, so
+     * a caller (OrchestratorService) can report actual usage instead of the
+     * 0 every Tier-3 audit_logs row previously carried. */
+    usageTotals?: UsageTotals,
   ): Promise<PlannerOutput> {
     const startedAt = Date.now();
-    const model = this.config.openRouterModelHigh;
+    // Spec 16 fix #2: Planner calls resolve to their own model override
+    // (`OPENROUTER_MODEL_PLANNER`) rather than unconditionally sharing
+    // `openRouterModelHigh` with the Executor. Defaults to `openRouterModelHigh`
+    // (openai/gpt-5) unchanged — this exists so a non-reasoning/lighter-reasoning
+    // model can be evaluated for the Planner's specific job (structured JSON
+    // decomposition, not open-ended reasoning) without touching Executor
+    // behavior. See `AppConfigService.openRouterModelPlanner`.
+    const model = this.config.openRouterModelPlanner;
     const systemPrompt = PLANNER_SYSTEM_PROMPT + PLANNER_RULES_ADDITION;
     let userMessage = buildPlannerUserMessage(prompt, context, history, promptContext);
     if (routerAssumption) {
       userMessage = `[Router assumption: ${routerAssumption}]\n\n${userMessage}`;
     }
 
-    const maxTokens = resolvePlannerMaxTokens(complexity);
+    const maxTokens = resolvePlannerMaxTokens(complexity, prompt);
+
+    // Spec 16 fix #4: refuse the call up front if it would exceed the shared
+    // per-call cost cap, rather than never checking at all (PlannerAgent
+    // previously never consulted ModelRouter/COST_CAP_USD). Priced against the
+    // WORST CASE the retry ladder below could reach — PLANNER_LAST_RESORT_MAX_TOKENS,
+    // not this call's possibly-smaller `maxTokens` — because promptTokens is
+    // fixed across every retry (same message resent) while completionTokens
+    // only grows; checking once against the ceiling avoids refusing only after
+    // the user has already waited through the cheaper attempts. Pricing is
+    // resolved from the model actually configured for the Planner
+    // (`openRouterModelPlanner`), not a hardcoded HIGH-tier assumption — that
+    // model can diverge from `openRouterModelHigh` via fix #2's eval override.
+    const promptTokenEstimate = Math.ceil((systemPrompt.length + userMessage.length) / 4);
+    const { pricing, approximate } = resolvePricingForModel(model, this.config);
+    if (approximate) {
+      this.logger.warn(
+        `Planner cost estimate is APPROXIMATE — model=${model} does not match ` +
+          `openRouterModelLow/Medium/High; using HIGH pricing as a conservative default.`,
+      );
+    }
+    const worstCaseCostUsd = estimateLlmCallCostUsd(
+      pricing,
+      promptTokenEstimate,
+      PLANNER_LAST_RESORT_MAX_TOKENS,
+    );
+    if (worstCaseCostUsd > COST_CAP_USD) {
+      this.logger.error(
+        `Planner refusing call — estimated worst-case cost $${worstCaseCostUsd.toFixed(4)} ` +
+          `exceeds cap $${COST_CAP_USD} (model=${model}, promptTokens~${promptTokenEstimate}, ` +
+          `worstCaseCompletionTokens=${PLANNER_LAST_RESORT_MAX_TOKENS}${approximate ? ', pricing approximate' : ''})`,
+      );
+      throw new PlannerCostCapExceededError(PLANNER_COST_CAP_USER_MESSAGE, {
+        originalMessage: prompt,
+        estimatedCostUsd: worstCaseCostUsd,
+        costCapUsd: COST_CAP_USD,
+        promptTokens: promptTokenEstimate,
+        maxTokens: PLANNER_LAST_RESORT_MAX_TOKENS,
+      });
+    }
+
     const completeOpts = {
       systemPrompt,
       model,
@@ -69,6 +129,8 @@ export class PlannerAgent {
     // closes the JSON it has emitted so far — so parse success alone is NOT
     // evidence the plan is complete. Treat truncation as a failure to be
     // retried on a bigger budget, exactly like a parse failure.
+    if (usageTotals) usageTotals.model ??= model;
+
     const outcome: LlmCompletionOutcome = {};
     let raw = await this.llm.complete({
       ...completeOpts,
@@ -76,6 +138,7 @@ export class PlannerAgent {
       temperature: 0.2,
       outcome,
     });
+    addUsage(usageTotals, outcome.usage);
     this.structuredLogger.debugRawResponse(correlationId, 'planner', model, raw);
 
     let retried = false;
@@ -96,6 +159,7 @@ export class PlannerAgent {
         temperature: 0.1,
         outcome: retryOutcome,
       });
+      addUsage(usageTotals, retryOutcome.usage);
       this.structuredLogger.debugRawResponse(correlationId, 'planner', model, raw);
       truncated = retryOutcome.truncated === true;
       parsed = truncated ? null : this.tryParsePlanner(raw, correlationId, model);
@@ -115,6 +179,7 @@ export class PlannerAgent {
         reasoningMaxTokens: Math.min(PLANNER_REASONING_MAX_TOKENS, 768),
         outcome: lastResortOutcome,
       });
+      addUsage(usageTotals, lastResortOutcome.usage);
       this.structuredLogger.debugRawResponse(correlationId, 'planner', model, raw);
       truncated = lastResortOutcome.truncated === true;
       // Last resort: a truncated plan here is still better than no plan, so we

@@ -86,6 +86,11 @@ export const REVERSIBILITY_CATALOG: Record<SheetActionType, ReversibilityCatalog
     reason:
       "The generic cell-level revert would clear the copy's values but never removes the sheet itself, leaving a phantom empty sheet — no structural inverse has been built for this yet.",
   },
+  DATA_VALIDATION: {
+    reversible: false,
+    reason:
+      'Validation rules are not cell data — nothing captures the previous rule (or its absence) to restore, the same gap DEFINE_NAMED_RANGE has. TASKS.md #166.',
+  },
   DEFINE_NAMED_RANGE: {
     reversible: false,
     reason: "Named-range bindings aren't cell data — nothing captures the previous binding (or its absence) to restore.",
@@ -149,6 +154,7 @@ export const REVERSIBILITY_CATALOG: Record<SheetActionType, ReversibilityCatalog
   PROTECT_SHEET: { reversible: false, reason: COSMETIC_NOT_CAPTURED },
   UNPROTECT_SHEET: { reversible: false, reason: COSMETIC_NOT_CAPTURED },
   HIDE_SHEET: { reversible: false, reason: COSMETIC_NOT_CAPTURED },
+  HIDE_GRIDLINES: { reversible: false, reason: COSMETIC_NOT_CAPTURED },
   SHOW_SHEET: { reversible: false, reason: COSMETIC_NOT_CAPTURED },
   SET_SHEET_COLOR: { reversible: false, reason: COSMETIC_NOT_CAPTURED },
   ADD_COMMENT: { reversible: false, reason: 'Comments hang off the workbook, not cell values — not simulated, nothing captured.' },

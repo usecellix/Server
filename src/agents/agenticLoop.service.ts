@@ -33,12 +33,17 @@ import { shouldSkipVerifier } from './verifier-skip.policy';
 import { isDestructiveActionType } from './verifier-skip.policy';
 import { isExecutorBlockedSignal } from './utils/verifier-partial-parse.util';
 import { rebindFormatRangeNumberFormats } from './utils/preserve-number-format.util';
+import { UsageTotals } from './utils/usage-accumulator.util';
 
 export interface AgenticLoopOptions {
   conversationId?: string;
   correlationId?: string;
   toolEmit?: (event: string, data: Record<string, unknown>) => void;
   parseFailureTracker?: { hadFailure: boolean };
+  /** Out-param — every Executor/Verifier call this run makes accumulates its
+   * real usage here, same object the caller (OrchestratorService) passed to
+   * PlannerAgent.plan(), so one run produces one combined total. */
+  usageTotals?: UsageTotals;
 }
 
 export interface CompletedSubtaskResult {
@@ -84,7 +89,24 @@ export class AgenticLoopService {
   private readonly MAX_STEP_RETRIES = 2;
   private readonly MAX_FORMULA_RETRIES = 2;
   private readonly MAX_TOOL_REQUESTS = 5;
-  private readonly TIMEOUT_MS = 300_000;
+  /**
+   * Wall-clock budget for the whole execute+verify loop, measured from loop
+   * start (the Planner's own time is NOT counted against it).
+   *
+   * Raised from 300_000 on evidence, not preference: a live 20-subtask ledger
+   * build ran 542s end to end and died here with nothing to show. Its Main-sheet
+   * subtasks form a ~6-deep dependency chain (create -> headers -> Jan-Jun
+   * formulas -> Jul-Dec -> KPI row -> consolidated header/chart), and each level
+   * is a serial LLM round trip that no amount of sibling parallelism can
+   * shorten. Six levels at 30-50s each already approaches 300s before the
+   * verifier runs at all.
+   *
+   * This is a mitigation, not a fix. The real answer is TASKS.md #153's
+   * resumable loop, where a long build stops being one connection holding one
+   * budget. Until then a build that would have finished at 320s must not be
+   * thrown away at 300s.
+   */
+  private readonly TIMEOUT_MS = 480_000;
 
   constructor(
     private readonly executor: ExecutorAgent,
@@ -388,6 +410,7 @@ export class AgenticLoopService {
             verifyContext,
             validatorSummary,
             loopOptions.correlationId,
+            loopOptions.usageTotals,
           );
           verification = this.mergeWithLockedPasses(partial, ordered, lockedPassIds, lastSubtaskVerifyResults);
         }
@@ -972,12 +995,14 @@ export class AgenticLoopService {
               execContext,
               previousActions,
               loopOptions.correlationId,
+              loopOptions.usageTotals,
             )
           : await this.executor.execute(
               subtask,
               execContext,
               previousActions,
               loopOptions.correlationId,
+              loopOptions.usageTotals,
             );
         this.noteExecutorParseResult(result, loopOptions);
       } catch (error) {
@@ -1045,6 +1070,7 @@ export class AgenticLoopService {
           execContext,
           previousActions,
           loopOptions.correlationId,
+          loopOptions.usageTotals,
         );
         this.noteExecutorParseResult(result, loopOptions);
       } catch (error) {
@@ -1126,6 +1152,7 @@ export class AgenticLoopService {
           execContext,
           previousActions,
           loopOptions.correlationId,
+          loopOptions.usageTotals,
         );
         this.noteExecutorParseResult(result, loopOptions);
         continue;
@@ -1203,6 +1230,7 @@ export class AgenticLoopService {
         execContext,
         previousActions,
         loopOptions.correlationId,
+        loopOptions.usageTotals,
       );
     }
 

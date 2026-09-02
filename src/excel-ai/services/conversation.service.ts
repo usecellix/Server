@@ -74,6 +74,8 @@ import { SheetAnalyzerService } from './sheet-analyzer.service';
 import { Tier0DirectService, Tier0Result } from './tier0-direct.service';
 import { Tier1SingleActionService } from './tier1-single-action.service';
 import { Tier2GenerateVerifyService } from './tier2-generate-verify.service';
+import { assessTierEscalation } from '../utils/tier-escalation.util';
+import { attributeActionsToSubtasks, intentForWave } from '../utils/wave-intent.util';
 import { StructuredLogger } from '../../agents/logging/structured-logger';
 import { WorkbookContext as AgentWorkbookContext } from '../../agents/types/agent.types';
 import { SheetAction } from '../types/sheet-actions.types';
@@ -1435,7 +1437,18 @@ export class ConversationService {
               actionHint,
               agentContext,
             );
-            if (tier1Result.actions.length > 0) {
+            // TASKS.md #165 — the word-based lane guess was made before any work
+            // existed; now that it does, check it. Escalating discards this
+            // lane's LLM call, which is why the thresholds are conservative.
+            const t1Escalation = assessTierEscalation(tier1Result.actions);
+            if (t1Escalation.escalate) {
+              this.logger.warn(
+                `[${traceId}] Tier 1 escalating to planner: ${t1Escalation.reason}`,
+              );
+              outcome.escalatedFrom = 1;
+              outcome.escalationReason = t1Escalation.reason ?? undefined;
+            } else if (tier1Result.actions.length > 0) {
+              outcome.finalActionCount = tier1Result.actions.length;
               outcome.tier = 1;
               outcome.llmCallCount = 1;
               this.logger.log(
@@ -1483,6 +1496,18 @@ export class ConversationService {
           traceId,
           { conversationId, toolEmit: emit },
         );
+        // TASKS.md #165 — same check as Tier 1. Tier 2 is where this matters
+        // most: it can legitimately emit a handful of actions, so a result that
+        // creates several sheets is a build that slipped past the classifier.
+        const t2Escalation = assessTierEscalation(tier2Result.actions);
+        if (t2Escalation.escalate) {
+          this.logger.warn(
+            `[${traceId}] Tier 2 escalating to planner: ${t2Escalation.reason}`,
+          );
+          outcome.escalatedFrom = 2;
+          outcome.escalationReason = t2Escalation.reason ?? undefined;
+        } else {
+        outcome.finalActionCount = tier2Result.actions.length;
         outcome.tier = 2;
         // Executor+Verifier, plus optional Bug 1 retry (+ verify) and Bug 4 tool follow-up.
         outcome.llmCallCount = tier2Result.toolFollowUp
@@ -1503,10 +1528,16 @@ export class ConversationService {
           routerDecision.assumption,
         );
         return;
+        }
       }
 
       outcome.tier = 3;
       outcome.llmCallCount = 3;
+      // Over-sorting is only visible if lane 3's OWN action count is recorded:
+      // a three-minute pipeline that produced two actions was the wrong lane.
+      const reportActionCount = (count: number) => {
+        outcome.finalActionCount = count;
+      };
       await this.streamWithOrchestrator(
         {
           ...routedRequest,
@@ -1520,6 +1551,7 @@ export class ConversationService {
         emit,
         routerDecision.assumption,
         (routerDecision.complexity ?? 3) as 0 | 1 | 2 | 3,
+        reportActionCount,
       );
     } finally {
       const classifiedTier = (routerDecision.complexity ?? 3) as 0 | 1 | 2 | 3;
@@ -1535,13 +1567,31 @@ export class ConversationService {
         actionHint: routerDecision.actionHint ?? '',
         llmCallCount: outcome.llmCallCount,
         durationMs: Date.now() - startedAt,
+        // TASKS.md #165 — the three fields that make mis-sorting MEASURABLE
+        // rather than a matter of opinion. Pairing the lane with what it
+        // actually produced is what turns "is the classifier any good?" into a
+        // query: a lane 1/2 run with a large `finalActionCount` was
+        // under-sorted; a lane 3 run with two or three actions was over-sorted.
+        escalatedFrom: outcome.escalatedFrom,
+        escalationReason: outcome.escalationReason,
+        finalActionCount: outcome.finalActionCount,
       });
+      if (outcome.escalatedFrom) {
+        this.logger.warn(
+          `[${traceId}] ROUTING MISS: classified tier ${outcome.escalatedFrom}, escalated to ${outcome.tier} — ${outcome.escalationReason}`,
+        );
+      }
     }
   }
 
   private resolveInitialWriteOutcome(routerDecision: RouterDecision): {
     tier: 0 | 1 | 2 | 3;
     llmCallCount: number;
+    /** Set when a fast lane bailed upward mid-flight. TASKS.md #165. */
+    escalatedFrom?: 1 | 2;
+    escalationReason?: string;
+    /** Actions the run finally produced — pairs with `tier` to expose mis-sorting. */
+    finalActionCount?: number;
   } {
     const complexity = routerDecision.complexity ?? 3;
     if (complexity === 0) {
@@ -2114,6 +2164,8 @@ export class ConversationService {
     emit: (event: string, data: Record<string, unknown>) => void,
     routerAssumption?: string,
     complexity?: 0 | 1 | 2 | 3,
+    /** Reports the finished action count back for routing telemetry. TASKS.md #165. */
+    reportActionCount?: (count: number) => void,
   ): Promise<void> {
     const startedAt = Date.now();
     const intent = classifyIntent(request.message);
@@ -2157,6 +2209,10 @@ export class ConversationService {
           complexity: complexity ?? 3,
         },
         sseEmitter,
+        // Populates telemetry.usage/model from the real Planner+Executor+Verifier
+        // calls this run makes — previously never wired, so every Tier-3
+        // audit_logs row here always reported promptTokens/completionTokens: 0.
+        telemetry,
       );
       const rawActions = orchestratorResult.actions;
 
@@ -2179,14 +2235,40 @@ export class ConversationService {
           const failedReason =
             orchestratorResult.failedSubtask?.reason ??
             'A later step could not be completed';
-          const actions = this.engine.finalizeActions(
+          const finalized = this.engine.finalizeActions(
             rawActions,
             analysis,
             richWorkbookContext,
             request.message,
             enrichedContext.priorTurnActions,
+            // TASKS.md #172 — this argument was missing here while the success
+            // path passed it, so a partial run silently lost the client's
+            // probed capabilities and fell back to the non-dynamic-array
+            // consolidation even on a host that supports it (#152).
+            request.excelCapabilities,
           );
+
+          // PHASE-ORDER the actions before they are previewed — TASKS.md #172.
+          //
+          // The success path gets this from `createActionWaveChangeSets` ->
+          // `splitIntoActionWaves`, which buckets create -> content -> formula
+          // -> format -> layout -> chart. This branch built a preview straight
+          // from `finalizeActions`, which does NOT reorder, so actions reached
+          // Excel in the order the plan happened to accumulate them.
+          //
+          // That ordering is actively hostile here: planner.prompt.ts rule 0
+          // requires the Main-sheet subtasks to be emitted FIRST and the twelve
+          // month subtasks LAST (a token-budget rule, so a truncated plan loses
+          // the boilerplate rather than the dashboard). Correct for planning,
+          // wrong for applying — it puts `=SUM(July!H:H)` on Main ahead of the
+          // ADD_SHEET that creates July. The dependency graph orders EXECUTION
+          // against the shadow workbook; nothing was ordering the real write.
+          //
+          // Flattening the waves keeps this branch's single-card UX while
+          // giving it the same ordering guarantee the success path has.
+          const actions = splitIntoActionWaves(finalized).flatMap((wave) => wave.actions);
           actionsCount = actions.length;
+          reportActionCount?.(actions.length);
 
           const answer =
             `I completed **${orchestratorResult.completedSubtasks.length}** step(s) and prepared **${actions.length}** change(s) for preview, ` +
@@ -2322,6 +2404,7 @@ export class ConversationService {
         request.excelCapabilities,
       );
       actionsCount = actions.length;
+      reportActionCount?.(actions.length);
 
       this.assertWriteRouteProducedActions({
         conversationId,
@@ -2365,6 +2448,22 @@ export class ConversationService {
       // own subtasks is incomplete, and saying so is the §3.7 rule this
       // codebase keeps re-learning. The Accept card already excludes these from
       // its promises; this makes the omission visible rather than merely quiet.
+      // TASKS.md #171 — the build proceeded under an assumption; say so. These
+      // are questions the Planner raised and we deliberately did NOT block on,
+      // so hiding them would be the §3.7 false-completeness shape: the user
+      // would see a finished workbook and never learn a guess was made.
+      if (orchestratorResult.openQuestions.length > 0) {
+        const asked = orchestratorResult.openQuestions;
+        this.logger.log(
+          `Proceeded under ${asked.length} open assumption(s) rather than blocking: ${asked.join(' | ')}`,
+        );
+        emit('status', {
+          message:
+            `I built this using my best reading of your request. ${asked.length === 1 ? 'One thing' : `${asked.length} things`} to confirm: ` +
+            asked.map((q) => q.trim()).join(' '),
+        });
+      }
+
       if (orchestratorResult.undeliveredSubtasks.length > 0) {
         const missing = orchestratorResult.undeliveredSubtasks;
         this.logger.warn(
@@ -2379,6 +2478,15 @@ export class ConversationService {
         });
       }
 
+      // TASKS.md #167 — map each finalized action back to the subtask that
+      // produced it, so every staged step can describe its OWN work. The
+      // provenance was always in `completedSubtasks`; `finalizeActions` takes a
+      // flat array and dropped it (CODEBASE_ANALYSIS.md §3.7's shape again).
+      const actionAttribution = attributeActionsToSubtasks(
+        actions,
+        orchestratorResult.completedSubtasks ?? [],
+      );
+
       let previousChangeSetId: string | undefined;
       let firstUserFacingSummary: ReturnType<typeof buildUserFacingSummary> | undefined;
       for (const [waveIndex, { wave, changeSet }] of waveChangeSets.entries()) {
@@ -2389,15 +2497,33 @@ export class ConversationService {
           changes: changeSet.changes,
           assumption: isFirstWave ? routerAssumption : undefined,
           activeSheetName: enrichedContext.activeSheetName,
-          // Plan intent describes the WHOLE build, so it belongs only on a
-          // single-card change. On a staged build each card must describe its
-          // OWN step — otherwise "Create 13 sheets" promises the formulas and
-          // charts that come three steps later, which is TASKS.md #155's
-          // over-promising in a new shape. Staged steps fall back to the
-          // per-step action rollup (#140); the step label already carries the
-          // semantics. TASKS.md #161.
+          // Plan intent, scoped to THIS step's own actions.
+          //
+          // TASKS.md #161 had to disable intent entirely for staged builds
+          // because every card rendered the same whole-plan bullets — "Create
+          // 13 sheets" promising the formulas and charts three steps away,
+          // which is #155's over-promising in a new shape. That fix was
+          // correct and explicitly temporary: it left every staged card
+          // describing machinery ("83 formatting changes") when the data
+          // needed to describe work existed one layer up.
+          //
+          // Now each wave reports only the subtasks its own actions came from,
+          // so the over-promising is impossible by construction rather than by
+          // suppression. A wave that attributes to nothing (pure pass-generated
+          // formatting on unowned sheets) yields [] and correctly falls back to
+          // #140's action rollup — never an empty card, the bug #149 already
+          // hit once. TASKS.md #167.
           planSubtasks:
-            waveChangeSets.length === 1 ? orchestratorResult.planSubtasks : undefined,
+            waveChangeSets.length === 1
+              ? orchestratorResult.planSubtasks
+              : (() => {
+                  const scoped = intentForWave(
+                    wave.actionIndexes,
+                    actionAttribution,
+                    orchestratorResult.planSubtasks,
+                  );
+                  return scoped.length > 0 ? scoped : undefined;
+                })(),
         });
         firstUserFacingSummary ??= userFacingSummary;
         const internalDetails = buildInternalDetails({
@@ -2515,15 +2641,21 @@ export class ConversationService {
     emit('thinking', { message: '🧠 Building a step-by-step plan across your workbook…' });
 
     try {
-      const plan = await this.orchestrator.planOnly({
-        prompt: request.message,
-        context: enrichedContext,
-        conversationHistory,
-        promptContext,
-        conversationId,
-        correlationId: traceId,
-        complexity,
-      });
+      const plan = await this.orchestrator.planOnly(
+        {
+          prompt: request.message,
+          context: enrichedContext,
+          conversationHistory,
+          promptContext,
+          conversationId,
+          correlationId: traceId,
+          complexity,
+        },
+        // Same wiring as streamWithOrchestrator — this path only calls the
+        // Planner, but previously reported promptTokens/completionTokens: 0
+        // for the same reason (telemetry.usage was never populated).
+        telemetry,
+      );
 
       if (plan.clarificationsNeeded.length > 0) {
         const question = plan.clarificationsNeeded.join(' ');

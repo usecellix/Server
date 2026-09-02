@@ -79,7 +79,9 @@ describe('splitIntoActionWaves', () => {
   });
 
   it('handles an empty action list without throwing', () => {
-    expect(splitIntoActionWaves([])).toEqual([{ actions: [], label: '0 changes ready for review' }]);
+    expect(splitIntoActionWaves([])).toEqual([
+      { actions: [], label: '0 changes ready for review', actionIndexes: [] },
+    ]);
   });
 });
 

@@ -35,6 +35,8 @@ export type LlmUsage = {
 export type LlmCompletionOutcome = {
   finishReason?: string | null;
   truncated?: boolean;
+  /** Real usage for this call, when the provider returned one. */
+  usage?: LlmUsage;
 };
 
 /** finishReason values that mean "cut off by the token budget", across providers. */
@@ -203,6 +205,20 @@ export class OpenRouterService {
               `finishReason=${finishReason}, maxTokens=${completionBudget}) — ` +
               `structured output from this call may parse but be incomplete.`,
           );
+        }
+        // Real per-call usage, for callers that need to attribute audit-log
+        // cost/tokens to the actual call rather than the estimate that sized
+        // the request. Was computed below for the PROMPT_CACHE log line but
+        // never surfaced to the caller — audit_logs rows for the Tier-3
+        // Planner/Executor/Verifier path always reported 0 as a result.
+        if (response.usage) {
+          opts.outcome.usage = {
+            promptTokens: response.usage.promptTokens,
+            completionTokens: response.usage.completionTokens,
+            totalTokens: response.usage.totalTokens,
+            reasoningTokens: response.usage.completionTokensDetails?.reasoningTokens ?? undefined,
+            cachedTokens: response.usage.promptTokensDetails?.cachedTokens ?? undefined,
+          };
         }
       }
 

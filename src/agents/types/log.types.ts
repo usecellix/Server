@@ -24,6 +24,16 @@ export interface TierDecisionLog {
   actionHint: string;
   llmCallCount: number;
   durationMs: number;
+  /**
+   * Set when a fast lane produced work too big for itself and handed off to the
+   * planner (TASKS.md #165). Records the lane that BAILED, so telemetry can
+   * separate "the classifier guessed low" from "tier 3 was chosen up front" —
+   * the two look identical in `tier` alone, since both end at 3.
+   */
+  escalatedFrom?: 1 | 2;
+  escalationReason?: string;
+  /** Actions the run finally produced. Pairs with `tier` to expose mis-sorting. */
+  finalActionCount?: number;
 }
 
 /** Domain-tool call logged in the same working-paper trail as Planner/Executor/Verifier. */

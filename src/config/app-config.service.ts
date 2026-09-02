@@ -10,7 +10,7 @@ export class AppConfigService {
   }
 
   get port(): number {
-    return this.configService.get<number>('PORT', 5000);
+    return this.configService.get<number>('PORT', 4001);
   }
 
   get mongoUrl(): string {
@@ -53,6 +53,22 @@ export class AppConfigService {
    */
   get openRouterModelTier1(): string {
     return this.configService.get<string>('OPENROUTER_MODEL_TIER1', this.openRouterModelMedium);
+  }
+
+  /**
+   * Spec 16 fix #2 — model-selection experiment for Planner calls specifically.
+   * `openRouterModelHigh` (gpt-5, a reasoning model) is the Planner's job: pure
+   * JSON decomposition, not open-ended reasoning, and reasoning tokens sharing
+   * the completion budget is exactly what caused the Spec 16 empty-response
+   * incident (completionTokens === reasoningTokens, zero content emitted).
+   * Decoupled from HIGH so a non-reasoning/lighter-reasoning model (e.g. a
+   * GPT-4.1/GPT-4o-class model with strong structured-output adherence) can be
+   * evaluated for the Planner in isolation — without changing the Executor's
+   * model, which does its own separate reasoning over tool calls. Defaults to
+   * HIGH, so this is a no-op until OPENROUTER_MODEL_PLANNER is explicitly set.
+   */
+  get openRouterModelPlanner(): string {
+    return this.configService.get<string>('OPENROUTER_MODEL_PLANNER', this.openRouterModelHigh);
   }
 
   get openRouterHttpReferer(): string {

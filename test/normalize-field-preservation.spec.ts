@@ -182,6 +182,21 @@ const FIELD_FIXTURES: Record<SheetActionType, Record<string, unknown>> = {
     colorScheme: 'green',
     chartId: 'Chart_spend',
   },
+  HIDE_GRIDLINES: {
+    type: 'HIDE_GRIDLINES',
+    sheetName: 'Main',
+    showGridlines: false,
+  },
+  DATA_VALIDATION: {
+    type: 'DATA_VALIDATION',
+    sheetName: 'January',
+    range: 'I2:I500',
+    validation: {
+      kind: 'list',
+      listSource: 'Lists!$B$3:$B$20',
+      errorStyle: 'stop',
+    },
+  },
   DEFINE_NAMED_RANGE: {
     type: 'DEFINE_NAMED_RANGE',
     sheetName: 'Dashboard',

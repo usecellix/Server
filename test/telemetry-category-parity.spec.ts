@@ -19,12 +19,16 @@ import { TELEMETRY_CATEGORIES } from '../src/common/logging/dto/frontend-log-bat
  * a test that reads the other side's source and fails when they disagree.
  */
 describe('frontend telemetry category parity (TASKS.md #159)', () => {
-  // The add-in lives in `frontend/`, not `client/` — this path was stale and the
-  // suite had been failing on ENOENT, which meant this drift detector was itself
-  // dead. Exactly the failure mode the docblock above warns about.
+  // The add-in lives in `client/`. This path has now been wrong TWICE — first
+  // pointing at `client/` when the folder was `frontend/`, then corrected to
+  // `frontend/` after it was renamed back — and each time the suite failed on
+  // ENOENT, leaving the drift detector itself dead. That is precisely the
+  // failure the docblock above warns about, which is why the existence
+  // assertion below is not decoration: it is the only thing that tells the
+  // difference between "no drift" and "no test". TASKS.md #166.
   const CLIENT_SOURCE = path.resolve(
     __dirname,
-    '../../frontend/src/services/frontendTelemetry.ts',
+    '../../client/src/services/frontendTelemetry.ts',
   );
 
   function clientCategories(): string[] {

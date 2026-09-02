@@ -11,6 +11,7 @@ export const envValidationSchema = Joi.object({
   OPENROUTER_MODEL_MEDIUM: Joi.string().default('openai/gpt-5-mini'),
   OPENROUTER_MODEL_HIGH: Joi.string().default('openai/gpt-5'),
   OPENROUTER_MODEL_TIER1: Joi.string().optional(),
+  OPENROUTER_MODEL_PLANNER: Joi.string().optional(),
   OPENROUTER_HTTP_REFERER: Joi.string().default('https://cellix.local'),
   OPENAI_API_KEY: Joi.string().allow('').optional(),
   OPENAI_MODEL: Joi.string().default('gpt-4o-mini'),

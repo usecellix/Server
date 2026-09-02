@@ -98,6 +98,15 @@ export function normalizeSingleAction(
   if (typeof record.range === 'string') action.range = record.range;
   if (typeof record.sourceRange === 'string') action.sourceRange = record.sourceRange;
   if (typeof record.targetRange === 'string') action.targetRange = record.targetRange;
+  // DATA_VALIDATION carries its whole rule in one nested object. Dropping it
+  // here would leave a valid-looking action that installs no rule at all —
+  // the silent-loss shape TASKS.md #156/#157 both landed in. TASKS.md #166.
+  if (typeof record.showGridlines === 'boolean') {
+    action.showGridlines = record.showGridlines;
+  }
+  if (record.validation !== null && typeof record.validation === 'object') {
+    action.validation = record.validation as SheetActionPayload['validation'];
+  }
   if (typeof record.sourceSheetName === 'string') {
     action.sourceSheetName = record.sourceSheetName;
   }
