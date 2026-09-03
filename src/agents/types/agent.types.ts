@@ -166,4 +166,9 @@ export interface AgentRunOptions {
   routerAssumption?: string;
   /** Router complexity tier (0–3) — keys Planner max_tokens budget. */
   complexity?: 0 | 1 | 2 | 3;
+  /**
+   * Called as each execution wave completes, so the caller can emit an Accept
+   * card for finished work instead of waiting for the whole run. TASKS.md #174.
+   */
+  onWaveComplete?: (waveActions: Action[], waveIndex: number) => Promise<void>;
 }

@@ -46,10 +46,12 @@ const ACTION_CATALOG: Record<SheetActionType, CatalogEntry> = {
   UNHIDE_COLUMN: { advertise: false, reason: 'Handled deterministically by the Tier 0 shortcut lane.' },
   SHOW_COLUMN: { advertise: false, reason: 'Alias of UNHIDE_COLUMN; Tier 0 lane resolves it.' },
   SET_ROW_HEIGHT: { advertise: false, reason: 'Cosmetic sizing; Tier 0/1 lanes handle explicit requests.' },
-  SET_COLUMN_WIDTH: {
-    advertise: false,
-    reason: 'AUTOFIT_COLUMNS is the advertised sizing action; explicit widths go through Tier 0/1.',
-  },
+  // Was withheld because "explicit widths go through Tier 0/1" — the same false
+  // premise HIDE_SHEET carried (#166): those lanes never run inside a Tier 3
+  // build, so a dashboard that wants a wide label column and narrow number
+  // columns had no way to say so and got autofit-to-content everywhere.
+  // TASKS.md #169.
+  SET_COLUMN_WIDTH: { advertise: true },
 
   // ---- Range / layout ----
   FORMAT_RANGE: { advertise: true },
@@ -75,6 +77,8 @@ const ACTION_CATALOG: Record<SheetActionType, CatalogEntry> = {
   FREEZE_PANES: { advertise: true },
   UNFREEZE_PANES: { advertise: true },
   AUTOFIT_COLUMNS: { advertise: true },
+  HIDE_GRIDLINES: { advertise: true },
+  DATA_VALIDATION: { advertise: true },
   DEFINE_NAMED_RANGE: { advertise: true },
   CLEAR_CONTENT: { advertise: true },
   UNMERGE_CELLS: { advertise: false, reason: 'Rarely requested; MERGE_CELLS is the planned direction.' },
@@ -90,7 +94,13 @@ const ACTION_CATALOG: Record<SheetActionType, CatalogEntry> = {
   DELETE_SHEET: { advertise: true },
   RENAME_SHEET: { advertise: true },
   COPY_SHEET: { advertise: true },
-  HIDE_SHEET: { advertise: false, reason: 'Handled deterministically by the Tier 0 shortcut lane.' },
+  // Was withheld as "Tier 0 handles it" — true for *"hide the Lists sheet"* as a
+  // standalone request, and false for the case that matters: a Tier 3 build that
+  // creates a lookup sheet to back its dropdowns and wants it out of the way. The
+  // Tier 0 lane never runs inside a Tier 3 plan, so the capability was
+  // unreachable exactly when it was needed. This is the FREEZE_PANES bug this
+  // file's own header describes, in a second form. TASKS.md #166.
+  HIDE_SHEET: { advertise: true },
   SHOW_SHEET: { advertise: false, reason: 'Handled deterministically by the Tier 0 shortcut lane.' },
   SET_SHEET_COLOR: { advertise: false, reason: 'Cosmetic tab colour; Tier 0/1 lanes handle explicit requests.' },
   PROTECT_SHEET: { advertise: false, reason: 'Handled deterministically by the Tier 0 shortcut lane.' },

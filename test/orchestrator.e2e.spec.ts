@@ -87,6 +87,9 @@ describe('OrchestratorService SSE write path', () => {
       expect.any(String),
       undefined,
       undefined,
+      // Usage-accumulator out-param — populates conversation.service.ts's
+      // audit-log telemetry with real Planner/Executor/Verifier token usage.
+      expect.objectContaining({ promptTokens: 0, completionTokens: 0, totalTokens: 0 }),
     );
     expect(agenticLoop.run).toHaveBeenCalledTimes(1);
     expect(actions).toEqual(expectedActions);

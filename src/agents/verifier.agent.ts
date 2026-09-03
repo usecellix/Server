@@ -1,7 +1,11 @@
 import { Injectable, Logger, Optional } from '@nestjs/common';
 import { AppConfigService } from '../config/app-config.service';
 import { WorkflowTraceService } from '../common/logging/workflow-trace.service';
-import { OpenRouterService } from '../excel-ai/services/openrouter.service';
+import {
+  LlmCompletionOutcome,
+  OpenRouterService,
+} from '../excel-ai/services/openrouter.service';
+import { addUsage, UsageTotals } from './utils/usage-accumulator.util';
 import {
   VERIFIER_SYSTEM_PROMPT,
   buildVerifierUserMessage,
@@ -35,6 +39,9 @@ export class VerifierAgent {
     context: WorkbookContext,
     formulaValidatorSummary?: string,
     correlationId = `req_${Date.now()}`,
+    /** Out-param — accumulates real promptTokens/completionTokens across this
+     * call (and its retry), same pattern as `PlannerAgent.plan()`. */
+    usageTotals?: UsageTotals,
   ): Promise<VerifierOutput> {
     const startedAt = Date.now();
     const model = this.config.openRouterModelMedium;
@@ -48,6 +55,7 @@ export class VerifierAgent {
     );
 
     const maxTokens = resolveVerifierMaxTokens(subtasks.length);
+    const outcome: LlmCompletionOutcome = {};
     let raw = await this.llm.complete({
       systemPrompt: VERIFIER_SYSTEM_PROMPT,
       userMessage,
@@ -56,7 +64,9 @@ export class VerifierAgent {
       maxTokens,
       reasoningEffort: 'low',
       reasoningMaxTokens: VERIFIER_REASONING_MAX_TOKENS,
+      outcome,
     });
+    addUsage(usageTotals, outcome.usage);
     this.structuredLogger.debugRawResponse(correlationId, 'verifier', model, raw);
 
     let normalized = this.tryNormalize(raw, subtaskIds, correlationId, model);
@@ -69,6 +79,7 @@ export class VerifierAgent {
       this.logger.warn(
         `Verifier response incomplete/truncated — retrying verify-only with maxTokens=${VERIFIER_LAST_RESORT_MAX_TOKENS}`,
       );
+      const retryOutcome: LlmCompletionOutcome = {};
       raw = await this.llm.complete({
         systemPrompt: VERIFIER_SYSTEM_PROMPT,
         userMessage:
@@ -79,7 +90,9 @@ export class VerifierAgent {
         maxTokens: VERIFIER_LAST_RESORT_MAX_TOKENS,
         reasoningEffort: 'low',
         reasoningMaxTokens: VERIFIER_REASONING_MAX_TOKENS,
+        outcome: retryOutcome,
       });
+      addUsage(usageTotals, retryOutcome.usage);
       this.structuredLogger.debugRawResponse(correlationId, 'verifier', model, raw);
       const retried = this.tryNormalize(raw, subtaskIds, correlationId, model);
       if (retried) {

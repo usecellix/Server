@@ -55,8 +55,38 @@ const SINGLE_ACTION_PATTERNS: Array<{ pattern: RegExp; tier: ComplexityTier; act
   { pattern: /#(REF|N\/A|VALUE|DIV\/0)!?/i, tier: 2, actionHint: 'ERROR_FIX' },
 ];
 
+/**
+ * Phrasings that imply more than one requested feature.
+ *
+ * Deliberately kept as a modest list rather than grown indefinitely: a word
+ * list is never complete, and TASKS.md #158 is this codebase's own record of
+ * what happens when one is leaned on (consolidation silently required a column
+ * literally called "month"). The structural safety net is
+ * `findHighestTierMatch` below plus the mid-flight escalation in
+ * `conversation.service.ts` — those catch what these words miss. TASKS.md #165.
+ */
 const COMPOUND_SIGNALS =
-  /\band then\b|\bafter that\b|,\s*(then|and)\s|\bfor each sheet\b|\bacross (all|every) sheets?\b/i;
+  new RegExp(
+    [
+      '\\band then\\b',
+      '\\bafter that\\b',
+      ',\\s*(then|and)\\s',
+      '\\bfor each\\b',
+      '\\bfor every\\b',
+      '\\bacross (all|every|each)\\b',
+      // "one sheet per month", "a tab for each region" — the single most common
+      // shape of a large build, and previously unmatched by anything here.
+      '\\b(one|a|separate|individual)\\s+(sheet|tab|worksheet)s?\\s+(per|for)\\b',
+      '\\b(sheets?|tabs?|worksheets?)\\s+for\\s+(all|each|every)\\b',
+      '\\bmultiple\\s+(sheets?|tabs?|worksheets?)\\b',
+      // A summary/roll-up sheet is by definition a second object.
+      '\\b(summary|main|master|overview|consolidat\\w*)\\s+(sheet|tab|page)\\b',
+      '\\bas well as\\b',
+      '\\balong with\\b',
+      '\\bplus\\s+(a|an|the)\\b',
+    ].join('|'),
+    'i',
+  );
 
 /** True when the message has multi-clause/compound phrasing implying more than one requested feature. */
 export function hasCompoundSignals(message: string): boolean {
@@ -89,15 +119,46 @@ export function extractTier0PatternMatch(
   return null;
 }
 
-function findFirstSingleActionMatch(
+/**
+ * First match wins for the HINT; a tier-3 match anywhere wins the TIER.
+ *
+ * The bug this fixes: SINGLE_ACTION_PATTERNS is scanned in order and the lane-1
+ * "highlight" pattern sits above the lane-3 "dashboard" pattern, so
+ * *"build me a dashboard and highlight the overdue payments"* matched
+ * `highlight` and routed a whole dashboard build into the single-action lane —
+ * a thin answer, no planning, no verification. It escaped only when the
+ * phrasing happened to carry a COMPOUND_SIGNAL, which that sentence does not.
+ *
+ * The obvious fix — take the maximum tier of every match — is WRONG, and was
+ * tried first. The list's order encodes specificity, not just tier: the lane-2
+ * FORMULA_GEN pattern matches the bare word "formula", so a plain
+ * *"fill down the formula in column D"* (correctly COPY_FILL, lane 1) got
+ * dragged to lane 2 by a keyword that describes none of its work. Loose
+ * lower-tier keywords must not be able to outvote a precise earlier match.
+ *
+ * Tier 3 is different in kind, and that is why it alone overrides. A lane-3
+ * pattern denotes a multi-object BUILD — a thing the single-action lanes have
+ * no planner to construct, so being wrong there costs the user's result rather
+ * than a few seconds. Lanes 1 and 2 keep their existing precedence untouched.
+ *
+ * The hint always comes from the first (most specific) match, so
+ * `Tier0DirectService`'s capture-group re-run still resolves the same pattern.
+ * TASKS.md #165.
+ */
+function findPatternMatch(
   message: string,
 ): { tier: ComplexityTier; actionHint: string } | null {
+  let first: { tier: ComplexityTier; actionHint: string } | null = null;
+  let sawBuildSignal = false;
+
   for (const { pattern, tier, actionHint } of SINGLE_ACTION_PATTERNS) {
-    if (pattern.test(message)) {
-      return { tier, actionHint };
-    }
+    if (!pattern.test(message)) continue;
+    if (!first) first = { tier, actionHint };
+    if (tier === 3) sawBuildSignal = true;
   }
-  return null;
+
+  if (!first) return null;
+  return sawBuildSignal ? { tier: 3, actionHint: first.actionHint } : first;
 }
 
 function applyFindReplaceEscalation(
@@ -115,9 +176,15 @@ export function classifyComplexity(
   message: string,
   _activeSheetContext?: { hasHeaders?: boolean },
 ): ComplexityClassifierResult {
-  const singleActionMatch = findFirstSingleActionMatch(message);
+  const singleActionMatch = findPatternMatch(message);
 
   if (COMPOUND_SIGNALS.test(message)) {
+    // No single-action pattern matched, so there is nothing to escalate FROM.
+    // Returning null hands the decision to the LLM router, which reads a vague
+    // sentence far better than any regex can and already defaults to 3 when
+    // unsure. Hard-coding 3 here was tried and reverted: it replaced a good
+    // deferral with a blunt constant AND destroyed the `matchedBy` signal that
+    // tells telemetry which component actually made the call. TASKS.md #165.
     if (!singleActionMatch) {
       return { match: null };
     }
