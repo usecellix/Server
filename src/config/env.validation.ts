@@ -11,6 +11,11 @@ export const envValidationSchema = Joi.object({
   OPENROUTER_MODEL_MEDIUM: Joi.string().default('openai/gpt-5-mini'),
   OPENROUTER_MODEL_HIGH: Joi.string().default('openai/gpt-5'),
   OPENROUTER_MODEL_TIER1: Joi.string().optional(),
+  // MODEL_PROFILE=dev swaps every tier's resolved model string to
+  // CELLIX_DEV_MODEL, independent of tier-routing logic (AppConfigService is
+  // the sole chokepoint every tier already reads its model through).
+  MODEL_PROFILE: Joi.string().valid('prod', 'dev').default('prod'),
+  CELLIX_DEV_MODEL: Joi.string().default('z-ai/glm-5.3-flash'),
   OPENROUTER_HTTP_REFERER: Joi.string().default('https://cellix.local'),
   OPENAI_API_KEY: Joi.string().allow('').optional(),
   OPENAI_MODEL: Joi.string().default('gpt-4o-mini'),

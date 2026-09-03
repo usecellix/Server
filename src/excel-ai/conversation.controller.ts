@@ -1,9 +1,12 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Headers,
+  HttpCode,
   Param,
+  Patch,
   Post,
   Query,
   Res,
@@ -15,6 +18,7 @@ import { SkipEnvelope } from '../common/decorators/skip-envelope.decorator';
 import { AuthGuard, AuthUserSession, Session } from '../auth/auth.guard';
 import { ConversationRequestDto } from './dto/conversation-request.dto';
 import { ListConversationsQueryDto } from './dto/list-conversations-query.dto';
+import { RenameConversationDto } from './dto/rename-conversation.dto';
 import { ToolResultDto } from './dto/tool-result.dto';
 import { ConversationService } from './services/conversation.service';
 
@@ -87,6 +91,31 @@ export class ConversationController {
     @Session() session: AuthUserSession | undefined,
   ) {
     return this.conversationService.getConversation(conversationId, session?.user?.id);
+  }
+
+  /** Rename a conversation (TASKS.md #177) — the history list's CRUD "R". */
+  @Patch('conversation/:conversationId')
+  @SkipEnvelope()
+  async renameConversation(
+    @Param('conversationId') conversationId: string,
+    @Body() body: RenameConversationDto,
+    @Session() session: AuthUserSession | undefined,
+  ) {
+    return this.conversationService.renameConversation(
+      conversationId,
+      session!.user.id,
+      body.title,
+    );
+  }
+
+  /** Delete a conversation (TASKS.md #177) — hard delete, not soft-archive. */
+  @Delete('conversation/:conversationId')
+  @HttpCode(204)
+  async deleteConversation(
+    @Param('conversationId') conversationId: string,
+    @Session() session: AuthUserSession | undefined,
+  ): Promise<void> {
+    await this.conversationService.deleteConversation(conversationId, session!.user.id);
   }
 
   @Post('conversation/tool-result')

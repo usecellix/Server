@@ -56,6 +56,10 @@ export class ExecutorAgent {
       model,
       temperature: 0.1,
       maxTokens,
+      // Explicit, not relying on complete()'s own 'low' default — prior
+      // OpenRouter generation inspection found gpt-5-mini spending ~35% of
+      // completion tokens on invisible reasoning here at default effort.
+      reasoningEffort: 'low',
     });
     this.structuredLogger.debugRawResponse(correlationId, 'executor', model, raw);
 
@@ -77,6 +81,7 @@ export class ExecutorAgent {
         model,
         temperature: 0.05,
         maxTokens,
+        reasoningEffort: 'low',
       });
       this.structuredLogger.debugRawResponse(correlationId, 'executor', model, raw);
       result = this.tryParseExecutor(raw, subtask);

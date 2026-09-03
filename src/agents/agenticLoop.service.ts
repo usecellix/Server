@@ -24,6 +24,7 @@ import { CompletenessChecker } from './checkers/completeness.checker';
 import { FormattingChecker } from './checkers/formatting.checker';
 import { SemanticFormulaChecker } from './checkers/semantic-formula.checker';
 import { OverwriteOccupancyChecker } from './checkers/overwrite-occupancy.checker';
+import { StructuralIntentChecker } from './checkers/structural-intent.checker';
 import { CheckerResult, mergeCheckerResults } from './checkers/checker.types';
 import { buildDeterministicSubtaskActions } from './utils/compound-action.util';
 import { StepRetryExhaustedError } from './errors';
@@ -97,6 +98,7 @@ export class AgenticLoopService {
     private readonly overwriteOccupancyChecker: OverwriteOccupancyChecker,
     private readonly semanticFormulaChecker: SemanticFormulaChecker = new SemanticFormulaChecker(),
     private readonly structuredLogger: StructuredLogger = new StructuredLogger(),
+    private readonly structuralIntentChecker: StructuralIntentChecker = new StructuralIntentChecker(),
   ) {}
 
   async run(
@@ -699,7 +701,14 @@ export class AgenticLoopService {
       context,
     );
     const overwriteOccupancy = this.overwriteOccupancyChecker.check(subtaskStates, context);
-    const merged = mergeCheckerResults([completeness, formatting, semantic, overwriteOccupancy]);
+    const structuralIntent = this.structuralIntentChecker.check(subtaskStates, context);
+    const merged = mergeCheckerResults([
+      completeness,
+      formatting,
+      semantic,
+      overwriteOccupancy,
+      structuralIntent,
+    ]);
 
     const needsSemanticReview =
       subtaskStates.some((state) =>

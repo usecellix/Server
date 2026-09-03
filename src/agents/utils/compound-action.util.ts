@@ -9,6 +9,27 @@ export function detectCreateNewSheet(text: string): boolean {
   return /\b(create|add)\s+(?:an?\s+)?(?:(?:new|empty|blank)\s+)*sheet/i.test(text);
 }
 
+/**
+ * "if it doesn't exist" / "if not exists" / "if it does not already exist" —
+ * the Planner's own idempotent-create phrasing (see planner.prompt.ts's own
+ * example: `"Create sheet 'Pending Payments' if it doesn't exist"`).
+ *
+ * COMPETITIVE_STUDY_SHORTCUT.md:71's "Main" -> "Main 2" failure traces here:
+ * `nextUniqueSheetName` used to append a numeric suffix on ANY name collision,
+ * with no way to tell "the user asked to reuse it" from "the user asked for a
+ * genuine second copy" — so a request phrased exactly like the idempotent
+ * example above got deduped instead of reused. The frontend's own
+ * `handleAddSheet` already activates the existing sheet unconditionally on a
+ * name collision (frontend/src/engine/handlers/sheet.handler.ts) — reuse, not
+ * dedup, is this system's actual contract for ADD_SHEET; `nextUniqueSheetName`
+ * exists only for the separate, explicit "make a copy named X" case.
+ */
+export function detectIdempotentSheetCreate(text: string): boolean {
+  return /\bif\s+(?:it\s+|the\s+sheet\s+)?(?:does\s*n[o']?t|doesn['’]?t)\s+(?:already\s+)?exist/i.test(
+    text,
+  ) || /\bif\s+not\s+(?:already\s+)?exist/i.test(text);
+}
+
 export function detectSortIntent(text: string): boolean {
   return (
     /\bsort(?:\s+the\s+values?\s+of|\s+(?:the\s+)?(?:sheet\s+)?(?:based\s+on|by|on)|\s+based\s+on|\s+by|\s+on|\s+column\b)/i.test(
@@ -53,24 +74,33 @@ export function extractQuotedSheetName(description: string): string | undefined 
  *   Create sheet 'paid paid purchases' if it doesn't exist
  *   Create a new sheet called "Paid Purchases"
  * Falls back to extractSheetNameFromPrompt (named/called).
+ *
+ * An explicit name is returned VERBATIM when the description signals
+ * idempotent-create intent (`detectIdempotentSheetCreate`) — deduping "Main"
+ * to "Main 2" for a request phrased "if it doesn't exist" silently does the
+ * opposite of what was asked (COMPETITIVE_STUDY_SHORTCUT.md:71).
  */
 export function extractSheetNameFromSubtaskDescription(
   description: string,
   context: WorkbookContext,
 ): string | undefined {
+  const idempotent = detectIdempotentSheetCreate(description);
+  const resolve = (name: string): string =>
+    idempotent ? name : nextUniqueSheetName(name, context);
+
   const quoted = extractQuotedSheetName(description);
-  if (quoted) return nextUniqueSheetName(quoted, context);
+  if (quoted) return resolve(quoted);
 
   const sheetClause =
     /\b(?:create|add)\s+(?:an?\s+)?(?:(?:new|empty|blank)\s+)*sheet\s+(?:named\s+|called\s+)?["']?([A-Za-z][A-Za-z0-9 _-]{0,30}?)["']?(?=\s+if\b|\s+when\b|\s+and\b|\s+then\b|\s+with\b|\s+to\b|\s+for\b|\s*,|\s*$)/i.exec(
       description,
     )?.[1]?.trim();
   if (sheetClause && !/^(if|when|with|and|then|for)$/i.test(sheetClause)) {
-    return nextUniqueSheetName(sheetClause, context);
+    return resolve(sheetClause);
   }
 
   const fromPrompt = extractSheetNameFromPrompt(description);
-  return fromPrompt ? nextUniqueSheetName(fromPrompt, context) : undefined;
+  return fromPrompt ? resolve(fromPrompt) : undefined;
 }
 
 /** Drop generic Sheet2/SheetN creates when the batch already creates the real dest sheet. */

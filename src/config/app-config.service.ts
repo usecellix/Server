@@ -26,20 +26,38 @@ export class AppConfigService {
     return key?.trim() ? key.trim() : undefined;
   }
 
+  /**
+   * "prod" (default) leaves every tier's model assignment exactly as
+   * configured. "dev" makes every tier resolve to `cellixDevModel` instead —
+   * a single override switch for local/dev runs, without touching any
+   * tier-routing logic (ModelRouter, OpenRouterService, and each agent all
+   * read their model through this service, so the swap happens once here).
+   */
+  get modelProfile(): 'prod' | 'dev' {
+    return this.configService.get<string>('MODEL_PROFILE', 'prod') === 'dev' ? 'dev' : 'prod';
+  }
+
+  get cellixDevModel(): string {
+    return this.configService.get<string>('CELLIX_DEV_MODEL', 'z-ai/glm-5.3-flash');
+  }
+
   /** @deprecated Use tier models (LOW / MEDIUM / HIGH). Kept for OpenRouterService default only. */
   get openRouterModel(): string {
     return this.openRouterModelMedium;
   }
 
   get openRouterModelLow(): string {
+    if (this.modelProfile === 'dev') return this.cellixDevModel;
     return this.configService.get<string>('OPENROUTER_MODEL_LOW', 'openai/gpt-5-mini');
   }
 
   get openRouterModelMedium(): string {
+    if (this.modelProfile === 'dev') return this.cellixDevModel;
     return this.configService.get<string>('OPENROUTER_MODEL_MEDIUM', 'openai/gpt-5-mini');
   }
 
   get openRouterModelHigh(): string {
+    if (this.modelProfile === 'dev') return this.cellixDevModel;
     return this.configService.get<string>('OPENROUTER_MODEL_HIGH', 'openai/gpt-5');
   }
 
@@ -52,6 +70,7 @@ export class AppConfigService {
    * MEDIUM model; override independently via OPENROUTER_MODEL_TIER1 if needed.
    */
   get openRouterModelTier1(): string {
+    if (this.modelProfile === 'dev') return this.cellixDevModel;
     return this.configService.get<string>('OPENROUTER_MODEL_TIER1', this.openRouterModelMedium);
   }
 

@@ -61,7 +61,12 @@ export class PlannerAgent {
       systemPrompt,
       model,
       maxTokens,
-      reasoningEffort: 'low' as const,
+      // Planner stays at full reasoning capability — do not lower this to save
+      // tokens (per explicit instruction, distinct from Executor/Verifier/Tier1
+      // below, which are deliberately capped at low/none). reasoningMaxTokens
+      // still bounds spend regardless of effort level, so this raises reasoning
+      // depth within the same budget ceiling rather than uncapping it.
+      reasoningEffort: 'high' as const,
       reasoningMaxTokens: PLANNER_REASONING_MAX_TOKENS,
     };
 

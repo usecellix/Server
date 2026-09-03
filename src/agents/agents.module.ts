@@ -12,6 +12,7 @@ import { CompletenessChecker } from './checkers/completeness.checker';
 import { FormattingChecker } from './checkers/formatting.checker';
 import { SemanticFormulaChecker } from './checkers/semantic-formula.checker';
 import { OverwriteOccupancyChecker } from './checkers/overwrite-occupancy.checker';
+import { StructuralIntentChecker } from './checkers/structural-intent.checker';
 import { ToolBridgeService } from './tool-bridge.service';
 import { StructuredLogger } from './logging/structured-logger';
 
@@ -29,6 +30,7 @@ import { StructuredLogger } from './logging/structured-logger';
     FormattingChecker,
     SemanticFormulaChecker,
     OverwriteOccupancyChecker,
+    StructuralIntentChecker,
   ],
   exports: [OrchestratorService, ToolBridgeService, ExecutorAgent, VerifierAgent, StructuredLogger],
 })

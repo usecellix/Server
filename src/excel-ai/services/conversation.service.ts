@@ -3224,6 +3224,60 @@ export class ConversationService {
     };
   }
 
+  /**
+   * User-set rename, overriding the auto-derived first-message title
+   * (TASKS.md #177). Same ownership discipline as `getConversation`/
+   * `getOrCreateConversation`: a mismatched owner is reported as NOT_FOUND, not
+   * FORBIDDEN, so the response doesn't confirm the id exists. An unowned
+   * (pre-#170) conversation may still be renamed by anyone holding its id —
+   * the same access level `getConversation` already grants it for reads.
+   */
+  async renameConversation(
+    conversationId: string,
+    userId: string,
+    title: string,
+  ): Promise<{ conversationId: string; title: string }> {
+    const trimmed = truncateTitle(title);
+    if (!trimmed) {
+      throw new BadRequestException('TITLE_REQUIRED');
+    }
+
+    const doc = await this.conversationModel.findOne({ conversationId });
+    if (!doc) {
+      throw new NotFoundException('CONVERSATION_NOT_FOUND');
+    }
+    if (doc.userId && doc.userId !== userId) {
+      throw new NotFoundException('CONVERSATION_NOT_FOUND');
+    }
+
+    doc.title = trimmed;
+    await doc.save();
+    return { conversationId: doc.conversationId, title: trimmed };
+  }
+
+  /**
+   * Hard delete (TASKS.md #177) — chat history is explicitly framed as
+   * read/reopen/rename/delete, not soft-archive, matching the ChatGPT/Cursor
+   * baseline this feature was modelled on. There is nothing downstream that
+   * references a conversation by its Mongo `_id` in a way a delete would
+   * orphan: `change_sets`/`workflow_traces` correlate by `conversationId`
+   * string and already tolerate that id resolving to nothing once a
+   * conversation expires via TTL (`DATABASE_SCHEMA.md` §4) — a user delete is
+   * the same shape of dangling reference, just user-triggered instead of
+   * time-triggered.
+   */
+  async deleteConversation(conversationId: string, userId: string): Promise<void> {
+    const doc = await this.conversationModel.findOne({ conversationId }).select('userId').lean();
+    if (!doc) {
+      throw new NotFoundException('CONVERSATION_NOT_FOUND');
+    }
+    if (doc.userId && doc.userId !== userId) {
+      throw new NotFoundException('CONVERSATION_NOT_FOUND');
+    }
+
+    await this.conversationModel.deleteOne({ conversationId });
+  }
+
   private conversationExpiresAt(): Date {
     return new Date(Date.now() + CONVERSATION_TTL_MS);
   }
