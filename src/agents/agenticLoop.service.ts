@@ -44,6 +44,24 @@ export interface AgenticLoopOptions {
    * real usage here, same object the caller (OrchestratorService) passed to
    * PlannerAgent.plan(), so one run produces one combined total. */
   usageTotals?: UsageTotals;
+  /**
+   * Called as each execution wave finishes, with the actions THAT WAVE
+   * produced — TASKS.md #174 (progressive emission, the "B" half of #153).
+   *
+   * Lets the caller turn a finished wave into an Accept card immediately
+   * instead of holding everything until the whole loop returns. The loop stays
+   * ignorant of ChangeSets and SSE cards; it only reports "this much is done".
+   *
+   * Deliberately awaited: the caller creates a ChangeSet, and letting the next
+   * wave start before that resolves would let two waves race to emit cards out
+   * of order. A wave is 30-50s of LLM time, so a few ms of ChangeSet work costs
+   * nothing measurable.
+   *
+   * Never allowed to break the run — a throw here is logged and swallowed,
+   * because a presentation concern must not destroy work the loop has already
+   * done (the TASKS.md #173 lesson).
+   */
+  onWaveComplete?: (waveActions: Action[], waveIndex: number) => Promise<void>;
 }
 
 export interface CompletedSubtaskResult {
@@ -210,6 +228,27 @@ export class AgenticLoopService {
         completedIds.add(subtask.id);
       }
 
+      // TASKS.md #174 — hand this wave's actions to the caller so a card can be
+      // rendered now. Runs BEFORE the progress status below so the card and its
+      // "N steps ready" line arrive in a sensible order.
+      if (loopOptions.onWaveComplete) {
+        const waveActions = wave.flatMap(
+          (subtask) =>
+            subtaskStates.find((state) => state.subtask.id === subtask.id)?.actions ?? [],
+        );
+        if (waveActions.length > 0) {
+          try {
+            await loopOptions.onWaveComplete(waveActions, waves.indexOf(wave));
+          } catch (error) {
+            this.logger.warn(
+              `onWaveComplete failed (continuing — progressive emission must never cost real work): ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+            );
+          }
+        }
+      }
+
       // Live progress so the UI is not idle while remaining waves run.
       const readyActions = subtaskStates.reduce((sum, s) => sum + (s.actions?.length ?? 0), 0);
       const doneSteps = subtaskStates.filter((s) => s.completed && !s.failedReason).length;
@@ -236,8 +275,38 @@ export class AgenticLoopService {
     }
 
     if (timedOut) {
-      this.logger.warn('Agentic loop timed out before completion');
-      emitter.send({ type: 'ERROR', message: 'Agentic loop timeout' });
+      // A timeout with work in hand is NOT a fatal error — TASKS.md #173.
+      //
+      // This unconditionally emitted ERROR, and the frontend's error branch
+      // sets `aborted = true` on the turn. So the partial-progress card that
+      // `conversation.service.ts` emits moments later was discarded before it
+      // could render. Three live runs ended that way: 11 minutes of work, 14
+      // subtasks completed, and the user shown nothing but "Agentic loop
+      // timeout".
+      //
+      // Reserve ERROR for the case where there is genuinely nothing to show.
+      // Otherwise say what happened as a status and let the partial card
+      // through — that is the §3.7 rule pointing the other way for once:
+      // reporting honestly here means NOT overstating a partial success as a
+      // total failure.
+      const deliverable = subtaskStates.filter(
+        (state) => (state.actions?.length ?? 0) > 0,
+      ).length;
+
+      this.logger.warn(
+        `Agentic loop timed out before completion (${deliverable} subtask(s) have actions to deliver)`,
+      );
+
+      if (deliverable > 0) {
+        emitter.send({
+          type: 'THINKING',
+          message:
+            `Ran out of time before finishing every step — ${deliverable} step(s) are ready to review.`,
+        });
+      } else {
+        emitter.send({ type: 'ERROR', message: 'Agentic loop timeout' });
+      }
+
       return this.buildLoopResult(subtaskStates, iterationsRun, false, {
         preferCompletedOnly: true,
         defaultFailReason: 'Agentic loop timed out before completion',

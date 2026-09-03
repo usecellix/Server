@@ -118,6 +118,7 @@ export class OrchestratorService {
       toolEmit,
       routerAssumption,
       complexity,
+      onWaveComplete,
     } = opts;
     const resolvedCorrelationId = this.resolveCorrelationId(correlationId);
     const usageTotals = createUsageAccumulator();
@@ -135,6 +136,7 @@ export class OrchestratorService {
         resolvedCorrelationId,
         emitter,
         usageTotals,
+        onWaveComplete,
       );
     } finally {
       this.applyUsageToTelemetry(telemetry, usageTotals);
@@ -153,6 +155,8 @@ export class OrchestratorService {
     resolvedCorrelationId: string,
     emitter: SseEmitter,
     usageTotals: ReturnType<typeof createUsageAccumulator>,
+    /** Progressive per-wave emission — TASKS.md #174. */
+    onWaveComplete: AgentRunOptions['onWaveComplete'],
   ): Promise<OrchestratorRunResult> {
     emitter.send({ type: 'THINKING', message: 'Planning your request...' });
     const plan: PlannerOutput = await this.planner.plan(
@@ -238,6 +242,7 @@ export class OrchestratorService {
       correlationId: resolvedCorrelationId,
       toolEmit,
       usageTotals,
+      onWaveComplete,
     });
 
     this.logger.log(

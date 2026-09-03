@@ -74,7 +74,7 @@ export function resolveSheetName(action: SheetActionPayload): string {
  * A coarse identity for an action: enough to tell two different writes apart,
  * loose enough to survive the finalize passes' rewrites.
  */
-function structuralKey(action: SheetActionPayload): string {
+export function structuralKey(action: SheetActionPayload): string {
   const type = String(action?.type ?? '');
   const sheet = resolveSheetName(action).toLowerCase();
 

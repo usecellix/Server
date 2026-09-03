@@ -76,6 +76,12 @@ import { Tier1SingleActionService } from './tier1-single-action.service';
 import { Tier2GenerateVerifyService } from './tier2-generate-verify.service';
 import { assessTierEscalation } from '../utils/tier-escalation.util';
 import { attributeActionsToSubtasks, intentForWave } from '../utils/wave-intent.util';
+import {
+  selectEarlyEmittable,
+  splitEarlyByPhase,
+  excludeAlreadyEmitted,
+  keysFor,
+} from '../utils/progressive-emit.util';
 import { StructuredLogger } from '../../agents/logging/structured-logger';
 import { WorkbookContext as AgentWorkbookContext } from '../../agents/types/agent.types';
 import { SheetAction } from '../types/sheet-actions.types';
@@ -364,6 +370,34 @@ export class ConversationService {
    * orchestration — no SSE emission here, so callers control emit ordering
    * (e.g. 'answer' before the first 'actions' event) exactly as before.
    */
+  /**
+   * Label for a progressive card — TASKS.md #174.
+   *
+   * Deliberately plainer than `describeStep` in action-wave.util.ts: mid-run we
+   * know what this wave did but not where it sits in the finished build, so the
+   * label states the work and claims nothing about position.
+   */
+  private describeProgressiveWave(actions: SheetAction[]): string {
+    const creates = actions.filter((a) =>
+      ['ADD_SHEET', 'CREATE_SHEET', 'COPY_SHEET'].includes(String(a.type)),
+    ).length;
+    if (creates > 0 && creates === actions.length) {
+      return `Create ${creates} sheet${creates === 1 ? '' : 's'}`;
+    }
+
+    const sheets = new Set(
+      actions.map((a) => String(a.sheetName ?? '').trim()).filter(Boolean),
+    );
+    if (creates > 0) {
+      return sheets.size > 1
+        ? `Create and fill ${sheets.size} sheets`
+        : `Create and fill ${[...sheets][0] || 'sheet'}`;
+    }
+    return sheets.size > 1
+      ? `Write content on ${sheets.size} sheets`
+      : `Write content on ${[...sheets][0] || 'sheet'}`;
+  }
+
   private async createActionWaveChangeSets(
     actions: SheetAction[],
     input: { conversationId: string; traceId: string; prompt: string; context: AgentWorkbookContext },
@@ -2196,6 +2230,93 @@ export class ConversationService {
     const sseEmitter = new SseEmitter(emit);
 
     try {
+      // TASKS.md #174 — progressive emission ("B"). Turn each finished
+      // execution wave into an Accept card immediately instead of holding every
+      // card until the whole run returns.
+      //
+      // Only creation and plain-content actions go out early: the consolidation,
+      // chart and presentation passes rewrite formulas, chart anchors and
+      // formatting once they can see the whole build, and a card must never
+      // promise an action a later pass will change (see progressive-emit.util).
+      //
+      // Everything shown early is recorded by structural key so the final
+      // emission — which still runs finalizeActions over ALL actions, because
+      // the global passes need that — can exclude it instead of double-showing.
+      const progressive = {
+        emittedKeys: [] as string[],
+        cardCount: 0,
+        lastChangeSetId: undefined as string | undefined,
+        onWaveComplete: undefined as
+          | ((waveActions: SheetAction[], waveIndex: number) => Promise<void>)
+          | undefined,
+      };
+
+      progressive.onWaveComplete = async (waveActions) => {
+        const early = selectEarlyEmittable(waveActions);
+        if (early.length === 0) return;
+
+        // One card per phase, never a mixed one — TASKS.md #175.
+        for (const group of splitEarlyByPhase(early)) {
+          await emitProgressiveCard(group);
+        }
+      };
+
+      const emitProgressiveCard = async (early: SheetAction[]) => {
+        const changeSet = await this.changeSetService.createPreview({
+          conversationId,
+          traceId,
+          prompt: request.message,
+          context: enrichedContext,
+          actions: early,
+          provenance: {
+            sourceRefs: buildWorkbookSourceRefsFromActions(
+              early,
+              enrichedContext.activeSheetName || 'workbook',
+              enrichedContext.activeSheetName,
+            ),
+            workbookId: enrichedContext.activeSheetName || 'workbook',
+            activeSheetName: enrichedContext.activeSheetName,
+          },
+        });
+
+        progressive.cardCount += 1;
+        const label = this.describeProgressiveWave(early);
+
+        emit('actions', {
+          actions: early,
+          explanation: label,
+          userFacingSummary: buildUserFacingSummary({
+            answer: label,
+            actions: early,
+            changes: changeSet.changes,
+            activeSheetName: enrichedContext.activeSheetName,
+          }),
+          internalDetails: buildInternalDetails({
+            tier: 3,
+            model: telemetry.model,
+            processingLabel: label,
+            actions: early,
+            legacyExplanation: label,
+          }),
+          changeSetId: changeSet.changeSetId,
+          changes: changeSet.changes,
+          irreversibleActionTypes: changeSet.irreversibleActionTypes,
+          tier: 3,
+          stepLabel: label,
+          // Deliberately no stepIndex/stepTotal: the total is unknown while the
+          // run is still going, and a "Step 1 of ?" badge would be a worse lie
+          // than none. The final emission carries the real numbering.
+          progressive: true,
+          ...(progressive.lastChangeSetId
+            ? { dependsOnChangeSetId: progressive.lastChangeSetId }
+            : {}),
+        });
+
+        progressive.lastChangeSetId = changeSet.changeSetId;
+        progressive.emittedKeys.push(...keysFor(early));
+        this.logWorkflowChangeSet(traceId, changeSet.changeSetId, early, changeSet.changes.length);
+      };
+
       const orchestratorResult = await this.orchestrator.runDetailed(
         {
           prompt: request.message,
@@ -2207,6 +2328,7 @@ export class ConversationService {
           toolEmit: emit,
           routerAssumption,
           complexity: complexity ?? 3,
+          onWaveComplete: progressive.onWaveComplete,
         },
         sseEmitter,
         // Populates telemetry.usage/model from the real Planner+Executor+Verifier
@@ -2395,7 +2517,7 @@ export class ConversationService {
         });
       }
 
-      const actions = this.engine.finalizeActions(
+      const finalizedActions = this.engine.finalizeActions(
         rawActions,
         analysis,
         richWorkbookContext,
@@ -2403,13 +2525,31 @@ export class ConversationService {
         enrichedContext.priorTurnActions,
         request.excelCapabilities,
       );
-      actionsCount = actions.length;
-      reportActionCount?.(actions.length);
 
+      // TASKS.md #174 — finalize still runs over EVERY action, because the
+      // consolidation, chart and presentation passes need the whole build in
+      // view. Anything already shown as a progressive card is removed here so
+      // it is not offered twice; what remains are the phases those passes own
+      // plus anything no early card covered.
+      const actions = excludeAlreadyEmitted(finalizedActions, progressive.emittedKeys);
+
+      if (progressive.cardCount > 0) {
+        this.logger.log(
+          `Progressive emission: ${progressive.cardCount} card(s) sent during the run ` +
+            `(${progressive.emittedKeys.length} actions); ${actions.length} of ` +
+            `${finalizedActions.length} finalized actions remain for the closing cards.`,
+        );
+      }
+
+      actionsCount = finalizedActions.length;
+      reportActionCount?.(finalizedActions.length);
+
+      // Asserted against the FULL finalized list: a run whose entire output was
+      // already delivered progressively is a success, not an empty write.
       this.assertWriteRouteProducedActions({
         conversationId,
         message: request.message,
-        actionsLength: actions.length,
+        actionsLength: finalizedActions.length,
       });
 
       const answer = `I'll apply the prepared changes to your sheet.`;
@@ -2419,6 +2559,24 @@ export class ConversationService {
       // writes that depend on them exist as their own card. A pure-write or
       // pure-create batch (the common case) comes back as a single wave,
       // identical to today's behavior.
+      // Everything was already delivered progressively — emitting the closing
+      // set would render a "0 changes ready for review" card. TASKS.md #174.
+      if (actions.length === 0 && progressive.cardCount > 0) {
+        this.logger.log(
+          `Progressive emission delivered the entire build in ${progressive.cardCount} card(s); no closing card needed.`,
+        );
+        emit('conversation_end', { summary: 'Review changes and accept or reject.', tier: 3 });
+        await this.markCompleted(conversationId);
+        this.finalizeWorkflow(traceId, 'awaiting_accept', {
+          route: 'write',
+          tier: 3,
+          durationMs: Date.now() - startedAt,
+        });
+        endSseResponse(reply);
+        success = true;
+        return;
+      }
+
       const waveChangeSets = await this.createActionWaveChangeSets(actions, {
         conversationId,
         traceId,
@@ -2487,7 +2645,12 @@ export class ConversationService {
         orchestratorResult.completedSubtasks ?? [],
       );
 
-      let previousChangeSetId: string | undefined;
+      // Seeded from the last progressive card so the closing cards cannot be
+      // accepted before the content they depend on. Without this the chain
+      // restarts and a formatting card could apply to sheets that do not exist
+      // yet — the #80 dependency guard would refuse it, but as a confusing
+      // failure rather than a disabled button. TASKS.md #174.
+      let previousChangeSetId: string | undefined = progressive.lastChangeSetId;
       let firstUserFacingSummary: ReturnType<typeof buildUserFacingSummary> | undefined;
       for (const [waveIndex, { wave, changeSet }] of waveChangeSets.entries()) {
         const isFirstWave = !previousChangeSetId;
