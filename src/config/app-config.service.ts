@@ -91,6 +91,45 @@ export class AppConfigService {
     return this.configService.get<string>('OPENROUTER_MODEL_PLANNER', this.openRouterModelHigh);
   }
 
+  /**
+   * LlmRouterService's LOW-tier classification call. Decoupled from the
+   * shared LOW tier — `multi-sheet.service.ts`'s summary call and
+   * conversation.service.ts's ambiguity-clarification quickCall() also read
+   * openRouterModelLow, and a router-specific model eval must not silently
+   * change those too. Defaults to openRouterModelLow, so this is a no-op
+   * until OPENROUTER_MODEL_ROUTER is explicitly set.
+   */
+  get openRouterModelRouter(): string {
+    if (this.modelProfile === 'dev') return this.cellixDevModel;
+    return this.configService.get<string>('OPENROUTER_MODEL_ROUTER', this.openRouterModelLow);
+  }
+
+  /**
+   * Tier2GenerateVerifyService's generate-pass call into ExecutorAgent.
+   * ExecutorAgent.execute() is shared verbatim with Tier 3's Executor
+   * (same class, same default model) — this override lets Tier 2's call
+   * pass a different model without touching Tier 3, which must stay on
+   * openRouterModelHigh unconditionally. Defaults to openRouterModelHigh,
+   * so this is a no-op until OPENROUTER_MODEL_TIER2_GENERATE is explicitly
+   * set.
+   */
+  get openRouterModelTier2Generate(): string {
+    if (this.modelProfile === 'dev') return this.cellixDevModel;
+    return this.configService.get<string>(
+      'OPENROUTER_MODEL_TIER2_GENERATE',
+      this.openRouterModelHigh,
+    );
+  }
+
+  /**
+   * Lets eval/run-live-eval.ts authenticate without a browser session.
+   * AuthGuard only honors this outside production — see auth.guard.ts.
+   */
+  get evalBypassToken(): string | undefined {
+    const value = this.configService.get<string>('CELLIX_EVAL_BYPASS_TOKEN', '');
+    return value?.trim() ? value.trim() : undefined;
+  }
+
   get openRouterHttpReferer(): string {
     return this.configService.get<string>('OPENROUTER_HTTP_REFERER', 'https://cellix.local');
   }
@@ -159,5 +198,33 @@ export class AppConfigService {
 
   get microsoftTenantId(): string {
     return this.configService.get<string>('MICROSOFT_TENANT_ID', 'common');
+  }
+
+  get stripeSecretKey(): string | undefined {
+    const value = this.configService.get<string>('STRIPE_SECRET_KEY', '');
+    return value?.trim() ? value.trim() : undefined;
+  }
+
+  get stripeWebhookSecret(): string | undefined {
+    const value = this.configService.get<string>('STRIPE_WEBHOOK_SECRET', '');
+    return value?.trim() ? value.trim() : undefined;
+  }
+
+  get stripePriceSoloMonthly(): string | undefined {
+    const value = this.configService.get<string>('STRIPE_PRICE_SOLO_MONTHLY', '');
+    return value?.trim() ? value.trim() : undefined;
+  }
+
+  get stripePriceFirmMonthly(): string | undefined {
+    const value = this.configService.get<string>('STRIPE_PRICE_FIRM_MONTHLY', '');
+    return value?.trim() ? value.trim() : undefined;
+  }
+
+  get checkoutSuccessUrl(): string {
+    return this.configService.get<string>('CHECKOUT_SUCCESS_URL', 'http://localhost:5173/checkout/success');
+  }
+
+  get checkoutCancelUrl(): string {
+    return this.configService.get<string>('CHECKOUT_CANCEL_URL', 'http://localhost:5173/checkout');
   }
 }

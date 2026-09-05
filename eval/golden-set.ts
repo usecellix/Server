@@ -59,7 +59,8 @@ export interface LiveGoldenCase {
     | 'tier2-formula-chart'
     | 'tier3-compound'
     | 'data-query'
-    | 'header-offset-write';
+    | 'header-offset-write'
+    | 'router-ambiguous';
   prompt: string;
   /** Minimal sheet snapshot sent as workbook context. */
   sheetHeaders: string[];
@@ -68,6 +69,16 @@ export interface LiveGoldenCase {
   mustIncludeActionTypes: string[];
   /** Action types that must NOT appear (e.g. proof a bug doesn't regress). */
   mustNotIncludeActionTypes?: string[];
+  /**
+   * This case's correct behavior may legitimately emit zero actions (a
+   * read-only answer, or a routing probe where several action shapes are all
+   * valid). Without this, run-live-eval.ts's blanket "no actions emitted at
+   * all" check fails every zero-action case regardless of correctness — a
+   * real bug this flag exists to stop reintroducing (found while adding the
+   * router-ambiguous cases below; live-data-query-sum was already silently
+   * affected).
+   */
+  allowZeroActions?: boolean;
   regressionOf?: string;
 }
 
@@ -294,6 +305,7 @@ export const LIVE_GOLDEN_SET: LiveGoldenCase[] = [
     // doesn't accidentally mutate the sheet.
     mustIncludeActionTypes: [],
     mustNotIncludeActionTypes: ['SET_CELL', 'SET_FORMULA', 'ADD_ROW'],
+    allowZeroActions: true,
   },
   {
     id: 'live-header-offset-freeze',
@@ -310,6 +322,121 @@ export const LIVE_GOLDEN_SET: LiveGoldenCase[] = [
     ],
     mustIncludeActionTypes: ['FREEZE_PANES'],
     regressionOf: 'header-row-detection width-blindness (fixed this session)',
+  },
+
+  // ---- Model-swap eval (Router + Tier 2 generate) — added for the
+  // gpt-5-mini -> mercury-2.5-preview / glm-5.3-flash proposal. Existing
+  // coverage above was too thin to base a swap decision on: only 1 case
+  // touched Tier 2, and 0 exercised the LLM router in isolation (routing
+  // correctness is otherwise only checked by the free, LLM-free
+  // ROUTING_GOLDEN_SET). ----
+
+  {
+    id: 'live-tier2-vlookup-formula',
+    category: 'tier2-formula-chart',
+    prompt: 'add a column that looks up the Category for each Item from the Reference sheet',
+    sheetHeaders: ['Item', 'Quantity', 'Category'],
+    sheetRows: [
+      ['Widget', 4, ''],
+      ['Gadget', 2, ''],
+    ],
+    mustIncludeActionTypes: ['INSERT_COLUMN'],
+  },
+  {
+    id: 'live-tier2-percentage-formula',
+    category: 'tier2-formula-chart',
+    prompt: 'add a Discount column that is 10% of the Unit Price',
+    sheetHeaders: ['Item', 'Unit Price'],
+    sheetRows: [
+      ['Widget', 250],
+      ['Gadget', 500],
+    ],
+    mustIncludeActionTypes: ['INSERT_COLUMN'],
+  },
+  {
+    id: 'live-tier2-pivot-shaped-summary',
+    category: 'tier2-formula-chart',
+    prompt: 'summarize total sales by region',
+    sheetHeaders: ['Region', 'Sales'],
+    sheetRows: [
+      ['North', 1200],
+      ['South', 800],
+      ['North', 400],
+      ['South', 950],
+    ],
+    // A pivot-shaped aggregation request — several legitimate action shapes
+    // exist (AGGREGATE_TABLE, a new summary sheet, SUMIF formulas), so this
+    // doesn't pin one; the eval's actionTypesSeen still needs manual review,
+    // not a mechanical pass/fail, unlike the more specific cases above.
+    mustIncludeActionTypes: [],
+    mustNotIncludeActionTypes: [],
+    allowZeroActions: true,
+  },
+  {
+    id: 'live-tier2-chart-with-title',
+    category: 'tier2-formula-chart',
+    prompt: 'create a bar chart of Sales by Region titled "Regional Performance"',
+    sheetHeaders: ['Region', 'Sales'],
+    sheetRows: [
+      ['North', 1200],
+      ['South', 800],
+    ],
+    mustIncludeActionTypes: ['CREATE_CHART'],
+  },
+
+  // Deliberately vague verbs / no formula-chart-sort keyword and no regex
+  // fast-lane match — must reach LlmRouterService's actual LLM call
+  // (callLlmRouter), not classifyComplexity's regex or an instant shortcut.
+  // These check end-to-end routing correctness under a swapped router model,
+  // which the free ROUTING_GOLDEN_SET cannot (it never calls a real model).
+  {
+    id: 'live-router-ambiguous-fix-totals',
+    category: 'router-ambiguous',
+    prompt: 'the totals at the bottom look off, can you take care of that',
+    sheetHeaders: ['Item', 'Quantity', 'Unit Price', 'Total'],
+    sheetRows: [
+      ['Widget', 4, 250, 900], // wrong: should be 1000 — a real "fix" case
+      ['Gadget', 2, 500, 1000],
+    ],
+    // Several legitimate fixes exist (SET_FORMULA to re-derive Total,
+    // SET_CELL to correct the value directly) and mustIncludeActionTypes has
+    // no OR — the harness would fail a genuinely-correct SET_CELL fix if this
+    // pinned SET_FORMULA specifically. Scored manually via actionTypesSeen:
+    // the one thing that DOES mechanically matter is that this must not come
+    // back a no-op read, which allowZeroActions being absent (default false)
+    // already enforces.
+    mustIncludeActionTypes: [],
+    mustNotIncludeActionTypes: [],
+  },
+  {
+    id: 'live-router-ambiguous-clean-this-up',
+    category: 'router-ambiguous',
+    prompt: 'can you clean this sheet up a bit, it feels messy',
+    sheetHeaders: ['name', 'AMOUNT', 'Status '],
+    sheetRows: [
+      ['acme ltd', 12500, 'paid'],
+      ['beta inc', 8500, 'Paid'],
+    ],
+    // No specific action required — this is a routing-classification probe
+    // (does it correctly go to 'write' rather than misfiring to 'ask'/'data'
+    // on vague phrasing), scored the same coarse way as the rest of the file.
+    mustIncludeActionTypes: [],
+    mustNotIncludeActionTypes: [],
+  },
+  {
+    id: 'live-router-ambiguous-what-should-i-do',
+    category: 'router-ambiguous',
+    prompt: 'what would you recommend for this data',
+    sheetHeaders: ['Invoice No', 'Supplier', 'Amount', 'Payment Status'],
+    sheetRows: [
+      ['INV-001', 'Acme Ltd', 12500, 'Pending'],
+      ['INV-002', 'Beta Inc', 8500, 'Paid'],
+    ],
+    // A recommendation request is read-only in intent — must not silently
+    // mutate the sheet, the same discipline live-data-query-sum checks.
+    mustIncludeActionTypes: [],
+    mustNotIncludeActionTypes: ['SET_CELL', 'SET_FORMULA', 'ADD_ROW', 'DELETE_ROW'],
+    allowZeroActions: true,
   },
 ];
 

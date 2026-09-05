@@ -3,6 +3,10 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { parseAgentJson } from '../../agents/utils/parse-agent-json.util';
 import { AppConfigService } from '../../config/app-config.service';
+import {
+  buildChitchatClassifierUserMessage,
+  CHITCHAT_CLASSIFIER_SYSTEM_PROMPT,
+} from '../prompts/chitchat-prompt';
 import { ROUTER_SYSTEM_PROMPT, buildRouterUserMessage } from '../prompts/router-system-prompt';
 import { RouterDecision, RouterInput } from '../types/router.types';
 import { classifyComplexity } from '../utils/complexity-classifier.util';
@@ -34,6 +38,41 @@ export class LlmRouterService {
     private readonly openRouter: OpenRouterService,
     private readonly config: AppConfigService,
   ) {}
+
+  /**
+   * Pre-tier-classification gate (called BEFORE route()): a single LOW-tier
+   * call that separates chitchat (greetings/small talk/identity questions)
+   * from anything referencing the spreadsheet. CHITCHAT skips workbook
+   * context load, TOON compression, and the Tier 0-3 dispatch entirely —
+   * routed instead to ChitchatService.
+   *
+   * Fail-open to TASK on any classifier failure (throw or malformed reply):
+   * worst case is one wasted tiering pass on a real greeting, which is
+   * cheaper than a real task getting stuck in chitchat mode.
+   */
+  async classifyIntent(message: string): Promise<'CHITCHAT' | 'TASK'> {
+    try {
+      const raw = await this.openRouter.complete({
+        systemPrompt: CHITCHAT_CLASSIFIER_SYSTEM_PROMPT,
+        userMessage: buildChitchatClassifierUserMessage(message),
+        model: this.config.openRouterModelLow,
+        tier: 'low',
+        temperature: 0,
+        maxTokens: 8,
+        reasoningEffort: 'none',
+      });
+
+      const label = raw.trim().toUpperCase();
+      if (label.startsWith('CHITCHAT')) return 'CHITCHAT';
+      if (label.startsWith('TASK')) return 'TASK';
+
+      this.logger.warn(`classifyIntent: unrecognized label "${raw.trim()}" — defaulting to TASK`);
+      return 'TASK';
+    } catch (err) {
+      this.logger.warn('classifyIntent call failed — defaulting to TASK', err as Error);
+      return 'TASK';
+    }
+  }
 
   /**
    * Route a user message to the correct handler path.
@@ -240,6 +279,12 @@ export class LlmRouterService {
       const raw = await this.openRouter.complete({
         systemPrompt: ROUTER_SYSTEM_PROMPT,
         userMessage,
+        // Explicit model (not the bare `tier: 'low'` default) — decoupled from
+        // the shared LOW tier so a router-specific model eval doesn't also
+        // move multi-sheet.service.ts's summary or ambiguity clarification.
+        // Defaults to openRouterModelLow: unset OPENROUTER_MODEL_ROUTER is a
+        // no-op, identical behavior to before this override existed.
+        model: this.config.openRouterModelRouter,
         tier: 'low',
         temperature: 0,
         maxTokens: 256,

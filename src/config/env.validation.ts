@@ -12,6 +12,16 @@ export const envValidationSchema = Joi.object({
   OPENROUTER_MODEL_HIGH: Joi.string().default('openai/gpt-5'),
   OPENROUTER_MODEL_TIER1: Joi.string().optional(),
   OPENROUTER_MODEL_PLANNER: Joi.string().optional(),
+  // LlmRouterService's LOW-tier classifier call — decoupled from the shared
+  // LOW tier (which multi-sheet summaries and ambiguity clarification also
+  // use) so a router-specific model eval doesn't affect those. Defaults to
+  // openRouterModelLow, so unset is a no-op.
+  OPENROUTER_MODEL_ROUTER: Joi.string().optional(),
+  // Tier2GenerateVerifyService's ExecutorAgent.execute() call — decoupled from
+  // Tier 3's Executor (same ExecutorAgent class, same openRouterModelHigh by
+  // default) so a Tier-2-only model eval doesn't touch Tier 3. Unset is a
+  // no-op (falls back to openRouterModelHigh, today's shared behavior).
+  OPENROUTER_MODEL_TIER2_GENERATE: Joi.string().optional(),
   // MODEL_PROFILE=dev swaps every tier's resolved model string to
   // CELLIX_DEV_MODEL, independent of tier-routing logic (AppConfigService is
   // the sole chokepoint every tier already reads its model through).
@@ -26,6 +36,11 @@ export const envValidationSchema = Joi.object({
   ENABLE_COMPLEXITY_TIERING: Joi.string()
     .valid('off', 'shadow', 'tier01', 'tier0-1', 'tier0_1', 'full', 'on', 'true', 'false', '0', '1')
     .optional(),
+  // Lets eval/run-live-eval.ts authenticate against a real running backend
+  // without a browser session. AuthGuard only honors this when NODE_ENV is
+  // NOT 'production' AND this is set — unset (the default) changes nothing
+  // in prod. See auth.guard.ts.
+  CELLIX_EVAL_BYPASS_TOKEN: Joi.string().optional(),
   // Better Auth / OAuth — required at runtime for social login; optional so the API can boot without them.
   BETTER_AUTH_SECRET: Joi.string().min(32).optional(),
   BETTER_AUTH_URL: Joi.string().uri().optional(),
@@ -35,4 +50,16 @@ export const envValidationSchema = Joi.object({
   MICROSOFT_CLIENT_ID: Joi.string().allow('').optional(),
   MICROSOFT_CLIENT_SECRET: Joi.string().allow('').optional(),
   MICROSOFT_TENANT_ID: Joi.string().default('common'),
+  // Stripe — CREDIT_SYSTEM.md §7. Optional so the API can boot without them
+  // (checkout creation/webhook processing fail cleanly instead, same pattern
+  // as OPENROUTER_API_KEY). STRIPE_WEBHOOK_SECRET verifies webhook signatures;
+  // without it, incoming webhooks are rejected rather than trusted unverified.
+  STRIPE_SECRET_KEY: Joi.string().allow('').optional(),
+  STRIPE_WEBHOOK_SECRET: Joi.string().allow('').optional(),
+  STRIPE_PRICE_SOLO_MONTHLY: Joi.string().allow('').optional(),
+  STRIPE_PRICE_FIRM_MONTHLY: Joi.string().allow('').optional(),
+  // Where Stripe Checkout redirects after payment — the marketing site, not
+  // this API. Defaults to the local landing-page dev port.
+  CHECKOUT_SUCCESS_URL: Joi.string().uri().default('http://localhost:5173/checkout/success'),
+  CHECKOUT_CANCEL_URL: Joi.string().uri().default('http://localhost:5173/checkout'),
 });

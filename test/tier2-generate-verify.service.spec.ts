@@ -3,6 +3,7 @@ import { ExecutorAgent } from '../src/agents/executor.agent';
 import { VerifierAgent } from '../src/agents/verifier.agent';
 import { ToolBridgeService } from '../src/agents/tool-bridge.service';
 import { FormulaValidatorService } from '../src/formula/formula-validator.service';
+import { AppConfigService } from '../src/config/app-config.service';
 import { WorkbookContext } from '../src/agents/types/agent.types';
 import {
   collectRecentTurnActionRecords,
@@ -58,7 +59,10 @@ describe('Tier2GenerateVerifyService Spec 18 retry', () => {
         mocks.waitForRangeData ??
         jest.fn().mockResolvedValue({ values: [['Month', 'Total'], ['Jan', 10]] }),
     } as unknown as ToolBridgeService;
-    return new Tier2GenerateVerifyService(executor, verifier, formulaValidator, toolBridge);
+    const config = {
+      openRouterModelTier2Generate: 'openai/gpt-5',
+    } as unknown as AppConfigService;
+    return new Tier2GenerateVerifyService(executor, verifier, formulaValidator, toolBridge, config);
   }
 
   it('retries exactly once with verifier suggestion then passes (wrong sourceRange fixture)', async () => {

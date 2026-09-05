@@ -1,0 +1,92 @@
+import { BadRequestException, NotFoundException } from '@nestjs/common';
+import { BillingController, PublicBillingController, StripeWebhookController } from '../src/credit/billing.controller';
+import { AuthUserSession } from '../src/auth/auth.guard';
+
+function session(userId: string, email = 'user@example.com'): AuthUserSession {
+  return { user: { id: userId, email } } as unknown as AuthUserSession;
+}
+
+describe('BillingController', () => {
+  it('GET /billing/account returns the resolved summary for the session user', async () => {
+    const getAccountSummary = jest.fn().mockResolvedValue({ availableBalance: 42 });
+    const controller = new BillingController({ getAccountSummary } as never, {} as never);
+
+    const result = await controller.getAccount(session('user-1'));
+
+    expect(getAccountSummary).toHaveBeenCalledWith('user-1');
+    expect(result).toEqual({ availableBalance: 42 });
+  });
+
+  it('GET /billing/account 404s when no account has been provisioned yet', async () => {
+    const getAccountSummary = jest.fn().mockResolvedValue(null);
+    const controller = new BillingController({ getAccountSummary } as never, {} as never);
+
+    await expect(controller.getAccount(session('user-missing'))).rejects.toThrow(NotFoundException);
+  });
+
+  it('GET /billing/ledger resolves billingEntityId from the session, never a request param', async () => {
+    const getLedgerPage = jest.fn().mockResolvedValue({ entries: [], nextCursor: null });
+    const controller = new BillingController({ getLedgerPage } as never, {} as never);
+
+    await controller.getLedger(session('user-1'), { limit: 10 });
+
+    expect(getLedgerPage).toHaveBeenCalledWith('user-1', { limit: 10 });
+  });
+
+  it('POST /billing/checkout/subscribe resolves billingEntityId + email from the session, never the request body', async () => {
+    const createSubscriptionSession = jest.fn().mockResolvedValue({ url: 'https://checkout.stripe.com/x' });
+    const controller = new BillingController({} as never, { createSubscriptionSession } as never);
+
+    const result = await controller.createSubscribeCheckout(session('user-1', 'ca@example.com'), {
+      planTier: 'solo',
+    });
+
+    expect(createSubscriptionSession).toHaveBeenCalledWith('user-1', 'ca@example.com', 'solo');
+    expect(result).toEqual({ url: 'https://checkout.stripe.com/x' });
+  });
+});
+
+describe('PublicBillingController', () => {
+  it('POST /billing/public/checkout/subscribe passes the submitted email through, unauthenticated', async () => {
+    const createGuestSubscriptionSession = jest.fn().mockResolvedValue({ url: 'https://checkout.stripe.com/guest' });
+    const controller = new PublicBillingController({ createGuestSubscriptionSession } as never);
+
+    const result = await controller.createGuestSubscribeCheckout({
+      email: 'ca@example.com',
+      planTier: 'firm',
+    });
+
+    expect(createGuestSubscriptionSession).toHaveBeenCalledWith('ca@example.com', 'firm');
+    expect(result).toEqual({ url: 'https://checkout.stripe.com/guest' });
+  });
+});
+
+describe('StripeWebhookController', () => {
+  function requestWithRawBody(rawBody: Buffer | undefined) {
+    return { rawBody } as never;
+  }
+
+  it('verifies the raw body against the signature header and hands the parsed event to handleVerifiedEvent', async () => {
+    const fakeEvent = { id: 'evt_1', type: 'checkout.session.completed' };
+    const verifyAndParseEvent = jest.fn().mockReturnValue(fakeEvent);
+    const handleVerifiedEvent = jest.fn().mockResolvedValue({ alreadyProcessed: false });
+    const controller = new StripeWebhookController({ verifyAndParseEvent, handleVerifiedEvent } as never);
+
+    const rawBody = Buffer.from('{"id":"evt_1"}');
+    const result = await controller.handleStripeWebhook(requestWithRawBody(rawBody), 'sig_abc');
+
+    expect(verifyAndParseEvent).toHaveBeenCalledWith(rawBody, 'sig_abc');
+    expect(handleVerifiedEvent).toHaveBeenCalledWith(fakeEvent);
+    expect(result).toEqual({ alreadyProcessed: false });
+  });
+
+  it('rejects when the raw body was not captured (content-type-parser hook missing)', async () => {
+    const verifyAndParseEvent = jest.fn();
+    const controller = new StripeWebhookController({ verifyAndParseEvent } as never);
+
+    await expect(
+      controller.handleStripeWebhook(requestWithRawBody(undefined), 'sig_abc'),
+    ).rejects.toThrow(BadRequestException);
+    expect(verifyAndParseEvent).not.toHaveBeenCalled();
+  });
+});

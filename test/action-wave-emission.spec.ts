@@ -64,6 +64,9 @@ describe('ConversationService.createActionWaveChangeSets', () => {
       {} as never,
       {} as never,
       {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
     );
   });
 

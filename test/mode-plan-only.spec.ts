@@ -84,6 +84,7 @@ describe('ConversationService plan mode (streamPlanOnly)', () => {
       {} as never,
       {} as never,
       {} as never,
+      {} as never,
       formulaAnalyzer as unknown as FormulaAnalyzer,
       {} as never,
       {} as never,
@@ -92,6 +93,8 @@ describe('ConversationService plan mode (streamPlanOnly)', () => {
       tier2GenerateVerify as unknown as Tier2GenerateVerifyService,
       structuredLogger as unknown as StructuredLogger,
       workflowTrace as never,
+      {} as never,
+      {} as never,
     );
 
     jest.spyOn(service as never, 'saveMessage' as never).mockResolvedValue(undefined as never);

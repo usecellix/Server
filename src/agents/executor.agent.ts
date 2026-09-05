@@ -48,9 +48,17 @@ export class ExecutorAgent {
     /** Out-param — accumulates real promptTokens/completionTokens across this
      * call (and its retry), same pattern as `PlannerAgent.plan()`. */
     usageTotals?: UsageTotals,
+    /**
+     * Overrides `modelName` for this call only. Tier 3 (agenticLoop.service.ts)
+     * never passes this — it must stay on openRouterModelHigh unconditionally.
+     * Tier2GenerateVerifyService passes `config.openRouterModelTier2Generate`
+     * so a Tier-2-only model eval doesn't move Tier 3, which shares this same
+     * class/method. Omitted = today's unchanged behavior.
+     */
+    modelOverride?: string,
   ): Promise<ExecutorOutput> {
     const startedAt = Date.now();
-    const model = this.modelName;
+    const model = modelOverride ?? this.modelName;
     const userMessage = buildExecutorUserMessage(subtask, context, previousActions);
     // A subtask asking for many writes (e.g. a formula table spanning several
     // sheets) needs a bigger completion budget — a flat 2000 tokens truncated
@@ -182,6 +190,8 @@ export class ExecutorAgent {
     previousActions: Action[] = [],
     correlationId = `req_${Date.now()}`,
     usageTotals?: UsageTotals,
+    /** Same override as `execute()` — see its docstring. */
+    modelOverride?: string,
   ): Promise<ExecutorOutput> {
     const { originalStep, attempt, maxAttempts, verifierFeedback } = retryContext;
 
@@ -201,7 +211,14 @@ export class ExecutorAgent {
       verifierFeedback,
     };
 
-    return this.execute(originalStep, retryAwareContext, previousActions, correlationId, usageTotals);
+    return this.execute(
+      originalStep,
+      retryAwareContext,
+      previousActions,
+      correlationId,
+      usageTotals,
+      modelOverride,
+    );
   }
 
   private recordWorkflowNode(

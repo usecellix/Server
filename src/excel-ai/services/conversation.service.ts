@@ -32,6 +32,10 @@ import { SseEmitter } from '../../agents/sse.emitter';
 import { ToolBridgeService } from '../../agents/tool-bridge.service';
 import { buildAgentWorkbookContext } from '../../agents/utils/workbook-context.builder';
 import { WriteRouteNoActionError } from '../errors/write-route-no-action.error';
+import { CreditGateService } from '../../credit/credit-gate.service';
+import { CreditLedgerService } from '../../credit/credit-ledger.service';
+import { resolveCreditCost } from '../../credit/credit-cost-catalog';
+import { ChitchatService } from './chitchat.service';
 import { ConversationEngineService, EngineResponse, LlmRequestError } from './conversation-engine.service';
 import { DataQueryService } from './data-query.service';
 import { FindExportService, FindExportSheetSlice } from './find-export.service';
@@ -147,6 +151,7 @@ export class ConversationService {
     private readonly openRouter: OpenRouterService,
     private readonly orchestrator: OrchestratorService,
     private readonly llmRouter: LlmRouterService,
+    private readonly chitchat: ChitchatService,
     private readonly contextCache: ContextCacheService,
     private readonly dataQuery: DataQueryService,
     private readonly findExport: FindExportService,
@@ -158,6 +163,8 @@ export class ConversationService {
     private readonly tier2GenerateVerify: Tier2GenerateVerifyService,
     private readonly structuredLogger: StructuredLogger,
     private readonly workflowTrace: WorkflowTraceService,
+    private readonly creditGate: CreditGateService,
+    private readonly creditLedger: CreditLedgerService,
   ) {}
 
   private enrichAgentContext(
@@ -541,6 +548,16 @@ export class ConversationService {
       // Regex matched but handler returned null — fall through to full path.
     }
 
+    // CHITCHAT gate — before SheetAnalyzer, same reason as the instant shortcut
+    // above: a greeting needs no workbook context, no TOON compression, and no
+    // Tier 0-3 dispatch. Fails open to TASK (classifyIntent never throws out of
+    // this call), so a classifier outage just costs one extra tiering pass.
+    const intentLabel = await this.llmRouter.classifyIntent(activeRequest.message);
+    if (intentLabel === 'CHITCHAT') {
+      await this.handleChitchat(activeRequest, request, conversation, reply, traceId);
+      return;
+    }
+
     let analysis = this.sheetAnalyzer.analyze(activeRequest.sheetData);
     const declaredRowCount = this.resolveDeclaredRowCount(activeRequest);
     if (declaredRowCount > analysis.rowCount) {
@@ -804,6 +821,7 @@ export class ConversationService {
               history,
               analysis,
               emit,
+              userId,
             );
           } else {
             await this.streamWithOpenAi(
@@ -1382,6 +1400,7 @@ export class ConversationService {
     history: ConversationMessageEntry[],
     analysis: ReturnType<SheetAnalyzerService['analyze']>,
     emit: (event: string, data: Record<string, unknown>) => void,
+    userId?: string,
   ): Promise<void> {
     const startedAt = Date.now();
     const outcome = this.resolveInitialWriteOutcome(routerDecision);
@@ -1515,6 +1534,30 @@ export class ConversationService {
           }
         }
       } else if (complexity === 2 && actionHint) {
+        // CREDIT_SYSTEM.md CD-4 — pre-flight gate before the LLM call, not after.
+        // userId is only absent for the eval-bypass auth path (auth.guard.ts) or
+        // a session with no user id; skip the gate rather than block a caller
+        // this codebase doesn't yet have an identity to charge.
+        if (userId) {
+          const gateResult = await this.creditGate.checkBalance(userId, 'FORMULA_GENERATE_OR_FIX');
+          if (!gateResult.allowed && gateResult.reason === 'insufficient_balance') {
+            emit('error', {
+              message: 'You are out of credits for this action.',
+              code: 'INSUFFICIENT_CREDIT',
+              availableBalance: gateResult.availableBalance,
+              requiredCredits: gateResult.requiredCredits,
+            });
+            await this.markCompleted(conversationId);
+            this.finalizeWorkflow(traceId, 'failed', {
+              route: 'write',
+              tier: 2,
+              sseOutput: { error: 'insufficient_credit' },
+            });
+            endSseResponse(reply);
+            return;
+          }
+        }
+
         const basePrompt =
           routedRequest.promptContext ?? richWorkbookContext.prompt_context ?? undefined;
         const { enrichedContext } = this.enrichAgentContext(
@@ -1560,6 +1603,7 @@ export class ConversationService {
           reply,
           emit,
           routerDecision.assumption,
+          userId,
         );
         return;
         }
@@ -1956,6 +2000,7 @@ export class ConversationService {
     reply: FastifyReply,
     emit: (event: string, data: Record<string, unknown>) => void,
     assumption?: string,
+    userId?: string,
   ): Promise<void> {
     if (result.actions.length === 0) {
       this.assertWriteRouteProducedActions({
@@ -2055,6 +2100,28 @@ export class ConversationService {
     });
     emit('conversation_end', { summary: 'Review changes and accept or reject.', tier: 2 });
     await this.markCompleted(conversationId);
+    if (userId) {
+      // CREDIT_SYSTEM.md CD-3 — debit once, at turn completion, now that a real
+      // ChangeSet exists. Rejection later is a workbook-state decision, not a
+      // billing one (CD-3) — this fires regardless of whether the user accepts.
+      const debitResult = await this.creditLedger.debit(userId, 'FORMULA_GENERATE_OR_FIX', 1, {
+        conversationId,
+        changeSetId: changeSet.changeSetId,
+      });
+      if (debitResult.debited && debitResult.balances) {
+        emit('credits', {
+          planCredits: debitResult.balances.planCredits,
+          purchasedCredits: debitResult.balances.purchasedCredits,
+          oneTimeCredits: debitResult.balances.oneTimeCredits,
+          debited: resolveCreditCost('FORMULA_GENERATE_OR_FIX'),
+          actionType: 'FORMULA_GENERATE_OR_FIX',
+        });
+      }
+      // debitResult.debited === false here means the balance was consumed by a
+      // race since the pre-flight gate check (CD-6) — CD-4 treats this as an
+      // accepted, rare timing artifact, not a reason to fail an already-verified
+      // turn or withhold the ChangeSet the user is about to see.
+    }
     this.logWorkflowChangeSet(traceId, changeSet.changeSetId, actions, changeSet.changes.length);
     this.finalizeWorkflow(traceId, 'awaiting_accept', {
       changeSetId: changeSet.changeSetId,
@@ -3611,6 +3678,82 @@ export class ConversationService {
   private async getRecentMessages(conversationId: string): Promise<ConversationMessageEntry[]> {
     const doc = await this.conversationModel.findOne({ conversationId }).lean();
     return doc?.messages?.slice(-MAX_MESSAGES) ?? [];
+  }
+
+  /**
+   * CHITCHAT route (see LlmRouterService.classifyIntent): one LOW-tier call,
+   * streamed as plain `chunk` SSE events — never `actions`, since there is
+   * nothing to preview/accept. Tagged `route: 'chitchat'` in workflow_traces
+   * so tier-a-metrics.util.ts (which assumes every traced request could have
+   * written something) doesn't fold this in with write-route requests.
+   */
+  private async handleChitchat(
+    activeRequest: ConversationRequestDto,
+    request: ConversationRequestDto,
+    conversation: ConversationDocument,
+    reply: FastifyReply,
+    traceId: string,
+  ): Promise<void> {
+    initSseResponse(reply);
+    const conversationId = conversation.conversationId;
+    const emit = (event: string, data: Record<string, unknown>) =>
+      writeSseEvent(reply, event, { ...data, conversationId });
+
+    this.startWorkflowTrace({
+      traceId,
+      conversationId,
+      workbookId: conversation.workbookId,
+      message: activeRequest.message,
+      mode: activeRequest.mode,
+      request: activeRequest,
+    });
+    this.workflowTrace.setMeta(traceId, { route: 'chitchat' });
+
+    await this.saveMessage(conversationId, {
+      id: `msg_${Date.now()}`,
+      role: 'user',
+      content: request.message,
+      type: 'command',
+      timestamp: new Date(),
+    });
+
+    let fullText = '';
+    try {
+      for await (const token of this.chitchat.streamReply(activeRequest.message)) {
+        fullText += token;
+        emit('chunk', { text: token });
+      }
+    } catch (err) {
+      this.logger.error(`Chitchat reply failed trace=${traceId} conversation=${conversationId}`, err);
+      fullText = fullText.trim() || "Hi! I'm having trouble responding right now — try again in a moment.";
+      emit('chunk', { text: fullText });
+    }
+
+    await this.saveMessage(conversationId, {
+      id: `msg_${Date.now()}_assistant`,
+      role: 'assistant',
+      content: fullText.trim(),
+      type: 'answer',
+      timestamp: new Date(),
+    });
+
+    this.workflowTrace.appendNode(traceId, {
+      id: 'router',
+      type: 'router',
+      label: 'Router → chitchat',
+      status: 'success',
+      output: { route: 'chitchat', responseLength: fullText.length },
+      meta: { route: 'chitchat' },
+    });
+
+    emit('conversation_end', { summary: 'Ready for your next message.' });
+    await this.markCompleted(conversationId);
+    this.finalizeWorkflow(traceId, 'completed', {
+      route: 'chitchat',
+      sseOutput: { kind: 'chitchat', responseLength: fullText.length },
+    });
+
+    endSseResponse(reply);
   }
 
   private async markCompleted(conversationId: string): Promise<void> {

@@ -1,4 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { AppConfigService } from '../../config/app-config.service';
 import { ExecutorAgent } from '../../agents/executor.agent';
 import { VerifierAgent } from '../../agents/verifier.agent';
 import { ToolBridgeService } from '../../agents/tool-bridge.service';
@@ -67,7 +68,18 @@ export class Tier2GenerateVerifyService {
     private readonly verifierAgent: VerifierAgent,
     private readonly formulaValidator: FormulaValidatorService,
     private readonly toolBridge: ToolBridgeService,
+    private readonly config: AppConfigService,
   ) {}
+
+  /**
+   * Model for the generate pass specifically — decoupled from Tier 3's
+   * Executor, which shares this same ExecutorAgent class/method and must stay
+   * on openRouterModelHigh unconditionally. Defaults to it, so this is a
+   * no-op until OPENROUTER_MODEL_TIER2_GENERATE is explicitly set.
+   */
+  private get generateModel(): string {
+    return this.config.openRouterModelTier2Generate;
+  }
 
   /** Plan mode: generate a proposal via ExecutorAgent only — no Verifier, no ChangeSet. */
   async generateOnly(
@@ -84,6 +96,8 @@ export class Tier2GenerateVerifyService {
       workbookContext,
       [],
       correlationId,
+      undefined,
+      this.generateModel,
     );
 
     const hardcodeCheck = this.formulaValidator.checkNoHardcodedLiterals(executorResult.actions);
@@ -126,6 +140,8 @@ export class Tier2GenerateVerifyService {
       workbookContext,
       [],
       correlationId,
+      undefined,
+      this.generateModel,
     );
 
     let deterministicPatch = false;
@@ -183,6 +199,8 @@ export class Tier2GenerateVerifyService {
         correctionContext,
         [],
         correlationId,
+        undefined,
+        this.generateModel,
       );
 
       // Spec 18 Bug 4: toolRequest during retry is data-gathering, not the correction itself.
@@ -388,6 +406,8 @@ export class Tier2GenerateVerifyService {
         mergedContext,
         [],
         correlationId,
+        undefined,
+        this.generateModel,
       );
       return { result, context: mergedContext };
     } catch (error) {
