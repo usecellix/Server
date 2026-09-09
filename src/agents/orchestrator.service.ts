@@ -16,6 +16,15 @@ export interface OrchestratorRunResult {
   clarificationRequested: boolean;
   completedSubtasks: Array<{ subtaskId: string; actions: Action[]; verified: boolean }>;
   failedSubtask: { subtaskId: string; reason: string } | null;
+  /**
+   * EVERY subtask that failed, not just the first — see
+   * `AgenticLoopResult.failedSubtasks`'s docblock. TASKS.md #195. Note that
+   * `undeliveredSubtasks` below already independently covers the FULL-SUCCESS
+   * path's plan-vs-delivery gap; this field is what the PARTIAL-PROGRESS
+   * (`!verifierPassed`) branch needs, since that branch never previously had
+   * more than one failure's reason available at all.
+   */
+  failedSubtasks: Array<{ subtaskId: string; reason: string }>;
   partialProgress: boolean;
   /**
    * The plan's own natural-language statements of intent, surfaced so the
@@ -95,6 +104,112 @@ export class OrchestratorService {
   }
 
   /**
+   * Plans without executing — the first half of a stepwise run
+   * (STEPWISE_EXECUTION.md SD-1). Returns the plan plus the same
+   * clarification/openQuestions handling `runDetailedWithUsage` applies, so the
+   * stepwise path and the one-shot path cannot drift on when a request blocks
+   * for a question versus proceeds under a stated assumption.
+   */
+  async planForStepwiseRun(
+    opts: AgentRunOptions,
+    emitter: SseEmitter,
+    telemetry?: LlmCallTelemetry,
+  ): Promise<{
+    plan: PlannerOutput;
+    openQuestions: string[];
+    mustAsk: boolean;
+  }> {
+    const usageTotals = createUsageAccumulator();
+    try {
+      emitter.send({ type: 'THINKING', message: 'Planning your request...' });
+      const plan = await this.planner.plan(
+        opts.prompt,
+        opts.context,
+        opts.conversationHistory ?? [],
+        opts.promptContext,
+        this.resolveCorrelationId(opts.correlationId),
+        opts.routerAssumption,
+        opts.complexity,
+        usageTotals,
+        (summary) => emitter.send({ type: 'THINKING', message: summary }),
+      );
+
+      const openQuestions = this.resolveOpenQuestions(plan);
+      const mustAsk = this.shouldBlockForClarification(plan);
+      if (mustAsk) {
+        emitter.send({ type: 'CLARIFY', questions: openQuestions });
+      }
+      return { plan, openQuestions, mustAsk };
+    } finally {
+      this.applyUsageToTelemetry(telemetry, usageTotals);
+    }
+  }
+
+  /**
+   * Executes ONE wave of an already-planned stepwise run. Thin by design: the
+   * verification machinery lives in AgenticLoopService.runWave and is shared
+   * verbatim with the one-shot path, so this cannot become a second, subtly
+   * different definition of "verified".
+   */
+  async runStepwiseWave(
+    opts: AgentRunOptions & {
+      waveSubtasks: PlannerOutput['subtasks'];
+      priorActions: Array<{ subtask: PlannerOutput['subtasks'][number]; actions: Action[] }>;
+    },
+    emitter: SseEmitter,
+    telemetry?: LlmCallTelemetry,
+  ): Promise<{
+    actions: Action[];
+    completedSubtasks: Array<{ subtaskId: string; actions: Action[]; verified: boolean }>;
+    failedSubtask: { subtaskId: string; reason: string } | null;
+    /**
+     * EVERY subtask this wave failed, not just the first — see
+     * `AgenticLoopResult.failedSubtasks`'s docblock. TASKS.md #195: a wave of
+     * many independent parallel subtasks (e.g. 12 month-sheet creates with no
+     * dependsOn between them) can have several genuinely fail at once; using
+     * only `failedSubtask` silently discarded every failure but one, with no
+     * recorded reason anywhere for the rest.
+     */
+    failedSubtasks: Array<{ subtaskId: string; reason: string }>;
+    verifierPassed: boolean;
+  }> {
+    const usageTotals = createUsageAccumulator();
+    try {
+      const result = await this.agenticLoop.runWave(
+        opts.prompt,
+        opts.waveSubtasks,
+        opts.priorActions,
+        opts.context,
+        emitter,
+        {
+          conversationId: opts.conversationId,
+          correlationId: this.resolveCorrelationId(opts.correlationId),
+          toolEmit: opts.toolEmit,
+          usageTotals,
+        },
+      );
+
+      const pruned = pruneSpuriousAddSheetActions(result.actions);
+      const clearAnnotated = annotateClearIntentOverwrite(pruned, opts.prompt);
+      const overwriteAnnotated = annotateExplicitOverwriteConfirmation(
+        clearAnnotated,
+        opts.prompt,
+        opts.context.priorTurnActions ?? [],
+      );
+
+      return {
+        actions: overwriteAnnotated,
+        completedSubtasks: result.completedSubtasks,
+        failedSubtask: result.failedSubtask,
+        failedSubtasks: result.failedSubtasks,
+        verifierPassed: result.verifierPassed,
+      };
+    } finally {
+      this.applyUsageToTelemetry(telemetry, usageTotals);
+    }
+  }
+
+  /**
    * `telemetry` is an out-param (same pattern as `LlmCompletionOutcome`) —
    * when provided, filled in with the real usage/model accumulated across the
    * Planner AND every Executor/Verifier call this run makes, so the caller's
@@ -168,6 +283,7 @@ export class OrchestratorService {
       routerAssumption,
       complexity,
       usageTotals,
+      (summary) => emitter.send({ type: 'THINKING', message: summary }),
     );
 
     // Block ONLY when there is nothing to build — TASKS.md #171.
@@ -190,14 +306,7 @@ export class OrchestratorService {
     // Accept. A plan the user can read and reject strictly dominates a dead
     // end — and the questions are still delivered, alongside the work rather
     // than instead of it.
-    const openQuestions = plan.clarificationsNeeded.length > 0
-      ? plan.clarificationsNeeded
-      : plan.confidence === 'low'
-        ? [
-            plan.reasoning?.trim() ||
-              'This request is ambiguous — what exactly should I change in the workbook?',
-          ]
-        : [];
+    const openQuestions = this.resolveOpenQuestions(plan);
 
     // Low confidence still blocks unconditionally — that is a separate, older
     // decision and the live failure gives no evidence against it (that plan's
@@ -205,9 +314,7 @@ export class OrchestratorService {
     // READING of the request, where building 300 actions on a misreading wastes
     // minutes and hands back a plausible-looking wrong card. Unanswered
     // side-questions alongside a confident plan are a different thing entirely.
-    const mustAsk =
-      plan.confidence === 'low' ||
-      (plan.clarificationsNeeded.length > 0 && plan.subtasks.length === 0);
+    const mustAsk = this.shouldBlockForClarification(plan);
 
     if (mustAsk) {
       emitter.send({ type: 'CLARIFY', questions: openQuestions });
@@ -218,6 +325,7 @@ export class OrchestratorService {
         clarificationRequested: true,
         completedSubtasks: [],
         failedSubtask: null,
+        failedSubtasks: [],
         partialProgress: false,
         planSubtasks: [],
         undeliveredSubtasks: [],
@@ -236,6 +344,7 @@ export class OrchestratorService {
       verifierPassed,
       completedSubtasks,
       failedSubtask,
+      failedSubtasks,
       partialProgress,
     } = await this.agenticLoop.run(prompt, plan.subtasks, context, emitter, {
       conversationId,
@@ -269,6 +378,7 @@ export class OrchestratorService {
       clarificationRequested: false,
       completedSubtasks,
       failedSubtask,
+      failedSubtasks,
       partialProgress,
       // ONLY subtasks that actually produced actions. The Accept card renders
       // these as its promises (TASKS.md #149), so a subtask the Executor
@@ -307,6 +417,30 @@ export class OrchestratorService {
     const trimmed = value?.trim();
     if (!trimmed || trimmed === '-') return `req_${Date.now()}`;
     return trimmed;
+  }
+
+  /**
+   * Questions raised but NOT blocked on — see the long rationale at the
+   * `runDetailedWithUsage` call site (TASKS.md #171). Extracted so the stepwise
+   * path applies the identical rule rather than a second copy of it.
+   */
+  private resolveOpenQuestions(plan: PlannerOutput): string[] {
+    if (plan.clarificationsNeeded.length > 0) return plan.clarificationsNeeded;
+    if (plan.confidence === 'low') {
+      return [
+        plan.reasoning?.trim() ||
+          'This request is ambiguous — what exactly should I change in the workbook?',
+      ];
+    }
+    return [];
+  }
+
+  /** Blocks ONLY when there is nothing to build, or the model doubts its reading. */
+  private shouldBlockForClarification(plan: PlannerOutput): boolean {
+    return (
+      plan.confidence === 'low' ||
+      (plan.clarificationsNeeded.length > 0 && plan.subtasks.length === 0)
+    );
   }
 
   /**

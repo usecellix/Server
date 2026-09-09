@@ -28,9 +28,17 @@ import { ActionWave, splitIntoActionWaves } from '../utils/action-wave.util';
 import { classifyIntent, detectAmbiguity } from '../llm/ambiguity-detector';
 import { LLMTier, SheetSnapshot } from '../../types/cellix.types';
 import { OrchestratorService } from '../../agents/orchestrator.service';
+import { AgentRunStateService, WaveDecision } from '../../agents/agent-run-state.service';
+import { AgentRunDocument } from '../../agents/schemas/agent-run.schema';
+import { ContinueRunDto } from '../dto/continue-run.dto';
+import {
+  isStepwiseExecutionEnabled,
+  shouldRunStepwise,
+} from '../utils/stepwise-execution-flag.util';
 import { SseEmitter } from '../../agents/sse.emitter';
 import { ToolBridgeService } from '../../agents/tool-bridge.service';
 import { buildAgentWorkbookContext } from '../../agents/utils/workbook-context.builder';
+import { computeExecutionWaves } from '../../agents/utils/task-graph.util';
 import { WriteRouteNoActionError } from '../errors/write-route-no-action.error';
 import { CreditGateService } from '../../credit/credit-gate.service';
 import { CreditLedgerService } from '../../credit/credit-ledger.service';
@@ -165,6 +173,7 @@ export class ConversationService {
     private readonly workflowTrace: WorkflowTraceService,
     private readonly creditGate: CreditGateService,
     private readonly creditLedger: CreditLedgerService,
+    private readonly agentRunState: AgentRunStateService,
   ) {}
 
   private enrichAgentContext(
@@ -1630,6 +1639,7 @@ export class ConversationService {
         routerDecision.assumption,
         (routerDecision.complexity ?? 3) as 0 | 1 | 2 | 3,
         reportActionCount,
+        userId,
       );
     } finally {
       const classifiedTier = (routerDecision.complexity ?? 3) as 0 | 1 | 2 | 3;
@@ -2255,6 +2265,391 @@ export class ConversationService {
     });
   }
 
+  /**
+   * Plans a Tier 3 build, and — when the plan has more than one dependency wave
+   * — persists it as an `agent_run`, executes ONLY wave 0, emits its Accept
+   * card, and ends the stream (STEPWISE_EXECUTION.md SD-1/SD-3).
+   *
+   * Returns true when it took ownership of the response. Returns false to mean
+   * "not stepwise after all" — a single-wave plan, or a plan that must ask a
+   * clarification first — in which case the caller runs the unchanged one-shot
+   * path. Deliberately never throws for a can't-do-stepwise reason: falling
+   * back to the behaviour that already works beats failing a real request.
+   */
+  private async tryStartStepwiseRun(opts: {
+    request: ConversationRequestDto;
+    reply: FastifyReply;
+    conversationId: string;
+    traceId: string;
+    emit: (event: string, data: Record<string, unknown>) => void;
+    sseEmitter: SseEmitter;
+    enrichedContext: AgentWorkbookContext;
+    promptContext: string;
+    conversationHistory: { role: 'user' | 'assistant'; content: string }[];
+    routerAssumption?: string;
+    complexity?: 0 | 1 | 2 | 3;
+    telemetry: LlmCallTelemetry;
+    userId?: string;
+    startedAt: number;
+  }): Promise<boolean> {
+    const { plan, openQuestions, mustAsk } = await this.orchestrator.planForStepwiseRun(
+      {
+        prompt: opts.request.message,
+        context: opts.enrichedContext,
+        conversationHistory: opts.conversationHistory,
+        promptContext: opts.promptContext,
+        conversationId: opts.conversationId,
+        correlationId: opts.traceId,
+        toolEmit: opts.emit,
+        routerAssumption: opts.routerAssumption,
+        complexity: opts.complexity ?? 3,
+      },
+      opts.sseEmitter,
+      opts.telemetry,
+    );
+
+    if (mustAsk) {
+      await this.saveMessage(opts.conversationId, {
+        id: `msg_${Date.now()}_assistant`,
+        role: 'assistant',
+        content: '[Clarification needed]',
+        type: 'clarification',
+        timestamp: new Date(),
+      });
+      opts.emit('done', { message: 'awaiting_clarification' });
+      endSseResponse(opts.reply);
+      return true;
+    }
+
+    const waves = computeExecutionWaves(plan.subtasks);
+    if (!shouldRunStepwise(waves.length)) {
+      // Single-wave plan: gating it would add a round trip and buy nothing.
+      // The one-shot path re-plans, which costs a second Planner call — an
+      // accepted, bounded cost for keeping the two paths from sharing mutable
+      // plan state across a fallback boundary.
+      this.logger.log(
+        `Stepwise declined trace=${opts.traceId} waves=${waves.length} — falling back to one-shot`,
+      );
+      return false;
+    }
+
+    const run = await this.agentRunState.createRun({
+      conversationId: opts.conversationId,
+      userId: opts.userId,
+      traceId: opts.traceId,
+      prompt: opts.request.message,
+      subtasks: plan.subtasks,
+      context: opts.enrichedContext,
+      promptContext: opts.promptContext,
+      conversationHistory: opts.conversationHistory,
+      routerAssumption: opts.routerAssumption,
+    });
+
+    this.logger.log(
+      `Stepwise run ${run.runId} started trace=${opts.traceId} subtasks=${plan.subtasks.length} waves=${waves.length}`,
+    );
+
+    // STEPWISE_EXECUTION.md §3 originally called for emitting the whole plan
+    // up front via the existing 'plan' SSE event, so the user sees the shape
+    // of the build before approving its first step. Reverted: 'plan' is the
+    // Plan MODE contract — a read-only preview whose card says "review it,
+    // then run it as an action" and renders a "Run as Action" button that
+    // re-sends the prompt. Emitting it here, while the build is ALREADY
+    // executing, produced exactly that confusing button on a live run (a real
+    // user report). The per-wave "Step N of M" Accept cards already show
+    // progress as it happens; a proper plan-overview needs its own event type
+    // and rendering (no run button, informational only) — scoped as separate
+    // follow-up work rather than bolted on here under time pressure.
+    if (openQuestions.length > 0) {
+      opts.emit('status', {
+        message: `Proceeding under an assumption — ${openQuestions[0]}`,
+      });
+    }
+
+    await this.executeStepwiseWave(run, opts.reply, opts.emit, opts.sseEmitter, opts.telemetry);
+    return true;
+  }
+
+  /**
+   * Runs the run's next executable wave, emits its Accept card, and ends the
+   * stream with `wave_ready` — the event that distinguishes "paused, call
+   * /continue" from "finished" (STEPWISE_EXECUTION.md §3).
+   */
+  private async executeStepwiseWave(
+    run: AgentRunDocument,
+    reply: FastifyReply,
+    emit: (event: string, data: Record<string, unknown>) => void,
+    sseEmitter: SseEmitter,
+    telemetry: LlmCallTelemetry,
+  ): Promise<void> {
+    const next = this.agentRunState.nextExecutableWave(run);
+
+    if (!next) {
+      await this.finishStepwiseRun(run, reply, emit);
+      return;
+    }
+
+    await this.agentRunState.markStatus(run, 'running');
+
+    // Everything earlier waves produced, so this wave's Executor and shadow
+    // workbook see the sheets those waves created (SD-1).
+    const priorActions = run.subtaskStates
+      .filter((state) => state.actions.length > 0)
+      .map((state) => ({
+        subtask: run.subtasks.find((subtask) => subtask.id === state.subtaskId)!,
+        actions: state.actions as SheetAction[],
+      }))
+      .filter((entry) => Boolean(entry.subtask));
+
+    const waveResult = await this.orchestrator.runStepwiseWave(
+      {
+        prompt: run.prompt,
+        context: run.context as AgentWorkbookContext,
+        conversationHistory: run.conversationHistory,
+        promptContext: run.promptContext,
+        conversationId: run.conversationId,
+        correlationId: run.traceId,
+        toolEmit: emit,
+        routerAssumption: run.routerAssumption,
+        complexity: 3,
+        waveSubtasks: next.subtasks,
+        priorActions,
+      },
+      sseEmitter,
+      telemetry,
+    );
+
+    await this.agentRunState.recordWaveResult(
+      run,
+      next.waveIndex,
+      next.subtasks.map((subtask) => {
+        const completed = waveResult.completedSubtasks.find(
+          (entry) => entry.subtaskId === subtask.id,
+        );
+        // TASKS.md #195 — look this subtask up in the FULL failure list, not
+        // just the single most-relevant one. A wave of many independent
+        // parallel subtasks (e.g. 12 month-sheet creates with no dependsOn
+        // between them) can have several genuinely fail at once; matching
+        // only `failedSubtask` left every failure but one with no recorded
+        // reason at all in this run's persisted state.
+        const failed = waveResult.failedSubtasks.find((entry) => entry.subtaskId === subtask.id);
+        return {
+          subtaskId: subtask.id,
+          actions: completed?.actions ?? [],
+          completed: Boolean(completed),
+          verified: completed?.verified,
+          failedReason: failed?.reason,
+        };
+      }),
+    );
+
+    // A wave that produced nothing must not emit an empty Accept card — it is
+    // a failure to report, not a step to approve. SD-4 says continue rather
+    // than abort, so the run advances with this wave marked skipped.
+    if (waveResult.actions.length === 0) {
+      const reason =
+        waveResult.failedSubtask?.reason ?? 'This step produced no changes to apply';
+      this.logger.warn(`Stepwise run ${run.runId} wave ${next.waveIndex} empty: ${reason}`);
+      emit('status', { message: `Step skipped — ${reason}` });
+      await this.agentRunState.applyDecision(run, 'skipped');
+      await this.executeStepwiseWave(run, reply, emit, sseEmitter, telemetry);
+      return;
+    }
+
+    // TASKS.md #195 — a wave that DID produce some actions can still have lost
+    // OTHER independent subtasks silently (e.g. 3 of 12 month sheets built,
+    // 9 failed) — the Accept card only ever described what succeeded. Surface
+    // the gap the same way the one-shot path's `undeliveredSubtasks` already
+    // does, so "only got one sheet" has a visible, honest explanation instead
+    // of looking like the request was simply under-specified.
+    if (waveResult.failedSubtasks.length > 0) {
+      const missing = waveResult.failedSubtasks;
+      this.logger.warn(
+        `Stepwise run ${run.runId} wave ${next.waveIndex}: ${missing.length} of ${next.subtasks.length} ` +
+          `subtask(s) failed — ${missing.map((m) => m.subtaskId).join(', ')}`,
+      );
+      emit('status', {
+        message:
+          missing.length === 1
+            ? `Note: 1 of ${next.subtasks.length} planned steps in this batch produced no changes — ${missing[0].reason.slice(0, 110)}`
+            : `Note: ${missing.length} of ${next.subtasks.length} planned steps in this batch produced no changes (e.g. ${missing[0].reason.slice(0, 90)})`,
+      });
+    }
+
+    const changeSet = await this.changeSetService.createPreview({
+      conversationId: run.conversationId,
+      traceId: run.traceId,
+      prompt: run.prompt,
+      context: run.context as AgentWorkbookContext,
+      actions: waveResult.actions,
+      provenance: {
+        sourceRefs: buildWorkbookSourceRefsFromActions(
+          waveResult.actions,
+          run.context.activeSheetName || 'workbook',
+          run.context.activeSheetName,
+        ),
+        workbookId: run.context.activeSheetName || 'workbook',
+        activeSheetName: run.context.activeSheetName,
+      },
+    });
+
+    const label = this.describeProgressiveWave(waveResult.actions);
+    const previousChangeSetId = run.changeSetIds[run.changeSetIds.length - 1];
+
+    emit('actions', {
+      actions: waveResult.actions,
+      explanation: label,
+      userFacingSummary: buildUserFacingSummary({
+        answer: label,
+        actions: waveResult.actions,
+        changes: changeSet.changes,
+        activeSheetName: run.context.activeSheetName,
+        planSubtasks: next.subtasks.map((subtask) => ({
+          id: subtask.id,
+          description: subtask.description,
+          targetSheet: subtask.targetSheet,
+        })),
+      }),
+      internalDetails: buildInternalDetails({
+        tier: 3,
+        model: telemetry.model,
+        processingLabel: label,
+        actions: waveResult.actions,
+        legacyExplanation: label,
+      }),
+      changeSetId: changeSet.changeSetId,
+      changes: changeSet.changes,
+      irreversibleActionTypes: changeSet.irreversibleActionTypes,
+      tier: 3,
+      stepIndex: next.waveIndex + 1,
+      stepTotal: run.waveTotal,
+      stepLabel: label,
+      stepwise: true,
+      runId: run.runId,
+      ...(previousChangeSetId ? { dependsOnChangeSetId: previousChangeSetId } : {}),
+    });
+
+    run.changeSetIds.push(changeSet.changeSetId);
+    await run.save();
+    this.logWorkflowChangeSet(
+      run.traceId,
+      changeSet.changeSetId,
+      waveResult.actions,
+      changeSet.changes.length,
+    );
+
+    // The stream ends here but the RUN does not — this is what tells the client
+    // to accept and then call /continue, rather than treating the build as done.
+    emit('wave_ready', {
+      runId: run.runId,
+      waveIndex: next.waveIndex,
+      waveTotal: run.waveTotal,
+      hasMore: true,
+      changeSetId: changeSet.changeSetId,
+    });
+    endSseResponse(reply);
+  }
+
+  /** Closes out a run whose waves are all decided, reporting skips honestly. */
+  private async finishStepwiseRun(
+    run: AgentRunDocument,
+    reply: FastifyReply,
+    emit: (event: string, data: Record<string, unknown>) => void,
+  ): Promise<void> {
+    const skipped = this.agentRunState.summarizeSkipped(run);
+    await this.agentRunState.markStatus(run, 'completed');
+    await this.markCompleted(run.conversationId);
+
+    // An incomplete build reported as complete is the false-completeness
+    // failure CODEBASE_ANALYSIS.md §3.7 keeps re-teaching — say what was left.
+    const summary =
+      skipped.length === 0
+        ? 'All steps applied.'
+        : skipped.length === 1
+          ? `Done — 1 step was not applied: ${skipped[0].description}`
+          : `Done — ${skipped.length} steps were not applied (e.g. ${skipped[0].description})`;
+
+    emit('conversation_end', {
+      summary,
+      tier: 3,
+      runId: run.runId,
+      skippedSubtasks: skipped,
+    });
+    emit('wave_ready', {
+      runId: run.runId,
+      waveIndex: run.waveIndex,
+      waveTotal: run.waveTotal,
+      hasMore: false,
+    });
+    this.logger.log(
+      `Stepwise run ${run.runId} complete waves=${run.waveTotal} skipped=${skipped.length}`,
+    );
+    endSseResponse(reply);
+  }
+
+  /**
+   * `POST /excel-ai/conversation/continue` — records the client's decision on
+   * the wave just emitted and generates the next one (STEPWISE_EXECUTION.md §3).
+   *
+   * This is the only place wave N+1's Executor can be reached, which is what
+   * enforces SD-3's no-look-ahead rule structurally rather than by convention.
+   */
+  async continueRun(
+    body: ContinueRunDto,
+    reply: FastifyReply,
+    traceId: string | undefined,
+    userId?: string,
+  ): Promise<void> {
+    const run = await this.agentRunState.loadRunForUser(body.runId, userId);
+
+    initSseResponse(reply);
+    const emit = (event: string, data: Record<string, unknown>) =>
+      writeSseEvent(reply, event, { ...data, conversationId: run.conversationId });
+    const sseEmitter = new SseEmitter(emit);
+    const telemetry: LlmCallTelemetry = { provider: 'openrouter', modelTier: 'high' };
+
+    try {
+      if (run.status === 'completed' || run.status === 'abandoned') {
+        emit('conversation_end', { summary: 'This build has already finished.', tier: 3 });
+        emit('wave_ready', {
+          runId: run.runId,
+          waveIndex: run.waveIndex,
+          waveTotal: run.waveTotal,
+          hasMore: false,
+        });
+        endSseResponse(reply);
+        return;
+      }
+
+      // Readback first: the next wave must plan against the OBSERVED result of
+      // the wave just accepted, not the shadow workbook's prediction of it.
+      if (body.decision === 'accepted') {
+        await this.agentRunState.applyReadback(
+          run,
+          body.readback as AgentWorkbookContext['sheets'] | undefined,
+        );
+      }
+
+      const { cascadeSkipped } = await this.agentRunState.applyDecision(
+        run,
+        body.decision as WaveDecision,
+      );
+      if (cascadeSkipped.length > 0) {
+        emit('status', {
+          message: `Skipping ${cascadeSkipped.length} step(s) that depended on the step you did not accept.`,
+        });
+      }
+
+      await this.executeStepwiseWave(run, reply, emit, sseEmitter, telemetry);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Continue failed';
+      this.logger.warn(`Stepwise continue failed run=${run.runId} error="${message}"`);
+      await this.agentRunState.markStatus(run, 'failed').catch(() => undefined);
+      emit('error', { message });
+      endSseResponse(reply);
+    }
+  }
+
   private async streamWithOrchestrator(
     request: ConversationRequestDto,
     reply: FastifyReply,
@@ -2267,6 +2662,8 @@ export class ConversationService {
     complexity?: 0 | 1 | 2 | 3,
     /** Reports the finished action count back for routing telemetry. TASKS.md #165. */
     reportActionCount?: (count: number) => void,
+    /** Owner of any stepwise run this request starts — never from the body. */
+    userId?: string,
   ): Promise<void> {
     const startedAt = Date.now();
     const intent = classifyIntent(request.message);
@@ -2384,6 +2781,34 @@ export class ConversationService {
         this.logWorkflowChangeSet(traceId, changeSet.changeSetId, early, changeSet.changes.length);
       };
 
+      // TASKS.md #153 / STEPWISE_EXECUTION.md — plan the whole build, then
+      // execute and preview only the FIRST wave, ending the stream so the
+      // client can accept before anything downstream is generated (SD-3).
+      // Falls through to the one-shot path below whenever the flag is off or
+      // the plan turns out to be a single wave (nothing to gate).
+      if (isStepwiseExecutionEnabled()) {
+        const handled = await this.tryStartStepwiseRun({
+          request,
+          reply,
+          conversationId,
+          traceId,
+          emit,
+          sseEmitter,
+          enrichedContext,
+          promptContext,
+          conversationHistory,
+          routerAssumption,
+          complexity,
+          telemetry,
+          userId,
+          startedAt,
+        });
+        if (handled) {
+          success = true;
+          return;
+        }
+      }
+
       const orchestratorResult = await this.orchestrator.runDetailed(
         {
           prompt: request.message,
@@ -2421,9 +2846,16 @@ export class ConversationService {
 
       if (!orchestratorResult.verifierPassed) {
         if (orchestratorResult.partialProgress && rawActions.length > 0) {
+          // TASKS.md #195 — describe EVERY failed subtask, not just the first.
+          // A wave of independent parallel subtasks (e.g. many month-sheet
+          // creates with no dependsOn between them) can have several
+          // genuinely fail at once; reporting only `failedSubtask` understated
+          // how much of the request actually failed.
           const failedReason =
-            orchestratorResult.failedSubtask?.reason ??
-            'A later step could not be completed';
+            orchestratorResult.failedSubtasks.length > 1
+              ? `${orchestratorResult.failedSubtasks.length} steps could not be completed, including: ${orchestratorResult.failedSubtasks[0].reason}`
+              : orchestratorResult.failedSubtask?.reason ??
+                'A later step could not be completed';
           const finalized = this.engine.finalizeActions(
             rawActions,
             analysis,
@@ -2510,6 +2942,7 @@ export class ConversationService {
               changeSetId: changeSet.changeSetId,
               partialProgress: true,
               failedSubtask: orchestratorResult.failedSubtask,
+              failedSubtasks: orchestratorResult.failedSubtasks,
             },
           });
 
@@ -2524,6 +2957,7 @@ export class ConversationService {
             irreversibleActionTypes: changeSet.irreversibleActionTypes,
             partialProgress: true,
             failedSubtask: orchestratorResult.failedSubtask,
+            failedSubtasks: orchestratorResult.failedSubtasks,
             tier: 3,
           });
           emit('conversation_end', {

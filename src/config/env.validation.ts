@@ -36,6 +36,17 @@ export const envValidationSchema = Joi.object({
   ENABLE_COMPLEXITY_TIERING: Joi.string()
     .valid('off', 'shadow', 'tier01', 'tier0-1', 'tier0_1', 'full', 'on', 'true', 'false', '0', '1')
     .optional(),
+  /**
+   * Step-wise Tier 3 execution (TASKS.md #153, STEPWISE_EXECUTION.md). Defaults
+   * off everywhere — it changes the SSE contract (a run ends with `wave_ready`,
+   * not `conversation_end`), so an add-in build predating the client half must
+   * not start receiving paused runs it will never continue.
+   */
+  ENABLE_STEPWISE_EXECUTION: Joi.string()
+    .valid('on', 'off', 'true', 'false', '0', '1')
+    .optional(),
+  /** Retention for `agent_runs` working state — see agent-run.schema.ts. */
+  AGENT_RUN_TTL_HOURS: Joi.number().positive().optional(),
   // Lets eval/run-live-eval.ts authenticate against a real running backend
   // without a browser session. AuthGuard only honors this when NODE_ENV is
   // NOT 'production' AND this is set — unset (the default) changes nothing

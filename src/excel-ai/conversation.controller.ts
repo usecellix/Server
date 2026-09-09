@@ -20,6 +20,7 @@ import { ConversationRequestDto } from './dto/conversation-request.dto';
 import { ListConversationsQueryDto } from './dto/list-conversations-query.dto';
 import { RenameConversationDto } from './dto/rename-conversation.dto';
 import { ToolResultDto } from './dto/tool-result.dto';
+import { ContinueRunDto } from './dto/continue-run.dto';
 import { ConversationService } from './services/conversation.service';
 
 /**
@@ -121,5 +122,24 @@ export class ConversationController {
   @Post('conversation/tool-result')
   async toolResult(@Body() body: ToolResultDto): Promise<{ accepted: boolean }> {
     return this.conversationService.handleToolResult(body);
+  }
+
+  /**
+   * Advances a step-wise Tier 3 run (TASKS.md #153, STEPWISE_EXECUTION.md §3).
+   *
+   * Streams exactly like `POST conversation` — the client's decision on the
+   * wave it was last shown goes up, the next wave's Accept card comes back, and
+   * the stream ends again. `userId` comes from the session so a caller holding
+   * someone else's runId cannot drive their build.
+   */
+  @Post('conversation/continue')
+  @SkipEnvelope()
+  async continueRun(
+    @Body() body: ContinueRunDto,
+    @Headers(TRACE_ID_HEADER) traceId: string | undefined,
+    @Res() reply: FastifyReply,
+    @Session() session: AuthUserSession | undefined,
+  ): Promise<void> {
+    await this.conversationService.continueRun(body, reply, traceId, session?.user?.id);
   }
 }

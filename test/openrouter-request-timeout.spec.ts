@@ -78,6 +78,72 @@ describe('OpenRouterService — request timeout wiring', () => {
     expect(isTransient).toBe(true);
   });
 
+  /**
+   * Live incident (Sept 7, 2026): a Planner call hung 235s and then failed as
+   * `OpenRouter complete failed (502): The operation was aborted due to
+   * timeout` — extractStatus's DEFAULT 502, not the 503 isTransientNetworkError
+   * should have produced. Root cause: Node's own `AbortSignal.timeout()` throws
+   * a bare `DOMException` whose `.name` is the generic `'TimeoutError'`, not
+   * the SDK-specific `RequestTimeoutError`/`RequestAbortedError` this check was
+   * originally written against — so the retry-once branch below never fired
+   * and a single slow call was treated as a hard failure instead of a
+   * transient one worth one retry.
+   */
+  it('recognizes a native DOMException TimeoutError (AbortSignal.timeout) as transient', () => {
+    const service = buildService();
+    const domTimeoutError = Object.assign(
+      new Error('The operation was aborted due to timeout'),
+      { name: 'TimeoutError' },
+    );
+
+    const isTransient = (
+      service as unknown as { isTransientNetworkError: (e: unknown) => boolean }
+    ).isTransientNetworkError(domTimeoutError);
+
+    expect(isTransient).toBe(true);
+  });
+
+  it('a native DOMException TimeoutError is retried once by requestChatCompletion', async () => {
+    const service = buildService();
+    const domTimeoutError = Object.assign(
+      new Error('The operation was aborted due to timeout'),
+      { name: 'TimeoutError' },
+    );
+    const sendOnce = jest
+      .spyOn(
+        service as unknown as {
+          sendChatCompletionOnce: (...args: unknown[]) => Promise<unknown>;
+        },
+        'sendChatCompletionOnce',
+      )
+      .mockRejectedValueOnce(domTimeoutError)
+      .mockResolvedValueOnce({
+        choices: [{ message: { content: 'recovered' }, finishReason: 'stop' }],
+      });
+
+    const result = await (
+      service as unknown as {
+        requestChatCompletion: (
+          client: unknown,
+          opts: Record<string, unknown>,
+        ) => Promise<{ choices?: Array<{ message?: { content?: string } }> }>;
+      }
+    ).requestChatCompletion(
+      {},
+      {
+        model: 'openai/gpt-5-mini',
+        messages: [{ role: 'user', content: 'hi' }],
+        temperature: 0.2,
+        maxCompletionTokens: 512,
+        reasoningEffort: 'low',
+        responseFormat: 'text',
+      },
+    );
+
+    expect(sendOnce).toHaveBeenCalledTimes(2);
+    expect(result.choices?.[0]?.message?.content).toBe('recovered');
+  });
+
   it('a timed-out non-streaming call is retried once, not left to hang', async () => {
     const service = buildService();
     const timeoutError = Object.assign(new Error('The request timed out'), {

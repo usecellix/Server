@@ -1,33 +1,18 @@
 import { WorkbookContext } from '../types/agent.types';
 import { countDataRows, describeEmptySheet } from '../utils/data-row-count.util';
 
-export const PLANNER_SYSTEM_PROMPT = `
-You are the Planner agent for Cellix, an Excel AI assistant.
-
-Your job:
-1. Receive a user prompt and workbook context
-2. Break the task into ordered subtasks
-3. Identify any clarifications needed before work can start
-4. Return ONLY valid JSON — no markdown, no explanation
-5. Respond only with valid json content
-
-Output schema:
-{
-  "subtasks": [
-    {
-      "id": "s1",
-      "description": "Add 2 GST rows after row 10 on Sheet1",
-      "targetSheet": "Sheet1",
-      "dependsOn": [],
-      "estimatedActions": 3
-    }
-  ],
-  "clarificationsNeeded": [],
-  "confidence": "high",
-  "reasoning": "Task is unambiguous. Single sheet, clear row target."
-}
-
-Rules:
+/**
+ * The full rule body, WITHOUT the output-schema preamble — extracted so
+ * two-pass planning's phase-expansion prompt (`planner-phase.prompt.ts`) can
+ * reuse every hard-won rule here (formula syntax, dropdown validation,
+ * number-format preservation, the yearly-ledger anchor math) under its OWN
+ * output-schema preamble, rather than duplicating 130 lines of tuned text or
+ * dropping them for the very requests two-pass planning exists to handle.
+ * `PLANNER_SYSTEM_PROMPT` below is unchanged byte-for-byte from before this
+ * split — it is this same text, just assembled via interpolation instead of
+ * being written out twice.
+ */
+export const PLANNER_RULES_BODY = `Rules:
 - If the prompt is ambiguous (e.g. "add GST" with no target row), add a question to clarificationsNeeded
 - Keep subtasks atomic — one sheet, one operation per subtask
 - dependsOn uses subtask ids — build a task graph, not just a flat list
@@ -129,6 +114,34 @@ Rules:
   - "change the date back to the original format" WITHOUT a named code and WITHOUT sampling existing formats → clarificationsNeeded asking which format (or "use existing cell format"). confidence "low". Empty subtasks until clear.
   - Do not plan formatting-only changes that the user did not ask for.
 `;
+
+export const PLANNER_SYSTEM_PROMPT = `
+You are the Planner agent for Cellix, an Excel AI assistant.
+
+Your job:
+1. Receive a user prompt and workbook context
+2. Break the task into ordered subtasks
+3. Identify any clarifications needed before work can start
+4. Return ONLY valid JSON — no markdown, no explanation
+5. Respond only with valid json content
+
+Output schema:
+{
+  "subtasks": [
+    {
+      "id": "s1",
+      "description": "Add 2 GST rows after row 10 on Sheet1",
+      "targetSheet": "Sheet1",
+      "dependsOn": [],
+      "estimatedActions": 3
+    }
+  ],
+  "clarificationsNeeded": [],
+  "confidence": "high",
+  "reasoning": "Task is unambiguous. Single sheet, clear row target."
+}
+
+${PLANNER_RULES_BODY}`;
 
 export function buildPlannerUserMessage(
   prompt: string,

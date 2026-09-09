@@ -56,6 +56,8 @@ export class ConversationMessageEntry {
     /** Spec 12 — successful early subtasks delivered when a later step fails */
     partialProgress?: boolean;
     failedSubtask?: { subtaskId: string; reason: string } | null;
+    /** TASKS.md #195 — every subtask that failed, not just `failedSubtask`. */
+    failedSubtasks?: Array<{ subtaskId: string; reason: string }>;
     /** Spec 18 — structured chart/table range identity for follow-up turns */
     turnActionRecords?: TurnActionRecord[];
   };

@@ -8,6 +8,7 @@ import {
   UnprocessableEntityException,
 } from '@nestjs/common';
 import { ChangeSetService } from './change-set.service';
+import { RevertNoOpError } from './errors/revert-noop.error';
 import { RevertVerificationError } from './errors/revert-verification.error';
 import { CellChange } from './types/change-set.types';
 
@@ -60,6 +61,14 @@ export class ChangeSetController {
           code: error.code,
           changeSetId: error.changeSetId,
           blockingChanges: error.blockingChanges,
+        });
+      }
+      if (error instanceof RevertNoOpError) {
+        throw new UnprocessableEntityException({
+          message: error.message,
+          code: error.code,
+          changeSetId: error.changeSetId,
+          irreversibleActionTypes: error.irreversibleActionTypes,
         });
       }
       throw error;

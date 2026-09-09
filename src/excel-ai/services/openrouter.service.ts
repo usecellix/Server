@@ -577,6 +577,15 @@ export class OpenRouterService {
       message.includes('econnreset') ||
       message.includes('fetch failed') ||
       message.includes('socket hang up') ||
+      // A live 235s hang (Sept 2026) surfaced as a bare `DOMException
+      // [TimeoutError]: The operation was aborted due to timeout` — Node's own
+      // `AbortSignal.timeout()` shape, thrown when the SDK's `timeoutMs` option
+      // (REQUEST_TIMEOUT_MS below) fires but the underlying fetch never
+      // rejected with the SDK's own RequestTimeoutError/RequestAbortedError
+      // wrapper. `err.name` alone missed it because DOMException's name is the
+      // generic `'TimeoutError'`, not one of the two SDK-specific names below —
+      // checking the message text too is what catches this shape.
+      message.includes('aborted due to timeout') ||
       code === 'ECONNRESET' ||
       code === 'ECONNREFUSED' ||
       code === 'ETIMEDOUT' ||
@@ -585,7 +594,8 @@ export class OpenRouterService {
       // below) — a provider that never responds must surface the same way a
       // dropped connection does, not hang the request indefinitely.
       err.name === 'RequestTimeoutError' ||
-      err.name === 'RequestAbortedError'
+      err.name === 'RequestAbortedError' ||
+      err.name === 'TimeoutError'
     );
   }
 

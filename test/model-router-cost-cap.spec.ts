@@ -10,6 +10,16 @@ import { ConversationTurn, MODEL_CONFIGS, WorkbookContext } from '../src/types/c
  * This file closes that pre-existing gap. Scope: only the downgrade behavior
  * and its recalculated cost — not a general ModelRouter/scoreTaskComplexity
  * test suite.
+ *
+ * 2026-09-05: LOW/MEDIUM/HIGH were collapsed to a single model (openai/gpt-5)
+ * across the board, and MODEL_CONFIGS updated to match (TASKS.md #183). The
+ * HIGH->MEDIUM downgrade path in model-router.ts still fires exactly as
+ * before, but MEDIUM's config is now byte-identical to HIGH's — there is no
+ * cheaper tier left to fall back to. This is an honest, intended consequence
+ * of collapsing the tiers, not a regression: the tests below were rewritten
+ * to assert what actually happens now (tier/fallbackUsed still flip, but the
+ * dollar figure and resolved model do not change) rather than asserting the
+ * pre-collapse economics that no longer hold.
  */
 
 function sheet(sheetName: string, rowCount: number, colCount: number): WorkbookContext['sheets'][number] {
@@ -47,8 +57,8 @@ const NO_HISTORY: ConversationTurn[] = [];
 
 function buildRouter(): ModelRouter {
   const config = {
-    openRouterModelLow: 'openai/gpt-5-nano',
-    openRouterModelMedium: 'openai/gpt-5-mini',
+    openRouterModelLow: 'openai/gpt-5',
+    openRouterModelMedium: 'openai/gpt-5',
     openRouterModelHigh: 'openai/gpt-5',
   } as unknown as AppConfigService;
   return new ModelRouter(config);
@@ -67,41 +77,42 @@ describe('ModelRouter.route() — HIGH cost-cap downgrade', () => {
     expect(routing.fallbackUsed).toBe(false);
   });
 
-  it('downgrades high -> medium when estimatedCostUsd would exceed COST_CAP_USD, and recalculates cost against MEDIUM rates rather than reporting the pre-downgrade HIGH number', () => {
+  it('still flips tier/fallbackUsed on cost-cap overage, but MEDIUM no longer resolves to a cheaper model or a lower dollar figure', () => {
     const router = buildRouter();
 
-    // HIGH:   (60000/1000)*0.00125 + (8192/1000)*0.01  = 0.075   + 0.08192  = 0.15692  (> COST_CAP_USD 0.15)
-    // MEDIUM: (60000/1000)*0.00025 + (4096/1000)*0.002 = 0.015   + 0.008192 = 0.023192 (well under)
+    // HIGH and MEDIUM are now byte-identical configs (both openai/gpt-5) —
+    // collapsing the tiers removed the cheaper fallback the downgrade used to
+    // land on. This same promptTokenEstimate crossed COST_CAP_USD under the
+    // pre-collapse HIGH pricing (0.15692); it still does, because HIGH's
+    // pricing hasn't changed, and now MEDIUM's recalculation lands on the
+    // exact same number instead of a materially cheaper one.
     const promptTokenEstimate = 60000;
-    const expectedHighCost =
+    const expectedCost =
       (promptTokenEstimate / 1000) * MODEL_CONFIGS.high.costPer1kPrompt +
       (MODEL_CONFIGS.high.maxTokens / 1000) * MODEL_CONFIGS.high.costPer1kCompletion;
-    const expectedMediumCost =
-      (promptTokenEstimate / 1000) * MODEL_CONFIGS.medium.costPer1kPrompt +
-      (MODEL_CONFIGS.medium.maxTokens / 1000) * MODEL_CONFIGS.medium.costPer1kCompletion;
 
-    // Sanity on the fixture's premise: HIGH really does cross the cap here,
-    // and MEDIUM really does not — otherwise the downgrade assertions below
-    // could pass for the wrong reason.
-    expect(expectedHighCost).toBeGreaterThan(COST_CAP_USD);
-    expect(expectedMediumCost).toBeLessThan(COST_CAP_USD);
+    expect(MODEL_CONFIGS.medium.model).toBe(MODEL_CONFIGS.high.model);
+    expect(MODEL_CONFIGS.medium.maxTokens).toBe(MODEL_CONFIGS.high.maxTokens);
+    expect(MODEL_CONFIGS.medium.costPer1kPrompt).toBe(MODEL_CONFIGS.high.costPer1kPrompt);
+    expect(MODEL_CONFIGS.medium.costPer1kCompletion).toBe(MODEL_CONFIGS.high.costPer1kCompletion);
+    expect(expectedCost).toBeGreaterThan(COST_CAP_USD);
 
     const routing = router.route(HIGH_COMPLEXITY_PROMPT, highComplexityContext(), NO_HISTORY, promptTokenEstimate);
 
-    // The complexity SCORE still says high — only the routing decision downgraded.
+    // The complexity SCORE still says high, and the downgrade still fires —
+    // model-router.ts's cap-check logic is untouched by the tier collapse.
     expect(routing.complexityScore.tier).toBe('high');
     expect(routing.tier).toBe('medium');
     expect(routing.fallbackUsed).toBe(true);
     expect(routing.config.tier).toBe('medium');
-    expect(routing.model).toBe('openai/gpt-5-mini');
 
-    // The reported cost must be the RECALCULATED medium-tier figure ...
-    expect(routing.estimatedCostUsd).toBeCloseTo(expectedMediumCost, 6);
-    // ... not the pre-downgrade HIGH estimate that triggered the downgrade in
-    // the first place (the exact bug this test guards against: reporting a
-    // number priced at a model the request will not actually use).
-    expect(routing.estimatedCostUsd).not.toBeCloseTo(expectedHighCost, 6);
-    expect(routing.estimatedCostUsd).toBeLessThan(COST_CAP_USD);
+    // ...but the "downgrade" no longer buys anything: same model, same price,
+    // and the recalculated estimate still exceeds the cap it was meant to
+    // enforce. This is the honest state of a collapsed-tier config, not a bug
+    // this test should paper over.
+    expect(routing.model).toBe('openai/gpt-5');
+    expect(routing.estimatedCostUsd).toBeCloseTo(expectedCost, 6);
+    expect(routing.estimatedCostUsd).toBeGreaterThan(COST_CAP_USD);
   });
 
   it('does not downgrade when the HIGH-tier estimate stays under the cost cap', () => {

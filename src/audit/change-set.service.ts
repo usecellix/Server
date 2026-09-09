@@ -22,6 +22,7 @@ import {
   snapshotBeforeState,
   structuralOpsToInverseActions,
 } from './diff.engine';
+import { RevertNoOpError } from './errors/revert-noop.error';
 import { RevertVerificationError } from './errors/revert-verification.error';
 import { computeIrreversibleActionTypes } from './reversibility-catalog';
 import { ChangeSet, ChangeSetDocument } from './schemas/change-set.schema';
@@ -274,6 +275,17 @@ export class ChangeSetService {
     const structuralOps = (doc.structuralOps ?? []) as unknown as StructuralOp[];
     const { pre, post } = structuralOpsToInverseActions(structuralOps);
     const inverseActions = [...pre, ...cellInverseActions, ...post];
+
+    // Fail-closed "no false success" (mirrors TASKS.md #19 below, one step earlier): a
+    // change set that recorded forward actions but produced zero inverse actions has
+    // nothing to undo — e.g. FORMAT_MATCHING_ROWS fill color, never captured because
+    // virtual-apply-catalog.ts doesn't simulate it. Without this, the code below marks
+    // the change set 'reverted' and returns a "successful" empty result while the sheet
+    // visibly stays changed.
+    const originalActionsForNoOpCheck = (doc.actions as unknown as Action[]) ?? [];
+    if (inverseActions.length === 0 && originalActionsForNoOpCheck.length > 0) {
+      throw new RevertNoOpError(changeSetId, doc.irreversibleActionTypes ?? []);
+    }
 
     // Fail-closed self-verification (TASKS.md #19): dry-run the inverse against a shadow
     // rebuilt from beforeState + the original forward actions, and refuse the revert

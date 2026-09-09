@@ -105,7 +105,7 @@ describe('StripeWebhookService.handleVerifiedEvent', () => {
     expect(grantPlanCredits).not.toHaveBeenCalled();
   });
 
-  it('grants Solo plan credits (500) on a completed Solo checkout session', async () => {
+  it('grants Solo plan credits (1100) on a completed Solo checkout session', async () => {
     const { service, insertedEvents, grantPlanCredits, creditGate, accountUpdates } = buildService();
 
     const result = await service.handleVerifiedEvent({
@@ -127,7 +127,7 @@ describe('StripeWebhookService.handleVerifiedEvent', () => {
     expect(accountUpdates[0]).toEqual(
       expect.objectContaining({ filter: { billingEntityId: 'user-1' } }),
     );
-    expect(grantPlanCredits).toHaveBeenCalledWith('user-1', 500, 'cs_1');
+    expect(grantPlanCredits).toHaveBeenCalledWith('user-1', 1100, 'cs_1');
     expect(insertedEvents).toEqual([expect.objectContaining({ stripeEventId: 'evt_solo' })]);
   });
 

@@ -12,21 +12,25 @@ export interface ModelConfig {
 // (OPENROUTER_MODEL_LOW/MEDIUM/HIGH). These feed both the HIGH-tier cost-cap
 // downgrade in model-router.ts and every audit-log/dashboard cost figure —
 // stale values here make real spend invisible, not just cosmetically wrong.
-// Verified against OpenRouter's published per-model pricing (2026-09-01).
+// Collapsed to gpt-5 across all three tiers (2026-09-05) to match .env — all
+// three configs are now identical, so model-router.ts's COST_CAP_USD
+// HIGH→MEDIUM downgrade is a true no-op (there's no cheaper tier left to fall
+// back to), not a bug. Pricing verified against OpenRouter's published
+// per-model rate for openai/gpt-5: $1.25/1M input, $10/1M output.
 export const MODEL_CONFIGS: Record<LLMTier, ModelConfig> = {
   low: {
     tier: 'low',
-    model: 'openai/gpt-5-nano',
-    maxTokens: 2048,
-    costPer1kPrompt: 0.00005,
-    costPer1kCompletion: 0.0004,
+    model: 'openai/gpt-5',
+    maxTokens: 8192,
+    costPer1kPrompt: 0.00125,
+    costPer1kCompletion: 0.01,
   },
   medium: {
     tier: 'medium',
-    model: 'openai/gpt-5-mini',
-    maxTokens: 4096,
-    costPer1kPrompt: 0.00025,
-    costPer1kCompletion: 0.002,
+    model: 'openai/gpt-5',
+    maxTokens: 8192,
+    costPer1kPrompt: 0.00125,
+    costPer1kCompletion: 0.01,
   },
   high: {
     tier: 'high',

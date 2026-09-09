@@ -103,6 +103,7 @@ describe('ConversationService — credit gate/debit around Tier 2 write route', 
       workflowTrace as never,
       creditGate as never,
       creditLedger as never,
+      {} as never,
     );
 
     jest.spyOn(service as never, 'saveMessage' as never).mockResolvedValue(undefined as never);

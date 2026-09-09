@@ -10,13 +10,26 @@ import { CreditGateService } from './credit-gate.service';
 import { CreditAccount, CreditAccountDocument } from './schemas/credit-account.schema';
 
 /**
- * CREDIT_SYSTEM.md CD-8's monthly plan allotments — the two revenue tiers
- * priced in cellix-pricing-v3.html. Firm's 3,000 is pooled across seats
- * (CD-7), granted once onto the org's single credit_accounts document, same
- * as Solo's 500 onto a user's.
+ * CREDIT_SYSTEM.md CD-8's monthly plan allotments.
+ *
+ * Solo raised 500 -> 1100 (Sept 9, 2026): target COGS ceiling is $5/user/month
+ * (out of an ~$8 total per-user budget, the rest going to infra/support/
+ * overhead) — at the ~₹0.35/credit blended COGS cellix-pricing-v3.html
+ * assumes (~$0.0042/credit at ~₹83/USD), 500 credits only spent ~$2.11 of
+ * that budget (42%), leaving real headroom. 1100 credits spends ~$4.64,
+ * inside the ceiling with a buffer for token-price drift. Firm's 3,000
+ * (pooled across seats, CD-7) is intentionally NOT changed here — its
+ * per-seat economics were scoped as a separate decision, not yet made.
+ *
+ * cellix-pricing-v3.html's marketing copy (hero number, 78%/89% utilization
+ * examples, the "512 of 500 credits" overdraft example) still says 500 and
+ * has NOT been rewritten to match — its narrative was built around specific
+ * usage-scenario math tied to that number, not a value to blind-swap. This
+ * constant is the one functional source of truth for what a Solo subscriber
+ * actually receives; the page copy is flagged as a known follow-up.
  */
 const PLAN_MONTHLY_CREDITS: Record<'solo' | 'firm', number> = {
-  solo: 500,
+  solo: 1100,
   firm: 3000,
 };
 

@@ -1,4 +1,4 @@
-import { BadRequestException, NotFoundException } from '@nestjs/common';
+import { BadRequestException } from '@nestjs/common';
 import { BillingController, PublicBillingController, StripeWebhookController } from '../src/credit/billing.controller';
 import { AuthUserSession } from '../src/auth/auth.guard';
 
@@ -7,26 +7,30 @@ function session(userId: string, email = 'user@example.com'): AuthUserSession {
 }
 
 describe('BillingController', () => {
-  it('GET /billing/account returns the resolved summary for the session user', async () => {
+  it('GET /billing/account provisions the account (if needed) then returns the resolved summary', async () => {
+    // Provision-on-read (Sept 9, 2026): a brand-new user's balance chip must
+    // render on first look, not 404 until their first spend — see
+    // getAccount's own docblock. ensureAccount is called unconditionally,
+    // before the read; its own upsert-with-setOnInsert is what makes this
+    // safe to call every time, not just on a genuinely-missing account.
     const getAccountSummary = jest.fn().mockResolvedValue({ availableBalance: 42 });
-    const controller = new BillingController({ getAccountSummary } as never, {} as never);
+    const ensureAccount = jest.fn().mockResolvedValue(undefined);
+    const controller = new BillingController(
+      { getAccountSummary } as never,
+      { ensureAccount } as never,
+      {} as never,
+    );
 
     const result = await controller.getAccount(session('user-1'));
 
+    expect(ensureAccount).toHaveBeenCalledWith('user-1');
     expect(getAccountSummary).toHaveBeenCalledWith('user-1');
     expect(result).toEqual({ availableBalance: 42 });
   });
 
-  it('GET /billing/account 404s when no account has been provisioned yet', async () => {
-    const getAccountSummary = jest.fn().mockResolvedValue(null);
-    const controller = new BillingController({ getAccountSummary } as never, {} as never);
-
-    await expect(controller.getAccount(session('user-missing'))).rejects.toThrow(NotFoundException);
-  });
-
   it('GET /billing/ledger resolves billingEntityId from the session, never a request param', async () => {
     const getLedgerPage = jest.fn().mockResolvedValue({ entries: [], nextCursor: null });
-    const controller = new BillingController({ getLedgerPage } as never, {} as never);
+    const controller = new BillingController({ getLedgerPage } as never, {} as never, {} as never);
 
     await controller.getLedger(session('user-1'), { limit: 10 });
 
@@ -35,7 +39,7 @@ describe('BillingController', () => {
 
   it('POST /billing/checkout/subscribe resolves billingEntityId + email from the session, never the request body', async () => {
     const createSubscriptionSession = jest.fn().mockResolvedValue({ url: 'https://checkout.stripe.com/x' });
-    const controller = new BillingController({} as never, { createSubscriptionSession } as never);
+    const controller = new BillingController({} as never, {} as never, { createSubscriptionSession } as never);
 
     const result = await controller.createSubscribeCheckout(session('user-1', 'ca@example.com'), {
       planTier: 'solo',
