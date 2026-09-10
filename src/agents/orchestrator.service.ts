@@ -234,6 +234,7 @@ export class OrchestratorService {
       routerAssumption,
       complexity,
       onWaveComplete,
+      precomputedPlan,
     } = opts;
     const resolvedCorrelationId = this.resolveCorrelationId(correlationId);
     const usageTotals = createUsageAccumulator();
@@ -252,6 +253,7 @@ export class OrchestratorService {
         emitter,
         usageTotals,
         onWaveComplete,
+        precomputedPlan,
       );
     } finally {
       this.applyUsageToTelemetry(telemetry, usageTotals);
@@ -272,19 +274,35 @@ export class OrchestratorService {
     usageTotals: ReturnType<typeof createUsageAccumulator>,
     /** Progressive per-wave emission — TASKS.md #174. */
     onWaveComplete: AgentRunOptions['onWaveComplete'],
+    /** Already-planned output handed over by the stepwise gate — TASKS.md #196. */
+    precomputedPlan?: PlannerOutput,
   ): Promise<OrchestratorRunResult> {
+    // A plan already computed by the stepwise gate is reused rather than
+    // re-derived. `tryStartStepwiseRun` plans, finds a single wave, declines,
+    // and hands control here — which used to re-plan from scratch, costing a
+    // second full Planner call (~1-2s and ~8k prompt tokens) on EVERY
+    // single-wave Tier 3 request, i.e. essentially every simple one. The
+    // original note called that "an accepted, bounded cost for keeping the two
+    // paths from sharing mutable plan state"; the plan is handed over as a deep
+    // copy instead, which removes the sharing without paying for the call.
+    // TASKS.md #196.
     emitter.send({ type: 'THINKING', message: 'Planning your request...' });
-    const plan: PlannerOutput = await this.planner.plan(
-      prompt,
-      context,
-      conversationHistory,
-      promptContext,
-      resolvedCorrelationId,
-      routerAssumption,
-      complexity,
-      usageTotals,
-      (summary) => emitter.send({ type: 'THINKING', message: summary }),
-    );
+    let plan: PlannerOutput;
+    if (precomputedPlan) {
+      plan = precomputedPlan;
+    } else {
+      plan = await this.planner.plan(
+        prompt,
+        context,
+        conversationHistory,
+        promptContext,
+        resolvedCorrelationId,
+        routerAssumption,
+        complexity,
+        usageTotals,
+        (summary) => emitter.send({ type: 'THINKING', message: summary }),
+      );
+    }
 
     // Block ONLY when there is nothing to build — TASKS.md #171.
     //

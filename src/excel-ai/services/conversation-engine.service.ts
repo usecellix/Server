@@ -611,6 +611,18 @@ Sheet has ${analysis.rowCount} rows, ${analysis.columnCount} columns. Next appen
     if (rowOnlyTypes.has(action.type)) return false;
     if (action.type === 'WRITE_TABLE') return false;
     if (action.type === 'MERGE_CELLS' || action.type === 'FORMAT_RANGE') return false;
+    // A whole-range CLEAR (CLEAR_CONTENT/CLEAR_ALL/CLEAR_FORMAT) that happens to
+    // start at row 0 is not an accidental header clobber — it's a deliberate
+    // "clear the sheet" request, already vetted by annotateClearIntentOverwrite
+    // (see clear-intent-overwrite.util.ts) before this ever runs. Without this
+    // exemption every such clear was silently dropped here, past the point
+    // where the caller (finalizeActions) could tell the difference between "no
+    // actions" and "actions the guard ate" — the Accept card just failed with
+    // no actions at all. TASKS.md #179.
+    const clearRangeTypes = new Set(['CLEAR_CONTENT', 'CLEAR_ALL', 'CLEAR_FORMAT']);
+    if (clearRangeTypes.has(action.type) && action.explicitOverwriteConfirmed === true) {
+      return false;
+    }
     return action.row === ConversationEngineService.HEADER_ROW;
   }
 

@@ -109,7 +109,8 @@ describe('PlannerAgent — two-pass planning', () => {
     // 1 coarse call + 3 phase-expansion calls (one per phase) — never one
     // giant single-pass call describing all subtasks at once.
     expect(complete).toHaveBeenCalledTimes(4);
-    expect(plan.subtasks).toHaveLength(3);
+    // 3 expanded + February cloned from January (repeatFor coverage, #229).
+    expect(plan.subtasks).toHaveLength(4);
   });
 
   // TASKS.md #193 — the user asked for small, summarized progress updates
@@ -191,7 +192,7 @@ describe('PlannerAgent — two-pass planning', () => {
 
     const ids = plan.subtasks.map((s) => s.id);
     expect(new Set(ids).size).toBe(ids.length); // all unique
-    expect(ids).toEqual(['p1_s1', 'p2_s1', 'p3_s1']);
+    expect(ids).toEqual(['p1_s1', 'p1_s1_r2', 'p2_s1', 'p3_s1']);
   });
 
   it('wires a phase\'s subtasks (with no local dependsOn) to depend on the phases it declared as dependencies', async () => {
@@ -210,7 +211,7 @@ describe('PlannerAgent — two-pass planning', () => {
     const plan = await agent.plan(REAL_INCIDENT_PROMPT, emptyContext(), [], undefined, 'corr_4', undefined, 3);
 
     const p3Subtask = plan.subtasks.find((s) => s.id === 'p3_s1')!;
-    expect(p3Subtask.dependsOn.sort()).toEqual(['p1_s1', 'p2_s1']);
+    expect(p3Subtask.dependsOn.sort()).toEqual(['p1_s1', 'p1_s1_r2', 'p2_s1']);
   });
 
   it('expands phases in dependency order, so a later phase sees an earlier phase\'s REAL subtask ids', async () => {
@@ -297,6 +298,73 @@ describe('PlannerAgent — two-pass planning', () => {
   });
 });
 
+describe('PlannerAgent — two-pass planning — coverage safety nets (TASKS.md #229, #230)', () => {
+  const MONTHS = [
+    'January', 'February', 'March', 'April', 'May', 'June',
+    'July', 'August', 'September', 'October', 'November', 'December',
+  ];
+
+  // Replays the live 2026-09-10 run: the coarse pass planned all 12 months,
+  // the expansion returned January only, Main's formulas referenced all 12,
+  // and January's dropdowns pointed at a Lists sheet no phase created. The
+  // workbook ended up with Main + January and 36 #REF!/#VALUE! cells.
+  it('delivers all 12 month sheets and a Lists sheet when the expansion returned January only', async () => {
+    const coarse = JSON.stringify({
+      phases: [
+        { id: 'p1', kind: 'Create the 12 month sheets', targetSheet: 'January', dependsOn: [], repeatFor: MONTHS },
+        { id: 'p2', kind: 'Build the Main sheet with dashboard', targetSheet: 'Main', dependsOn: ['p1'] },
+      ],
+      clarificationsNeeded: [],
+      confidence: 'high',
+      reasoning: 'Month sheets, then Main.',
+    });
+    const complete = jest
+      .fn()
+      .mockResolvedValueOnce(coarse)
+      .mockResolvedValueOnce(
+        phaseResponse([
+          {
+            id: 's1',
+            targetSheet: 'January',
+            description:
+              "Create sheet 'January' with headers in A1:J1, create table tblJanuary over A1:J2, add dropdowns " +
+              'for Source (Lists!$B$3:$B$20), Payment Status (Lists!$C$3:$C$20)',
+          },
+        ]),
+      )
+      .mockResolvedValueOnce(
+        phaseResponse([
+          {
+            id: 's1',
+            targetSheet: 'Main',
+            description: `Monthly totals: ${MONTHS.map((m, i) => `B${i + 6} =SUM(${m}!G:G)`).join(', ')}`,
+          },
+        ]),
+      );
+    const agent = buildAgent(complete);
+
+    const plan = await agent.plan(REAL_INCIDENT_PROMPT, emptyContext(), [], undefined, 'corr_12', undefined, 3);
+
+    const sheets = plan.subtasks.map((s) => s.targetSheet);
+    for (const month of MONTHS) expect(sheets).toContain(month);
+    expect(sheets).toContain('Lists');
+
+    // Main waits for every month, not just January — and its expansion call
+    // was told about all 12 month subtask ids.
+    const main = plan.subtasks.find((s) => s.targetSheet === 'Main')!;
+    expect(main.dependsOn).toHaveLength(12);
+    const mainCall = complete.mock.calls[2][0] as { userMessage: string };
+    expect(mainCall.userMessage).toContain('p1_s1_r12');
+
+    // Every month's dropdowns wait for the Lists sheet.
+    const listsId = plan.subtasks.find((s) => s.targetSheet === 'Lists')!.id;
+    for (const s of plan.subtasks.filter((t) => MONTHS.includes(t.targetSheet))) {
+      expect(s.dependsOn).toContain(listsId);
+    }
+    expect(plan.clarificationsNeeded).toEqual([]);
+  });
+});
+
 describe('PlannerAgent — two-pass planning — same-sheet phase merge', () => {
   // Reproduces the exact production incident: the coarse pass split ONE
   // Main-sheet build into "consolidate details into Main" (p2) and "build
@@ -350,7 +418,7 @@ describe('PlannerAgent — two-pass planning — same-sheet phase merge', () => 
     // call ever expands Main's build, so it can't duplicate itself.
     expect(complete).toHaveBeenCalledTimes(3);
     const ids = plan.subtasks.map((s) => s.id);
-    expect(ids).toEqual(['p1_s1', 'p2_s1']);
+    expect(ids).toEqual(['p1_s1', 'p1_s1_r2', 'p2_s1']);
   });
 
   it('does not merge repeatFor phases even if they share a representative targetSheet', async () => {
@@ -388,7 +456,7 @@ describe('PlannerAgent — two-pass planning — same-sheet phase merge', () => 
     // "January" as their representative targetSheet — 1 coarse + 2 expansions.
     expect(complete).toHaveBeenCalledTimes(3);
     const ids = plan.subtasks.map((s) => s.id);
-    expect(ids).toEqual(['p1_s1', 'p2_s1']);
+    expect(ids).toEqual(['p1_s1', 'p1_s1_r2', 'p2_s1', 'p2_s1_r2']);
   });
 
   it('unions dependsOn and remaps references to the surviving phase id when merging', async () => {

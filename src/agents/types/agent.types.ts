@@ -206,4 +206,12 @@ export interface AgentRunOptions {
    * card for finished work instead of waiting for the whole run. TASKS.md #174.
    */
   onWaveComplete?: (waveActions: Action[], waveIndex: number) => Promise<void>;
+  /**
+   * A plan the caller has ALREADY computed, handed over instead of being
+   * re-derived. Set by the stepwise gate when it plans, finds a single wave and
+   * declines — without this the one-shot path pays for a second full Planner
+   * call on every simple request. Must be a copy the caller no longer holds a
+   * reference to. TASKS.md #196.
+   */
+  precomputedPlan?: PlannerOutput;
 }

@@ -3,18 +3,31 @@ function findBalancedJsonStrings(text: string, open: '{' | '[', close: '}' | ']'
   let start = text.indexOf(open);
   while (start >= 0) {
     let depth = 0;
-    let closed = false;
+    let matchEnd = -1;
     for (let i = start; i < text.length; i += 1) {
       if (text[i] === open) depth += 1;
       if (text[i] === close) depth -= 1;
       if (depth === 0) {
-        results.push(text.slice(start, i + 1));
-        start = text.indexOf(open, i + 1);
-        closed = true;
+        matchEnd = i;
         break;
       }
     }
-    if (!closed) break;
+    if (matchEnd >= 0) {
+      results.push(text.slice(start, matchEnd + 1));
+      start = text.indexOf(open, matchEnd + 1);
+    } else {
+      // This opening brace never closes before end of text — a stray/doubled
+      // brace ahead of the real payload (some models emit a literal leading
+      // "{\n{...}\n}"). Previously this gave up on the ENTIRE scan, which left
+      // only the small unrelated "[]" from an empty `"issues": []` field as a
+      // parseable candidate — extractJson happily returned that instead of
+      // throwing, so the verifier silently "parsed" a malformed response into
+      // an empty array and marked every subtask inconclusive, discarding a
+      // correct, already-approved action (TASKS.md #180). Skip past this
+      // unmatched brace and keep scanning — the real, balanced object right
+      // after it still needs a chance to be found.
+      start = text.indexOf(open, start + 1);
+    }
   }
   return results.reverse();
 }

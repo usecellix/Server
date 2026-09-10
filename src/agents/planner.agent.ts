@@ -28,6 +28,7 @@ import {
 import { parseAgentJson } from './utils/parse-agent-json.util';
 import { buildCompoundFallbackSubtasks } from './utils/compound-action.util';
 import { ensureNumberFormatPlanSafety } from './utils/preserve-number-format.util';
+import { ensureReferencedSheetsPlanned, ensureRepeatForCoverage } from './utils/plan-coverage.util';
 import {
   PLANNER_LAST_RESORT_MAX_TOKENS,
   PLANNER_REASONING_MAX_TOKENS,
@@ -299,7 +300,10 @@ export class PlannerAgent {
         `Planner produced ${parsed.subtasks.length} subtasks, confidence: ${parsed.confidence}`,
       );
       const covered = this.pruneUnsatisfiableSubtasks(
-        ensureNumberFormatPlanSafety(prompt, this.ensureMultiClauseCoverage(prompt, parsed)),
+        this.planReferencedSheets(
+          ensureNumberFormatPlanSafety(prompt, this.ensureMultiClauseCoverage(prompt, parsed)),
+          context,
+        ),
       );
       this.structuredLogger.logAgentEvent({
         correlationId,
@@ -531,7 +535,20 @@ export class PlannerAgent {
         usageTotals,
       );
 
-      const namespaced = this.namespacePhaseSubtasks(phase.id, expansion.subtasks);
+      // TASKS.md #229 — a repeatFor phase must cover EVERY entry; the expansion
+      // prompt asking for it is not enough (live: 12 months planned, only
+      // January expanded). Done before stitching so dependent phases see all
+      // entries' real subtask ids.
+      const repeatCoverage = ensureRepeatForCoverage(phase, expansion.subtasks);
+      if (repeatCoverage.filled.length > 0) {
+        this.logger.warn(
+          `Two-pass planning: phase "${phase.id}" expanded only part of its repeatFor — cloned ` +
+            `"${repeatCoverage.template}" for ${repeatCoverage.filled.length} missing entr` +
+            `${repeatCoverage.filled.length === 1 ? 'y' : 'ies'}: ${repeatCoverage.filled.join(', ')}.`,
+        );
+      }
+
+      const namespaced = this.namespacePhaseSubtasks(phase.id, repeatCoverage.subtasks);
       // Any subtask this phase produced with NO local dependsOn is wired to
       // depend on the phases IT depends on, mirroring what a single-pass plan
       // writes by hand (e.g. Main's totals subtask depending on all 12 month-
@@ -557,7 +574,10 @@ export class PlannerAgent {
     };
 
     const covered = this.pruneUnsatisfiableSubtasks(
-      ensureNumberFormatPlanSafety(prompt, this.ensureMultiClauseCoverage(prompt, merged)),
+      this.planReferencedSheets(
+        ensureNumberFormatPlanSafety(prompt, this.ensureMultiClauseCoverage(prompt, merged)),
+        context,
+      ),
     );
 
     onProgress?.('Plan ready — starting the build…');
@@ -1211,6 +1231,23 @@ export class PlannerAgent {
   /** Exposed for unit tests — preserves suggestedActionType and required fields. */
   normalizePlannerOutputForTest(parsed: Partial<PlannerOutput>): PlannerOutput {
     return this.normalizePlannerOutput(parsed);
+  }
+
+  /**
+   * TASKS.md #230 — a subtask that references `Lists!$B$3:$B$20` (a dropdown
+   * source) or `January!G:G` (a formula) needs that sheet to exist. When no
+   * subtask creates it and the workbook lacks it, add a create subtask the
+   * referencing subtasks depend on. Live: January's dropdowns pointed at a
+   * Lists sheet nothing ever created.
+   */
+  private planReferencedSheets(output: PlannerOutput, context: WorkbookContext): PlannerOutput {
+    const { plan, added } = ensureReferencedSheetsPlanned(output, context);
+    if (added.length > 0) {
+      this.logger.warn(
+        `Planner plan referenced sheet(s) no subtask creates — added create subtask(s) for: ${added.join(', ')}.`,
+      );
+    }
+    return plan;
   }
 
   /** Exposed for unit tests. */
