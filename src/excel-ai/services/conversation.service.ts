@@ -2317,6 +2317,12 @@ export class ConversationService {
     telemetry: LlmCallTelemetry;
     userId?: string;
     startedAt: number;
+    /**
+     * Out-param: receives the plan when stepwise declines, so the one-shot
+     * path can reuse it instead of paying for a second Planner call.
+     * TASKS.md #196.
+     */
+    declinedPlan?: { value?: PlannerOutput };
   }): Promise<boolean> {
     // CREDIT_SYSTEM.md CD-4 — pre-flight gate before the Planner even runs,
     // mirroring the one-shot Tier 3 path's gate. Placed here rather than
@@ -2374,11 +2380,16 @@ export class ConversationService {
     const waves = computeExecutionWaves(plan.subtasks);
     if (!shouldRunStepwise(waves.length)) {
       // Single-wave plan: gating it would add a round trip and buy nothing.
-      // The one-shot path re-plans, which costs a second Planner call — an
-      // accepted, bounded cost for keeping the two paths from sharing mutable
-      // plan state across a fallback boundary.
+      // Hand the plan to the one-shot path rather than making it re-plan. The
+      // handover is a deep copy, so neither path can mutate the other's plan —
+      // the isolation the old "just re-plan" note was protecting, without the
+      // second Planner call it cost on every simple request. TASKS.md #196.
+      if (opts.declinedPlan) {
+        opts.declinedPlan.value = JSON.parse(JSON.stringify(plan)) as PlannerOutput;
+      }
       this.logger.log(
-        `Stepwise declined trace=${opts.traceId} waves=${waves.length} — falling back to one-shot`,
+        `Stepwise declined trace=${opts.traceId} waves=${waves.length} — ` +
+          `falling back to one-shot (reusing plan, no re-plan)`,
       );
       return false;
     }
@@ -2866,6 +2877,9 @@ export class ConversationService {
       // client can accept before anything downstream is generated (SD-3).
       // Falls through to the one-shot path below whenever the flag is off or
       // the plan turns out to be a single wave (nothing to gate).
+      // Receives the plan when stepwise declines, so the one-shot call below
+      // reuses it instead of re-planning. TASKS.md #196.
+      const declinedPlan: { value?: PlannerOutput } = {};
       if (isStepwiseExecutionEnabled()) {
         const handled = await this.tryStartStepwiseRun({
           request,
@@ -2882,6 +2896,7 @@ export class ConversationService {
           telemetry,
           userId,
           startedAt,
+          declinedPlan,
         });
         if (handled) {
           success = true;
@@ -2891,6 +2906,7 @@ export class ConversationService {
 
       const orchestratorResult = await this.orchestrator.runDetailed(
         {
+          precomputedPlan: declinedPlan.value,
           prompt: request.message,
           context: enrichedContext,
           conversationHistory,

@@ -82,4 +82,58 @@ describe('ConversationEngineService finalizeActions', () => {
 
     expect(result).toHaveLength(0);
   });
+
+  // TASKS.md #179 — "clear the sheet data" reached the Executor, produced a
+  // valid CLEAR_CONTENT action confirmed via annotateClearIntentOverwrite
+  // (explicitOverwriteConfirmed: true), and was still thrown away here: the
+  // header-row guard treats ANY action whose row is 0 as an accidental header
+  // clobber unless its type is explicitly exempted, and the CLEAR_* family
+  // never was. finalizeActions returned an empty array for a user-confirmed,
+  // whole-sheet clear, which conversation.service.ts's assertWriteRouteProducedActions
+  // then reported as "write-route turn terminated without actions" — the user
+  // saw "Something went wrong applying this change — try rephrasing".
+  it('keeps an explicitly-confirmed CLEAR_CONTENT that spans the header row', () => {
+    const result = service.finalizeActions(
+      [
+        {
+          type: 'CLEAR_CONTENT',
+          sheetName: 'Main',
+          range: 'A1:K18',
+          row: 0,
+          col: 0,
+          rowCount: 18,
+          colCount: 11,
+          explicitOverwriteConfirmed: true,
+        },
+      ],
+      analysis,
+      undefined,
+      'clear the sheet data',
+    );
+
+    expect(result).toHaveLength(1);
+    expect(result[0].type).toBe('CLEAR_CONTENT');
+  });
+
+  // Without confirmation the header guard still applies — this is what stops
+  // an ordinary, un-confirmed clear from silently eating a header row the
+  // user never asked to touch.
+  it('still drops an unconfirmed CLEAR_CONTENT touching the header row', () => {
+    const result = service.finalizeActions(
+      [
+        {
+          type: 'CLEAR_CONTENT',
+          sheetName: 'Main',
+          range: 'A1:K18',
+          row: 0,
+          col: 0,
+          rowCount: 18,
+          colCount: 11,
+        },
+      ],
+      analysis,
+    );
+
+    expect(result).toHaveLength(0);
+  });
 });
