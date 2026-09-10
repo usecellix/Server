@@ -61,16 +61,23 @@ export const envValidationSchema = Joi.object({
   MICROSOFT_CLIENT_ID: Joi.string().allow('').optional(),
   MICROSOFT_CLIENT_SECRET: Joi.string().allow('').optional(),
   MICROSOFT_TENANT_ID: Joi.string().default('common'),
-  // Stripe — CREDIT_SYSTEM.md §7. Optional so the API can boot without them
-  // (checkout creation/webhook processing fail cleanly instead, same pattern
-  // as OPENROUTER_API_KEY). STRIPE_WEBHOOK_SECRET verifies webhook signatures;
-  // without it, incoming webhooks are rejected rather than trusted unverified.
-  STRIPE_SECRET_KEY: Joi.string().allow('').optional(),
-  STRIPE_WEBHOOK_SECRET: Joi.string().allow('').optional(),
-  STRIPE_PRICE_SOLO_MONTHLY: Joi.string().allow('').optional(),
-  STRIPE_PRICE_FIRM_MONTHLY: Joi.string().allow('').optional(),
-  // Where Stripe Checkout redirects after payment — the marketing site, not
-  // this API. Defaults to the local landing-page dev port.
+  // Razorpay — CREDIT_SYSTEM.md §7 (migrated from Stripe, credit-system-v2
+  // session — the original pricing doc always specified Razorpay). Optional
+  // so the API can boot without them (checkout creation/webhook processing
+  // fail cleanly instead, same pattern as OPENROUTER_API_KEY).
+  // RAZORPAY_WEBHOOK_SECRET verifies webhook signatures; without it,
+  // incoming webhooks are rejected rather than trusted unverified.
+  // RAZORPAY_PLAN_ID_* reference Plans created ahead of time via Razorpay's
+  // dashboard/API (a one-time setup step outside this codebase, same
+  // constraint Stripe Price IDs had) — Solo/Firm/Beta each need their own.
+  RAZORPAY_KEY_ID: Joi.string().allow('').optional(),
+  RAZORPAY_KEY_SECRET: Joi.string().allow('').optional(),
+  RAZORPAY_WEBHOOK_SECRET: Joi.string().allow('').optional(),
+  RAZORPAY_PLAN_ID_SOLO: Joi.string().allow('').optional(),
+  RAZORPAY_PLAN_ID_FIRM: Joi.string().allow('').optional(),
+  RAZORPAY_PLAN_ID_BETA: Joi.string().allow('').optional(),
+  // Where Razorpay's hosted checkout redirects after payment — the marketing
+  // site, not this API. Defaults to the local landing-page dev port.
   CHECKOUT_SUCCESS_URL: Joi.string().uri().default('http://localhost:5173/checkout/success'),
   CHECKOUT_CANCEL_URL: Joi.string().uri().default('http://localhost:5173/checkout'),
 });

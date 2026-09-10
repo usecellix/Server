@@ -9,7 +9,7 @@ const LEDGER_MAX_LIMIT = 100;
 
 export interface AccountSummary {
   billingEntityType: 'user' | 'org';
-  planTier: 'free' | 'solo' | 'firm' | 'enterprise';
+  planTier: 'free' | 'beta' | 'solo' | 'firm' | 'enterprise';
   planCredits: number;
   purchasedCredits: number;
   oneTimeCredits: number;

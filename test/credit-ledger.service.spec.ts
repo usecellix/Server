@@ -158,7 +158,7 @@ describe('CreditLedgerService grants', () => {
 
     expect(grants).toEqual([{ op: 'planCredits', amount: 500 }]);
     expect(insertedRows).toEqual([
-      expect.objectContaining({ entryType: 'grant', amount: 500, bucket: 'planCredits', stripeEventId: 'evt_123' }),
+      expect.objectContaining({ entryType: 'grant', amount: 500, bucket: 'planCredits', paymentEventId: 'evt_123' }),
     ]);
   });
 

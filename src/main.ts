@@ -74,8 +74,8 @@ async function bootstrap(): Promise<void> {
 
   const app = await NestFactory.create<NestFastifyApplication>(AppModule, new FastifyAdapter(), {
     bufferLogs: true,
-    // Stripe webhook signature verification needs the exact request bytes on
-    // req.rawBody — Nest registers the JSON parser once with this enabled.
+    // Razorpay webhook signature verification needs the exact request bytes
+    // on req.rawBody — Nest registers the JSON parser once with this enabled.
     rawBody: true,
   });
   app.useLogger(app.get(Logger));

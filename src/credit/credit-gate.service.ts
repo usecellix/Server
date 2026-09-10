@@ -5,8 +5,14 @@ import { CreditAccount, CreditAccountDocument } from './schemas/credit-account.s
 import { CREDIT_COST_CATALOG, resolveCreditCost } from './credit-cost-catalog';
 import { CreditActionType, CreditGateResult } from './types/credit.types';
 
-/** Free tier's one-time grant, issued the first time a user is seen. CD-8. */
-export const FREE_TIER_ONE_TIME_CREDITS = 30;
+/**
+ * Free tier's one-time grant, issued the first time a user is seen. CD-8.
+ * Raised 30 -> 120 (2026-09-10, credit-system-v2 repricing) — re-derived
+ * against real GLM model costs, which are cheap enough that a larger Free
+ * grant costs Cellix almost nothing while giving a much more realistic taste
+ * of the product before asking for a card.
+ */
+export const FREE_TIER_ONE_TIME_CREDITS = 120;
 
 /**
  * Pre-flight balance check, run before any LLM call is dispatched.
@@ -74,9 +80,9 @@ export class CreditGateService {
    * other's update becomes a no-op read of the winner's document.
    *
    * Public (not just used by checkBalance/hasAnyBalance) so
-   * StripeCheckoutService/StripeWebhookService can guarantee a
-   * credit_accounts document exists before attaching a Stripe customer id or
-   * granting plan credits — a user who goes straight to checkout without
+   * RazorpayCheckoutService/RazorpayWebhookService can guarantee a
+   * credit_accounts document exists before attaching a Razorpay customer id
+   * or granting plan credits — a user who goes straight to checkout without
    * ever making a billable request first would otherwise have no account to
    * grant onto.
    */

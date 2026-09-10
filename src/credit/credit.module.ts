@@ -4,17 +4,17 @@ import { AppConfigModule } from '../config/app-config.module';
 import { CreditAccount, CreditAccountSchema } from './schemas/credit-account.schema';
 import { CreditLedgerEntry, CreditLedgerEntrySchema } from './schemas/credit-ledger.schema';
 import {
-  ProcessedStripeEvent,
-  ProcessedStripeEventSchema,
+  ProcessedRazorpayEvent,
+  ProcessedRazorpayEventSchema,
   Subscription,
   SubscriptionSchema,
 } from './schemas/subscription.schema';
 import { CreditGateService } from './credit-gate.service';
 import { CreditLedgerService } from './credit-ledger.service';
 import { CreditAccountQueryService } from './credit-account-query.service';
-import { StripeCheckoutService } from './stripe-checkout.service';
-import { StripeWebhookService } from './stripe-webhook.service';
-import { BillingController, PublicBillingController, StripeWebhookController } from './billing.controller';
+import { RazorpayCheckoutService } from './razorpay-checkout.service';
+import { RazorpayWebhookService } from './razorpay-webhook.service';
+import { BillingController, PublicBillingController, RazorpayWebhookController } from './billing.controller';
 
 @Module({
   imports: [
@@ -23,17 +23,17 @@ import { BillingController, PublicBillingController, StripeWebhookController } f
       { name: CreditAccount.name, schema: CreditAccountSchema },
       { name: CreditLedgerEntry.name, schema: CreditLedgerEntrySchema },
       { name: Subscription.name, schema: SubscriptionSchema },
-      { name: ProcessedStripeEvent.name, schema: ProcessedStripeEventSchema },
+      { name: ProcessedRazorpayEvent.name, schema: ProcessedRazorpayEventSchema },
     ]),
   ],
   providers: [
     CreditGateService,
     CreditLedgerService,
     CreditAccountQueryService,
-    StripeCheckoutService,
-    StripeWebhookService,
+    RazorpayCheckoutService,
+    RazorpayWebhookService,
   ],
-  controllers: [BillingController, PublicBillingController, StripeWebhookController],
+  controllers: [BillingController, PublicBillingController, RazorpayWebhookController],
   exports: [CreditGateService, CreditLedgerService, CreditAccountQueryService],
 })
 export class CreditModule {}

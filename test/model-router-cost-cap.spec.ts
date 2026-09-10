@@ -12,14 +12,15 @@ import { ConversationTurn, MODEL_CONFIGS, WorkbookContext } from '../src/types/c
  * test suite.
  *
  * 2026-09-05: LOW/MEDIUM/HIGH were collapsed to a single model (openai/gpt-5)
- * across the board, and MODEL_CONFIGS updated to match (TASKS.md #183). The
- * HIGH->MEDIUM downgrade path in model-router.ts still fires exactly as
- * before, but MEDIUM's config is now byte-identical to HIGH's — there is no
- * cheaper tier left to fall back to. This is an honest, intended consequence
- * of collapsing the tiers, not a regression: the tests below were rewritten
- * to assert what actually happens now (tier/fallbackUsed still flip, but the
- * dollar figure and resolved model do not change) rather than asserting the
- * pre-collapse economics that no longer hold.
+ * across the board (TASKS.md #183). 2026-09-10: re-priced again for the GLM
+ * model swap — MEDIUM and HIGH both now genuinely resolve to `z-ai/glm-5.3`
+ * (MEDIUM directly, HIGH via the `glm-latest` alias), so they are still
+ * byte-identical in `MODEL_CONFIGS`, just for an honest reason this time (the
+ * right model for both tiers) rather than because pricing was never updated
+ * after a swap. The downgrade-is-a-no-op assertions below still hold; only
+ * the model name and the prompt-size needed to cross COST_CAP_USD changed,
+ * since GLM pricing is ~18.7x cheaper per token than the gpt-5 figures this
+ * test was originally tuned against.
  */
 
 function sheet(sheetName: string, rowCount: number, colCount: number): WorkbookContext['sheets'][number] {
@@ -57,9 +58,9 @@ const NO_HISTORY: ConversationTurn[] = [];
 
 function buildRouter(): ModelRouter {
   const config = {
-    openRouterModelLow: 'openai/gpt-5',
-    openRouterModelMedium: 'openai/gpt-5',
-    openRouterModelHigh: 'openai/gpt-5',
+    openRouterModelLow: 'z-ai/glm-5.3-flash',
+    openRouterModelMedium: 'z-ai/glm-5.3',
+    openRouterModelHigh: 'z-ai/glm-latest',
   } as unknown as AppConfigService;
   return new ModelRouter(config);
 }
@@ -80,13 +81,13 @@ describe('ModelRouter.route() — HIGH cost-cap downgrade', () => {
   it('still flips tier/fallbackUsed on cost-cap overage, but MEDIUM no longer resolves to a cheaper model or a lower dollar figure', () => {
     const router = buildRouter();
 
-    // HIGH and MEDIUM are now byte-identical configs (both openai/gpt-5) —
-    // collapsing the tiers removed the cheaper fallback the downgrade used to
-    // land on. This same promptTokenEstimate crossed COST_CAP_USD under the
-    // pre-collapse HIGH pricing (0.15692); it still does, because HIGH's
-    // pricing hasn't changed, and now MEDIUM's recalculation lands on the
-    // exact same number instead of a materially cheaper one.
-    const promptTokenEstimate = 60000;
+    // HIGH and MEDIUM are now byte-identical configs (both z-ai/glm-5.3) —
+    // MEDIUM resolves to it directly, HIGH via the glm-latest alias — so
+    // there is no cheaper fallback the downgrade can land on. GLM pricing is
+    // ~18.7x cheaper per token than the gpt-5 pricing this test was
+    // originally tuned against, so a much larger prompt is needed to cross
+    // COST_CAP_USD under the new pricing.
+    const promptTokenEstimate = 800000;
     const expectedCost =
       (promptTokenEstimate / 1000) * MODEL_CONFIGS.high.costPer1kPrompt +
       (MODEL_CONFIGS.high.maxTokens / 1000) * MODEL_CONFIGS.high.costPer1kCompletion;
@@ -100,7 +101,7 @@ describe('ModelRouter.route() — HIGH cost-cap downgrade', () => {
     const routing = router.route(HIGH_COMPLEXITY_PROMPT, highComplexityContext(), NO_HISTORY, promptTokenEstimate);
 
     // The complexity SCORE still says high, and the downgrade still fires —
-    // model-router.ts's cap-check logic is untouched by the tier collapse.
+    // model-router.ts's cap-check logic is untouched by the model repricing.
     expect(routing.complexityScore.tier).toBe('high');
     expect(routing.tier).toBe('medium');
     expect(routing.fallbackUsed).toBe(true);
@@ -108,9 +109,9 @@ describe('ModelRouter.route() — HIGH cost-cap downgrade', () => {
 
     // ...but the "downgrade" no longer buys anything: same model, same price,
     // and the recalculated estimate still exceeds the cap it was meant to
-    // enforce. This is the honest state of a collapsed-tier config, not a bug
-    // this test should paper over.
-    expect(routing.model).toBe('openai/gpt-5');
+    // enforce. This is the honest state of MEDIUM/HIGH sharing a model, not a
+    // bug this test should paper over.
+    expect(routing.model).toBe('z-ai/glm-5.3');
     expect(routing.estimatedCostUsd).toBeCloseTo(expectedCost, 6);
     expect(routing.estimatedCostUsd).toBeGreaterThan(COST_CAP_USD);
   });
@@ -124,7 +125,7 @@ describe('ModelRouter.route() — HIGH cost-cap downgrade', () => {
 
     expect(routing.tier).toBe('high');
     expect(routing.fallbackUsed).toBe(false);
-    expect(routing.model).toBe('openai/gpt-5');
+    expect(routing.model).toBe('z-ai/glm-latest');
     expect(routing.estimatedCostUsd).toBeLessThan(COST_CAP_USD);
   });
 });

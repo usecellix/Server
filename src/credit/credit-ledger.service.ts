@@ -16,9 +16,9 @@ interface DebitContext {
 
 /**
  * Owns the two operations that change a balance: the completion-time debit
- * (CREDIT_SYSTEM.md CD-3) and grants/purchases (the Stripe webhook call-ins
- * this PR stubs per §7 — grantPlanCredits / addPurchasedCredits). Every
- * balance change is paired with an append-only credit_ledger row (CD-9).
+ * (CREDIT_SYSTEM.md CD-3) and grants/purchases (the Razorpay webhook
+ * call-ins — grantPlanCredits / addPurchasedCredits). Every balance change is
+ * paired with an append-only credit_ledger row (CD-9).
  */
 @Injectable()
 export class CreditLedgerService {
@@ -125,8 +125,8 @@ export class CreditLedgerService {
     };
   }
 
-  /** Monthly plan allotment grant — Stripe `invoice.paid` / renewal call-in (§7). */
-  async grantPlanCredits(billingEntityId: string, amount: number, stripeEventId?: string): Promise<void> {
+  /** Monthly plan allotment grant — Razorpay `subscription.activated`/`subscription.charged` call-in. */
+  async grantPlanCredits(billingEntityId: string, amount: number, paymentEventId?: string): Promise<void> {
     await this.creditAccountModel.updateOne(
       { billingEntityId },
       { $inc: { planCredits: amount } },
@@ -136,13 +136,13 @@ export class CreditLedgerService {
       entryType: 'grant',
       amount,
       bucket: 'planCredits',
-      stripeEventId,
+      paymentEventId,
       createdAt: new Date(),
     });
   }
 
-  /** Top-up pack purchase — Stripe `checkout.session.completed` call-in (§7). */
-  async addPurchasedCredits(billingEntityId: string, amount: number, stripeEventId?: string): Promise<void> {
+  /** Top-up pack purchase — Razorpay `payment_link.paid` call-in. */
+  async addPurchasedCredits(billingEntityId: string, amount: number, paymentEventId?: string): Promise<void> {
     await this.creditAccountModel.updateOne(
       { billingEntityId },
       { $inc: { purchasedCredits: amount } },
@@ -152,7 +152,7 @@ export class CreditLedgerService {
       entryType: 'purchase',
       amount,
       bucket: 'purchasedCredits',
-      stripeEventId,
+      paymentEventId,
       createdAt: new Date(),
     });
   }

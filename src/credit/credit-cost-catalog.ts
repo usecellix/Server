@@ -31,6 +31,16 @@ export const CREDIT_COST_CATALOG: Record<CreditActionType, CreditCatalogEntry> =
   MIS_DASHBOARD_BUILD: { kind: 'flat', credits: 28, status: 'active' },
   EINVOICE_VALIDATION: { kind: 'per-unit', creditsPerUnit: 1, unitSize: 1, status: 'active' },
   BANK_RECONCILIATION_ASSIST: { kind: 'flat', credits: 15, status: 'unwired' },
+  // Tier 3 (Planner -> Executor -> Verifier multi-sheet builds) — added
+  // 2026-09-10, credit-system-v2 session. Priced per DELIVERED subtask
+  // (quantity = completedSubtasks.length, known only once the run finishes),
+  // not per action or per request — a real 20-subtask build's actual GLM
+  // token cost is orders of magnitude beyond any other single catalog entry
+  // (see TASKS.md's credit-system-v2 derivation), so it needs its own
+  // per-unit price rather than reusing a flat category. 100 credits/subtask
+  // makes a large 20-subtask build ~2,000 credits — roughly 2/month on
+  // Solo's repriced 3,000/month allowance.
+  TIER3_AGENTIC_BUILD: { kind: 'per-unit', creditsPerUnit: 100, unitSize: 1, status: 'active' },
 };
 
 /** Every billing category the system knows, derived from the exhaustive catalog. */

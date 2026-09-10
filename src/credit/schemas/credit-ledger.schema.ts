@@ -39,9 +39,9 @@ export class CreditLedgerEntry {
   @Prop({ type: String })
   changeSetId?: string;
 
-  /** Idempotency key for grant/purchase entries originating from a Stripe webhook. */
+  /** Idempotency key for grant/purchase entries originating from a Razorpay webhook. */
   @Prop({ type: String, index: true, sparse: true, unique: true })
-  stripeEventId?: string;
+  paymentEventId?: string;
 
   @Prop({ type: Date, required: true, default: () => new Date(), index: true })
   createdAt!: Date;

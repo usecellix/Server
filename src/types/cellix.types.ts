@@ -12,32 +12,44 @@ export interface ModelConfig {
 // (OPENROUTER_MODEL_LOW/MEDIUM/HIGH). These feed both the HIGH-tier cost-cap
 // downgrade in model-router.ts and every audit-log/dashboard cost figure —
 // stale values here make real spend invisible, not just cosmetically wrong.
-// Collapsed to gpt-5 across all three tiers (2026-09-05) to match .env — all
-// three configs are now identical, so model-router.ts's COST_CAP_USD
-// HIGH→MEDIUM downgrade is a true no-op (there's no cheaper tier left to fall
-// back to), not a bug. Pricing verified against OpenRouter's published
-// per-model rate for openai/gpt-5: $1.25/1M input, $10/1M output.
+//
+// Re-priced 2026-09-10 for the GLM model swap (.env's 2026-09-07 change) —
+// this file was never updated when that swap happened, so every cost
+// estimate and the COST_CAP_USD downgrade gate had been silently computing
+// against gpt-5 pricing (~$1.25/$10 per 1M) while the app actually called
+// GLM models (~18.7x cheaper blended). Pricing below confirmed directly
+// against OpenRouter's live /api/v1/models listing on 2026-09-10:
+//   - low:    z-ai/glm-5.3-flash   — $0.15 / $0.50 per 1M tokens
+//   - medium: z-ai/glm-5.3         — $1.40 / $4.40 per 1M tokens (glm-5.2,
+//             .env's previous MEDIUM value, does not exist on OpenRouter —
+//             fixed alongside this repricing, see .env's own note)
+//   - high:   z-ai/glm-latest      — alias resolving to z-ai/glm-5.3,
+//             same real pricing as medium
+// The HIGH→MEDIUM COST_CAP_USD downgrade in model-router.ts is now a genuine
+// no-op again (medium and high price identically, both being glm-5.3) —
+// unlike the pre-fix gpt-5 collapse, this is because glm-5.3 is honestly the
+// right model for both tiers today, not because pricing was never updated.
 export const MODEL_CONFIGS: Record<LLMTier, ModelConfig> = {
   low: {
     tier: 'low',
-    model: 'openai/gpt-5',
+    model: 'z-ai/glm-5.3-flash',
     maxTokens: 8192,
-    costPer1kPrompt: 0.00125,
-    costPer1kCompletion: 0.01,
+    costPer1kPrompt: 0.00015,
+    costPer1kCompletion: 0.0005,
   },
   medium: {
     tier: 'medium',
-    model: 'openai/gpt-5',
+    model: 'z-ai/glm-5.3',
     maxTokens: 8192,
-    costPer1kPrompt: 0.00125,
-    costPer1kCompletion: 0.01,
+    costPer1kPrompt: 0.0014,
+    costPer1kCompletion: 0.0044,
   },
   high: {
     tier: 'high',
-    model: 'openai/gpt-5',
+    model: 'z-ai/glm-5.3',
     maxTokens: 8192,
-    costPer1kPrompt: 0.00125,
-    costPer1kCompletion: 0.01,
+    costPer1kPrompt: 0.0014,
+    costPer1kCompletion: 0.0044,
   },
 };
 

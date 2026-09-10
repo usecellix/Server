@@ -11,11 +11,12 @@ export type CreditActionType =
   | 'AUDIT_TRAIL_PDF_EXPORT'
   | 'MIS_DASHBOARD_BUILD'
   | 'EINVOICE_VALIDATION'
-  | 'BANK_RECONCILIATION_ASSIST';
+  | 'BANK_RECONCILIATION_ASSIST'
+  | 'TIER3_AGENTIC_BUILD';
 
 export type CreditBucket = 'planCredits' | 'purchasedCredits' | 'oneTimeCredits';
 
-export type PlanTier = 'free' | 'solo' | 'firm' | 'enterprise';
+export type PlanTier = 'free' | 'beta' | 'solo' | 'firm' | 'enterprise';
 
 export type BillingEntityType = 'user' | 'org';
 

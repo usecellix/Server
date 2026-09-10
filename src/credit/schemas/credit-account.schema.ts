@@ -17,8 +17,8 @@ export class CreditAccount {
   @Prop({ type: String, required: true, unique: true, index: true })
   billingEntityId!: string;
 
-  @Prop({ type: String, required: true, enum: ['free', 'solo', 'firm', 'enterprise'], index: true })
-  planTier!: 'free' | 'solo' | 'firm' | 'enterprise';
+  @Prop({ type: String, required: true, enum: ['free', 'beta', 'solo', 'firm', 'enterprise'], index: true })
+  planTier!: 'free' | 'beta' | 'solo' | 'firm' | 'enterprise';
 
   /** Resets to the plan's monthly allotment each cycle. Does not roll over. */
   @Prop({ type: Number, required: true, default: 0 })
@@ -28,7 +28,7 @@ export class CreditAccount {
   @Prop({ type: Number, required: true, default: 0 })
   purchasedCredits!: number;
 
-  /** Free tier's 30-credit grant. Issued once at signup, never reset. */
+  /** Free tier's one-time grant (see FREE_TIER_ONE_TIME_CREDITS). Issued once at signup, never reset. */
   @Prop({ type: Number, required: true, default: 0 })
   oneTimeCredits!: number;
 

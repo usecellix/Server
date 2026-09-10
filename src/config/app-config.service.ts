@@ -200,23 +200,33 @@ export class AppConfigService {
     return this.configService.get<string>('MICROSOFT_TENANT_ID', 'common');
   }
 
-  get stripeSecretKey(): string | undefined {
-    const value = this.configService.get<string>('STRIPE_SECRET_KEY', '');
+  get razorpayKeyId(): string | undefined {
+    const value = this.configService.get<string>('RAZORPAY_KEY_ID', '');
     return value?.trim() ? value.trim() : undefined;
   }
 
-  get stripeWebhookSecret(): string | undefined {
-    const value = this.configService.get<string>('STRIPE_WEBHOOK_SECRET', '');
+  get razorpayKeySecret(): string | undefined {
+    const value = this.configService.get<string>('RAZORPAY_KEY_SECRET', '');
     return value?.trim() ? value.trim() : undefined;
   }
 
-  get stripePriceSoloMonthly(): string | undefined {
-    const value = this.configService.get<string>('STRIPE_PRICE_SOLO_MONTHLY', '');
+  get razorpayWebhookSecret(): string | undefined {
+    const value = this.configService.get<string>('RAZORPAY_WEBHOOK_SECRET', '');
     return value?.trim() ? value.trim() : undefined;
   }
 
-  get stripePriceFirmMonthly(): string | undefined {
-    const value = this.configService.get<string>('STRIPE_PRICE_FIRM_MONTHLY', '');
+  get razorpayPlanIdSolo(): string | undefined {
+    const value = this.configService.get<string>('RAZORPAY_PLAN_ID_SOLO', '');
+    return value?.trim() ? value.trim() : undefined;
+  }
+
+  get razorpayPlanIdFirm(): string | undefined {
+    const value = this.configService.get<string>('RAZORPAY_PLAN_ID_FIRM', '');
+    return value?.trim() ? value.trim() : undefined;
+  }
+
+  get razorpayPlanIdBeta(): string | undefined {
+    const value = this.configService.get<string>('RAZORPAY_PLAN_ID_BETA', '');
     return value?.trim() ? value.trim() : undefined;
   }
 

@@ -1,5 +1,5 @@
 import { BadRequestException } from '@nestjs/common';
-import { BillingController, PublicBillingController, StripeWebhookController } from '../src/credit/billing.controller';
+import { BillingController, PublicBillingController, RazorpayWebhookController } from '../src/credit/billing.controller';
 import { AuthUserSession } from '../src/auth/auth.guard';
 
 function session(userId: string, email = 'user@example.com'): AuthUserSession {
@@ -38,7 +38,7 @@ describe('BillingController', () => {
   });
 
   it('POST /billing/checkout/subscribe resolves billingEntityId + email from the session, never the request body', async () => {
-    const createSubscriptionSession = jest.fn().mockResolvedValue({ url: 'https://checkout.stripe.com/x' });
+    const createSubscriptionSession = jest.fn().mockResolvedValue({ url: 'https://rzp.io/i/x' });
     const controller = new BillingController({} as never, {} as never, { createSubscriptionSession } as never);
 
     const result = await controller.createSubscribeCheckout(session('user-1', 'ca@example.com'), {
@@ -46,13 +46,25 @@ describe('BillingController', () => {
     });
 
     expect(createSubscriptionSession).toHaveBeenCalledWith('user-1', 'ca@example.com', 'solo');
-    expect(result).toEqual({ url: 'https://checkout.stripe.com/x' });
+    expect(result).toEqual({ url: 'https://rzp.io/i/x' });
+  });
+
+  it('POST /billing/checkout/topup resolves billingEntityId + email from the session, never the request body', async () => {
+    const createTopupSession = jest.fn().mockResolvedValue({ url: 'https://rzp.io/i/topup' });
+    const controller = new BillingController({} as never, {} as never, { createTopupSession } as never);
+
+    const result = await controller.createTopupCheckout(session('user-1', 'ca@example.com'), {
+      packId: 'medium',
+    });
+
+    expect(createTopupSession).toHaveBeenCalledWith('user-1', 'ca@example.com', 'medium');
+    expect(result).toEqual({ url: 'https://rzp.io/i/topup' });
   });
 });
 
 describe('PublicBillingController', () => {
   it('POST /billing/public/checkout/subscribe passes the submitted email through, unauthenticated', async () => {
-    const createGuestSubscriptionSession = jest.fn().mockResolvedValue({ url: 'https://checkout.stripe.com/guest' });
+    const createGuestSubscriptionSession = jest.fn().mockResolvedValue({ url: 'https://rzp.io/i/guest' });
     const controller = new PublicBillingController({ createGuestSubscriptionSession } as never);
 
     const result = await controller.createGuestSubscribeCheckout({
@@ -61,35 +73,35 @@ describe('PublicBillingController', () => {
     });
 
     expect(createGuestSubscriptionSession).toHaveBeenCalledWith('ca@example.com', 'firm');
-    expect(result).toEqual({ url: 'https://checkout.stripe.com/guest' });
+    expect(result).toEqual({ url: 'https://rzp.io/i/guest' });
   });
 });
 
-describe('StripeWebhookController', () => {
+describe('RazorpayWebhookController', () => {
   function requestWithRawBody(rawBody: Buffer | undefined) {
     return { rawBody } as never;
   }
 
-  it('verifies the raw body against the signature header and hands the parsed event to handleVerifiedEvent', async () => {
-    const fakeEvent = { id: 'evt_1', type: 'checkout.session.completed' };
-    const verifyAndParseEvent = jest.fn().mockReturnValue(fakeEvent);
+  it('verifies the raw body against the signature header and hands the parsed payload to handleVerifiedEvent', async () => {
+    const fakePayload = { event: 'subscription.activated', payload: {} };
+    const verifyAndParseEvent = jest.fn().mockReturnValue(fakePayload);
     const handleVerifiedEvent = jest.fn().mockResolvedValue({ alreadyProcessed: false });
-    const controller = new StripeWebhookController({ verifyAndParseEvent, handleVerifiedEvent } as never);
+    const controller = new RazorpayWebhookController({ verifyAndParseEvent, handleVerifiedEvent } as never);
 
-    const rawBody = Buffer.from('{"id":"evt_1"}');
-    const result = await controller.handleStripeWebhook(requestWithRawBody(rawBody), 'sig_abc');
+    const rawBody = Buffer.from('{"event":"subscription.activated"}');
+    const result = await controller.handleRazorpayWebhook(requestWithRawBody(rawBody), 'sig_abc');
 
     expect(verifyAndParseEvent).toHaveBeenCalledWith(rawBody, 'sig_abc');
-    expect(handleVerifiedEvent).toHaveBeenCalledWith(fakeEvent);
+    expect(handleVerifiedEvent).toHaveBeenCalledWith(fakePayload);
     expect(result).toEqual({ alreadyProcessed: false });
   });
 
   it('rejects when the raw body was not captured (content-type-parser hook missing)', async () => {
     const verifyAndParseEvent = jest.fn();
-    const controller = new StripeWebhookController({ verifyAndParseEvent } as never);
+    const controller = new RazorpayWebhookController({ verifyAndParseEvent } as never);
 
     await expect(
-      controller.handleStripeWebhook(requestWithRawBody(undefined), 'sig_abc'),
+      controller.handleRazorpayWebhook(requestWithRawBody(undefined), 'sig_abc'),
     ).rejects.toThrow(BadRequestException);
     expect(verifyAndParseEvent).not.toHaveBeenCalled();
   });
