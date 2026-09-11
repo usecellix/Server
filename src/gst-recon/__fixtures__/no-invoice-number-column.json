@@ -1,0 +1,35 @@
+{
+  "description": "Purchase register export with no Invoice Number column at all (Ocean Polymers production bug) — exercises Pass 1b fallback matching plus every mismatch-reason bucket in one fixture.",
+  "booksSheet": "Purchase register",
+  "portalSheet": "B2B",
+  "booksHeaders": ["Date", "Particulars", "GSTIN/UIN", "Purchase@0%", "Purchase@18%", "CGST", "SGST"],
+  "booksGrid": [
+    ["Date", "Particulars", "GSTIN/UIN", "Purchase@0%", "Purchase@18%", "CGST", "SGST"],
+    ["01/04/2026", "Ocean Clone Co", "32AAACF3314R1ZO", "", 33495.78, 3014.62, 3014.62],
+    ["02/04/2026", "Blank GSTIN Co", "", "", 5000, 450, 450],
+    ["03/04/2026", "Blank Value Co", "32BBBBB0000B1Z5", "", "", 0, 0],
+    ["04/04/2026", "Amount Mismatch Co", "32CCCCC0000C1Z5", "", 10000, 900, 900],
+    ["05/04/2026", "Date Mismatch Co", "32DDDDD0000D1Z5", "", 20000, 1800, 1800],
+    ["06/04/2026", "Genuinely Missing Co", "32EEEEE0000E1Z5", "", 7000, 630, 630],
+    ["07/04/2026", "No Portal Co", "32FFFFF0000F1Z5", "", 8000, 720, 720]
+  ],
+  "portalHeaders": ["GSTIN of supplier", "Invoice number", "Invoice Date", "Taxable Value", "CGST", "SGST", "IGST"],
+  "portalGrid": [
+    ["GSTIN of supplier", "Invoice number", "Invoice Date", "Taxable Value", "CGST", "SGST", "IGST"],
+    ["32AAACF3314R1ZO", "OTH/1", "01/04/2026", 33495.78, 3014.62, 3014.62, 0],
+    ["32CCCCC0000C1Z5", "OTH/2", "04/04/2026", 15000, 1350, 1350, 0],
+    ["32DDDDD0000D1Z5", "OTH/3", "20/05/2026", 20000, 1800, 1800, 0],
+    ["32EEEEE0000E1Z5", "OTH/4", "01/01/2026", 9999, 900, 900, 0]
+  ],
+  "portalHeadersRow": 1,
+  "expected": {
+    "totalBooksRows": 7,
+    "matched": 1,
+    "blank_counterparty_gstin": 1,
+    "blank_taxable_value": 1,
+    "amount_mismatch": 1,
+    "date_mismatch": 1,
+    "genuinely_missing": 1,
+    "gstin_not_in_portal": 1
+  }
+}

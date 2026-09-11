@@ -6,8 +6,10 @@
 export type DomainDocumentType =
   | 'gstr2b'
   | 'gstr2a'
+  | 'gstr1'
   | 'ims'
   | 'purchase_register'
+  | 'sales_register'
   | 'form26as'
   | 'tally'
   | 'bank_statement'
@@ -55,14 +57,29 @@ export type ImsActionStatus =
   | 'AutoAccepted'
   | null;
 
+export type SupplyCategory =
+  | 'b2b'
+  | 'b2c'
+  | 'export'
+  | 'sez'
+  | 'nil_rated'
+  | 'exempt';
+
 /** Common normalized invoice row used by GST matching + portal ingestion. */
 export interface NormalizedInvoiceRow {
+  /** Counterparty GSTIN: supplier (purchase) or recipient (sales B2B). */
   gstin: string;
   invoiceNumber: string;
   /** Uppercase alphanumeric-only form used for exact key matches */
   normalizedInvoiceNumber: string;
   invoiceDate: string;
-  taxableValue: number;
+  /** null when derived from a rate-slab layout and no slab column had a value for this row. */
+  taxableValue: number | null;
+  /** Rate slab the taxable value was derived from, when the books sheet uses per-rate columns instead of a single Taxable Value column. */
+  taxRatePercent?: number | null;
+  /** True when 2+ rate-slab columns were non-blank and none's implied tax matched this row's actual tax closely enough to auto-select — taxableValue is null; needs CA review, never guessed. */
+  ambiguousRateSlab?: boolean;
+  ambiguousRateSlabDetail?: string;
   taxAmount: number;
   igst: number;
   cgst: number;
@@ -71,6 +88,10 @@ export interface NormalizedInvoiceRow {
   documentType: GstDocumentType;
   irn?: string;
   imsAction?: ImsActionStatus;
+  /** Client-side GSTIN when present on the books register. */
+  clientSideGstin?: string;
+  supplyCategory?: SupplyCategory;
+  placeOfSupply?: string;
   sourceRowRef: SourceRef;
 }
 
@@ -90,12 +111,28 @@ export type GstReconStatus =
   | 'CREDIT_NOTE'
   | 'PR_ONLY'
   | 'PORTAL_ONLY'
+  | 'GSTIN_MISMATCH'
   | 'IMS_REJECTED'
   | 'IMS_PENDING'
   | 'IMS_AUTO_ACCEPT'
   | 'IMS_ONLY'
   | 'RCM'
   | 'AI_REVIEW';
+
+/**
+ * Specific reason a books row (PR_ONLY) didn't cleanly match the portal —
+ * replaces a flat "unmatched" bucket so every row has a CA-readable cause.
+ */
+export type MismatchReason =
+  | 'blank_counterparty_gstin'
+  | 'blank_gstin_likely_matched'
+  | 'blank_taxable_value'
+  | 'ambiguous_rate_slab'
+  | 'gstin_mismatch_same_pan'
+  | 'gstin_not_in_portal'
+  | 'amount_mismatch'
+  | 'date_mismatch'
+  | 'genuinely_missing';
 
 export interface GstMatchSettings {
   amountToleranceAbs: number;
@@ -115,10 +152,18 @@ export const DEFAULT_GST_MATCH_SETTINGS: GstMatchSettings = {
   useImsData: false,
 };
 
-export type PortalFileType = 'GSTR2B' | 'GSTR2A' | 'IMS' | 'PURCHASE_REGISTER' | 'UNKNOWN';
+export type PortalFileType =
+  | 'GSTR2B'
+  | 'GSTR2A'
+  | 'GSTR1'
+  | 'IMS'
+  | 'PURCHASE_REGISTER'
+  | 'SALES_REGISTER'
+  | 'UNKNOWN';
 
 export type ColumnMapping = Partial<{
   gstin: string | number;
+  clientGstin: string | number;
   invoiceNo: string | number;
   invoiceDate: string | number;
   taxableAmt: string | number;
@@ -130,4 +175,9 @@ export type ColumnMapping = Partial<{
   irn: string | number;
   documentType: string | number;
   imsAction: string | number;
+  supplyCategory: string | number;
+  placeOfSupply: string | number;
 }>;
+
+/** Matching mode: purchase requires counterparty GSTIN; sales allows B2C blank. */
+export type GstMatchMode = 'purchase' | 'sales';

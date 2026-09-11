@@ -10,6 +10,7 @@ function normHeader(h: unknown): string {
 const HINTS: Record<Exclude<PortalFileType, 'UNKNOWN'>, string[]> = {
   GSTR2B: ['gstr 2b', 'gstr2b', '2b', 'itc available', 'autocrafted', 'b2b'],
   GSTR2A: ['gstr 2a', 'gstr2a', '2a', 'tds', 'tcs'],
+  GSTR1: ['gstr 1', 'gstr1', 'gstr-1', 'b2b', 'b2cl', 'b2cs', 'outward'],
   IMS: ['ims action', 'ims status', 'invoice management', 'accept reject', 'ims'],
   PURCHASE_REGISTER: [
     'purchase register',
@@ -18,6 +19,13 @@ const HINTS: Record<Exclude<PortalFileType, 'UNKNOWN'>, string[]> = {
     'supplier name',
     'bill no',
     'purchase',
+  ],
+  SALES_REGISTER: [
+    'sales register',
+    'sales',
+    'outward',
+    'recipient gstin',
+    'customer name',
   ],
 };
 
@@ -44,6 +52,23 @@ export function detectPortalFileType(
     joined.includes('itc available')
   ) {
     return 'GSTR2B';
+  }
+  if (
+    name.includes('gstr1') ||
+    name.includes('gstr 1') ||
+    /gstr-?1/.test(name) ||
+    joined.includes('gstin of recipient') ||
+    joined.includes('gstin/uin of recipient')
+  ) {
+    return 'GSTR1';
+  }
+  if (
+    name.includes('sales') ||
+    name.includes('outward') ||
+    joined.includes('recipient gstin') ||
+    joined.includes('customer gstin')
+  ) {
+    return 'SALES_REGISTER';
   }
   if (
     name.includes('purchase') ||
@@ -74,7 +99,26 @@ export function detectPortalFileType(
 type LogicalCol = keyof ColumnMapping;
 
 const HEADER_ALIASES: Record<LogicalCol, string[]> = {
-  gstin: ['gstin', 'gstin of supplier', 'supplier gstin', 'gst no', 'gstin uin', 'gstin/uin'],
+  gstin: [
+    'gstin of supplier',
+    'supplier gstin',
+    'gstin of recipient',
+    'recipient gstin',
+    'receiver gstin',
+    'customer gstin',
+    'gstin/uin of recipient',
+    'gstin uin',
+    'gstin/uin',
+    'gstin',
+    'gst no',
+  ],
+  clientGstin: [
+    'client gstin',
+    'our gstin',
+    'company gstin',
+    'entity gstin',
+    'gstin of registered person',
+  ],
   invoiceNo: [
     'invoice number',
     'invoice no',
@@ -106,14 +150,13 @@ const HEADER_ALIASES: Record<LogicalCol, string[]> = {
   igst: ['igst', 'igst amount', 'integrated tax amount'],
   cgst: ['cgst', 'cgst amount', 'central tax'],
   sgst: ['sgst', 'sgst amount', 'utgst', 'state tax'],
-  narration: ['narration', 'description', 'particulars', 'remarks', 'item description'],
+  narration: ['narration', 'description', 'particulars', 'remarks', 'item description', 'name'],
   irn: ['irn', 'invoice reference number', 'e invoice irn'],
   documentType: [
     'document type',
     'doc type',
     'invoice type',
     'voucher type',
-    'supply type',
     'type',
   ],
   imsAction: [
@@ -124,6 +167,8 @@ const HEADER_ALIASES: Record<LogicalCol, string[]> = {
     'action',
     'status',
   ],
+  supplyCategory: ['supply category', 'supply type', 'b2b/b2c', 'b2b', 'b2c'],
+  placeOfSupply: ['place of supply', 'pos', 'state code'],
 };
 
 function colLetterToIndex(letter: string): number {
@@ -155,6 +200,12 @@ export function resolveColumnIndex(
   const target = normHeader(mapping);
   const found = headers.findIndex((h) => normHeader(h) === target);
   return found >= 0 ? found : undefined;
+}
+
+/** True when the header row has a recognizable Invoice Number column. */
+export function hasInvoiceNumberColumn(headers: unknown[]): boolean {
+  const norms = headers.map((h) => normHeader(h));
+  return HEADER_ALIASES.invoiceNo.some((alias) => norms.some((h) => h === alias || h.includes(alias)));
 }
 
 /**

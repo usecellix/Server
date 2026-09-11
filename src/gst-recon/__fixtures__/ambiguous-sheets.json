@@ -1,0 +1,16 @@
+{
+  "sheets": [
+    {
+      "sheetName": "Purchases Apr",
+      "headers": ["Supplier GSTIN", "Invoice No", "Invoice Date", "Taxable Value"]
+    },
+    {
+      "sheetName": "Purchases Mar",
+      "headers": ["Supplier GSTIN", "Invoice No", "Invoice Date", "Taxable Value"]
+    },
+    {
+      "sheetName": "GSTR-2B",
+      "headers": ["GSTIN of supplier", "Invoice number", "Invoice Date", "Document Type", "ITC Available"]
+    }
+  ]
+}

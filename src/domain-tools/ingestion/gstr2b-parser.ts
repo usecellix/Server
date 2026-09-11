@@ -8,14 +8,14 @@ import { ColumnMapping } from '../types/domain-tool.types';
  */
 export function parseGstr2b(
   rawExport: Buffer | string | unknown[][],
-  options?: { documentId?: string; columnMapping?: ColumnMapping },
+  options?: { documentId?: string; columnMapping?: ColumnMapping; headersRow?: number },
 ): NormalizedInvoiceRow[] {
   return parsePortalExport(rawExport, 'gstr2b', options?.documentId ?? 'gstr2b', options);
 }
 
 export function parseGstr2a(
   rawExport: Buffer | string | unknown[][],
-  options?: { documentId?: string; columnMapping?: ColumnMapping },
+  options?: { documentId?: string; columnMapping?: ColumnMapping; headersRow?: number },
 ): NormalizedInvoiceRow[] {
   return parsePortalExport(rawExport, 'gstr2a', options?.documentId ?? 'gstr2a', options);
 }
@@ -24,13 +24,14 @@ function parsePortalExport(
   rawExport: Buffer | string | unknown[][],
   documentType: 'gstr2b' | 'gstr2a',
   documentId: string,
-  options?: { columnMapping?: ColumnMapping },
+  options?: { columnMapping?: ColumnMapping; headersRow?: number },
 ): NormalizedInvoiceRow[] {
   if (Array.isArray(rawExport)) {
     return parseInvoiceGrid(rawExport, {
       documentId,
       documentType,
       columnMapping: options?.columnMapping,
+      headersRow: options?.headersRow,
     });
   }
 
@@ -40,12 +41,12 @@ function parsePortalExport(
     | { rows?: Array<Record<string, unknown>>; headers?: unknown[] };
 
   if (Array.isArray(parsed)) {
-    // Could be grid or array of objects
     if (parsed.length && Array.isArray(parsed[0])) {
       return parseInvoiceGrid(parsed as unknown[][], {
         documentId,
         documentType,
         columnMapping: options?.columnMapping,
+        headersRow: options?.headersRow,
       });
     }
   }

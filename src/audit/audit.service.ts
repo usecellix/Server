@@ -46,6 +46,54 @@ export class AuditService {
     return this.auditEntryModel.create(input);
   }
 
+  /**
+   * Persist a pending GST recon audit entry; returns the Mongo id as audit_log_id.
+   */
+  async createGstReconAudit(entry: {
+    jobId: string;
+    clientGstin: string;
+    reconType: string;
+    period?: string;
+    clientName?: string;
+    sourceSheets: { books: string; portal: string };
+    crossGstinExceptionCount: number;
+    matchingSettings?: Record<string, unknown>;
+    operatorName?: string;
+    firmName?: string;
+  }): Promise<string> {
+    const doc = await this.auditEntryModel.create({
+      requestId: entry.jobId,
+      processName: 'gst_recon',
+      action: 'reconcile_complete',
+      payload: {
+        ...entry,
+        outcome: 'pending',
+      },
+    });
+    return String(doc._id);
+  }
+
+  async updateGstReconOutcome(
+    auditLogId: string,
+    outcome: 'applied' | 'rejected',
+  ): Promise<boolean> {
+    const updated = await this.auditEntryModel
+      .findOneAndUpdate(
+        { _id: auditLogId, processName: 'gst_recon' },
+        {
+          $set: {
+            action: outcome === 'applied' ? 'reconcile_applied' : 'reconcile_rejected',
+            'payload.outcome': outcome,
+            'payload.appliedAt':
+              outcome === 'applied' ? new Date().toISOString() : undefined,
+          },
+        },
+        { new: true },
+      )
+      .exec();
+    return Boolean(updated);
+  }
+
   async findByRequestId(requestId: string): Promise<AuditEntry[]> {
     return this.auditEntryModel
       .find({ requestId })

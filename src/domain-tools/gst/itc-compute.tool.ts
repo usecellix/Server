@@ -97,14 +97,14 @@ export const itcCompute: DomainTool<ItcComputeInput, ItcComputeOutput> = (input)
         // Approximate RCM payable as 18% of taxable when tax not present
         const rcm =
           taxOf(row) ||
-          roundMoney(Math.abs(row.taxableValue) * (input.igstRate ?? input.cgstRate ?? 0.18));
+          roundMoney(Math.abs(row.taxableValue ?? 0) * (input.igstRate ?? input.cgstRate ?? 0.18));
         totalRcmPayable += rcm;
         totalRcm += 1;
       }
 
       lines.push({
         invoiceNumber: row.invoiceNumber,
-        taxableValue: row.taxableValue,
+        taxableValue: row.taxableValue ?? 0,
         itcClaimable,
         status: r.status,
         sourceRowRef: row.sourceRowRef,
@@ -118,7 +118,7 @@ export const itcCompute: DomainTool<ItcComputeInput, ItcComputeOutput> = (input)
       sourceRefs.push(inv.sourceRowRef);
       lines.push({
         invoiceNumber: inv.invoiceNumber,
-        taxableValue: inv.taxableValue,
+        taxableValue: inv.taxableValue ?? 0,
         itcClaimable: itc,
         status: 'MATCHED',
         sourceRowRef: inv.sourceRowRef,
