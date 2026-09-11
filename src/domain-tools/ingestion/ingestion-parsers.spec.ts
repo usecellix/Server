@@ -17,7 +17,7 @@ function loadSyntheticFixture(name: string): { documentId: string; rows: unknown
 }
 
 describe('ingestion parsers (synthetic fixtures)', () => {
-  it('loads synthetic GSTR-2B fixture and stub throws Not implemented', () => {
+  it('loads synthetic GSTR-2B fixture and parses rows', () => {
     const fixture = loadSyntheticFixture('synthetic-gstr2b.json');
     expect(fixture.rows[0]).toEqual(
       expect.objectContaining({
@@ -26,7 +26,9 @@ describe('ingestion parsers (synthetic fixtures)', () => {
         taxableValue: expect.any(Number),
       }),
     );
-    expect(() => parseGstr2b(JSON.stringify(fixture))).toThrow(/Not implemented/i);
+    const rows = parseGstr2b(JSON.stringify(fixture));
+    expect(rows.length).toBeGreaterThan(0);
+    expect(rows[0].normalizedInvoiceNumber).toBeTruthy();
   });
 
   it('loads synthetic Form 26AS fixture and stub throws Not implemented', () => {

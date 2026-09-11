@@ -1,15 +1,13 @@
 {
-  "documentId": "synth-gstr2b-001",
+  "documentId": "synth-ims-001",
   "format": "synthetic-json",
   "headers": [
-    "GSTIN of supplier",
-    "Invoice number",
+    "Supplier GSTIN",
+    "Invoice Number",
     "Invoice Date",
     "Taxable Value",
-    "IGST",
-    "CGST",
-    "SGST",
-    "Document Type"
+    "Tax Amount",
+    "IMS Action"
   ],
   "rows": [
     {
@@ -17,11 +15,8 @@
       "invoiceNumber": "INV-1001",
       "invoiceDate": "2026-04-15",
       "taxableValue": 10000,
-      "igst": 0,
-      "cgst": 900,
-      "sgst": 900,
       "taxAmount": 1800,
-      "documentType": "invoice",
+      "imsAction": "Accepted",
       "sourceRow": 2
     },
     {
@@ -29,23 +24,17 @@
       "invoiceNumber": "INV/1002",
       "invoiceDate": "2026-04-18",
       "taxableValue": 25000,
-      "igst": 4500,
-      "cgst": 0,
-      "sgst": 0,
       "taxAmount": 4500,
-      "documentType": "invoice",
+      "imsAction": "AutoAccepted",
       "sourceRow": 3
     },
     {
-      "gstin": "27CCCCC2222C1Z5",
-      "invoiceNumber": "CN-2001",
-      "invoiceDate": "2026-04-20",
-      "taxableValue": -5000,
-      "igst": 0,
-      "cgst": -450,
-      "sgst": -450,
-      "taxAmount": -900,
-      "documentType": "credit_note",
+      "gstin": "33EEEEE4444E1Z5",
+      "invoiceNumber": "PR-ONLY-1",
+      "invoiceDate": "2026-04-25",
+      "taxableValue": 12000,
+      "taxAmount": 2160,
+      "imsAction": "Rejected",
       "sourceRow": 4
     },
     {
@@ -53,12 +42,18 @@
       "invoiceNumber": "PORTAL-ONLY-1",
       "invoiceDate": "2026-04-22",
       "taxableValue": 8000,
-      "igst": 1440,
-      "cgst": 0,
-      "sgst": 0,
       "taxAmount": 1440,
-      "documentType": "invoice",
+      "imsAction": "Pending",
       "sourceRow": 5
+    },
+    {
+      "gstin": "09FFFFF5555F1Z5",
+      "invoiceNumber": "IMS-ONLY-1",
+      "invoiceDate": "2026-04-28",
+      "taxableValue": 6000,
+      "taxAmount": 1080,
+      "imsAction": "Accepted",
+      "sourceRow": 6
     }
   ]
 }

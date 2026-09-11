@@ -7,6 +7,7 @@ import { LoggingModule } from './common/logging/logging.module';
 import { DatabaseModule } from './database/database.module';
 import { DomainToolsModule } from './domain-tools/domain-tools.module';
 import { ExcelAiModule } from './excel-ai/excel-ai.module';
+import { GstReconModule } from './gst-recon/gst-recon.module';
 import { HealthModule } from './health/health.module';
 import { SheetsModule } from './sheets/sheets.module';
 import { WebChatModule } from './web-chat/web-chat.module';
@@ -23,6 +24,7 @@ import { WebChatModule } from './web-chat/web-chat.module';
     ExcelAiModule,
     SheetsModule,
     DomainToolsModule,
+    GstReconModule,
     WebChatModule,
   ],
 })

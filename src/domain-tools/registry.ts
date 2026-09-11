@@ -1,6 +1,7 @@
 import { DomainTool } from './types/domain-tool.types';
 import { gstMatch } from './gst/gst-match.tool';
 import { itcCompute } from './gst/itc-compute.tool';
+import { gstr3bVs2b } from './gst/gstr3b-vs-2b.tool';
 import { tds26asMatch } from './tds/tds-26as-match.tool';
 import { bankRecon } from './reconciliation/bank-recon.tool';
 import { indAsGen } from './accounting/ind-as-gen.tool';
@@ -14,6 +15,7 @@ import { costAllocation } from './accounting/cost-allocation.tool';
 export const domainToolRegistry: Record<string, DomainTool<unknown, unknown>> = {
   gst_match: gstMatch as DomainTool<unknown, unknown>,
   itc_compute: itcCompute as DomainTool<unknown, unknown>,
+  gstr3b_vs_2b: gstr3bVs2b as DomainTool<unknown, unknown>,
   tds_26as_match: tds26asMatch as DomainTool<unknown, unknown>,
   bank_recon: bankRecon as DomainTool<unknown, unknown>,
   ind_as_gen: indAsGen as DomainTool<unknown, unknown>,
