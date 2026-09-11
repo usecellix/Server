@@ -60,16 +60,23 @@ async function createAuth(): Promise<BetterAuthInstance> {
   const dbName = process.env.MONGODB_DB_NAME || 'cellix';
   const clientOrigin = process.env.CLIENT_ORIGIN || 'https://localhost:3000';
   const betterAuthUrl = process.env.BETTER_AUTH_URL || clientOrigin;
+  const marketingSiteOrigin = process.env.MARKETING_SITE_ORIGIN || '';
 
   // Task pane is https://localhost:3000; Google console may still list http — allow both.
-  const trustedOrigins = Array.from(
-    new Set([
-      clientOrigin.replace(/\/$/, ''),
-      betterAuthUrl.replace(/\/$/, ''),
-      'https://localhost:3000',
-      'http://localhost:3000',
-    ]),
-  );
+  // MARKETING_SITE_ORIGIN is comma-separated (Vite picks the next free port, so both 5173
+  // and 5174 may be active during dev). Split and normalize each one.
+  const origins = [
+    clientOrigin.replace(/\/$/, ''),
+    betterAuthUrl.replace(/\/$/, ''),
+    'https://localhost:3000',
+    'http://localhost:3000',
+  ];
+  if (marketingSiteOrigin) {
+    origins.push(
+      ...marketingSiteOrigin.split(',').map((o) => o.trim().replace(/\/$/, '')),
+    );
+  }
+  const trustedOrigins = Array.from(new Set(origins));
 
   const client = new MongoClient(mongoUrl);
   await client.connect();
