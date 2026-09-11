@@ -18,6 +18,14 @@ export interface FormatSpec {
   italic?: boolean;
   underline?: boolean;
   fontSize?: number;
+  /**
+   * Font family, e.g. 'Aptos Narrow', 'Calibri'.
+   *
+   * Absent until TASKS.md #169, so every workbook Cellix built used Excel's
+   * default face while a competitor's picked one deliberately. Office.js has
+   * always exposed `range.format.font.name`; nothing surfaced it.
+   */
+  fontName?: string;
   fontColor?: string;
   fillColor?: string;
   /** When true, remove background fill from the range (leaves font/borders intact). */
@@ -82,7 +90,9 @@ export type SheetActionType =
   | 'CREATE_TABLE'
   | 'DELETE_TABLE'
   | 'CREATE_CHART'
+  | 'DATA_VALIDATION'
   | 'DEFINE_NAMED_RANGE'
+  | 'HIDE_GRIDLINES'
   | 'AUTOFIT_COLUMNS'
   | 'CLARIFY'
   | 'CHECKPOINT'
@@ -188,6 +198,39 @@ export interface BatchSetOperation {
   format?: FormatSpec;
 }
 
+/** DATA_VALIDATION rule. TASKS.md #166. */
+export interface DataValidationSpec {
+  kind: 'list' | 'decimal' | 'wholeNumber' | 'date' | 'textLength';
+  /** kind: 'list' — literal values, OR a range reference like `Lists!$B$3:$B$9`. */
+  listSource?: string[] | string;
+  /** Comparison rules (every kind except 'list'). */
+  operator?:
+    | 'between'
+    | 'notBetween'
+    | 'equalTo'
+    | 'notEqualTo'
+    | 'greaterThan'
+    | 'lessThan'
+    | 'greaterThanOrEqualTo'
+    | 'lessThanOrEqualTo';
+  formula1?: string | number;
+  formula2?: string | number;
+  /** Message shown when the cell is selected. */
+  promptTitle?: string;
+  promptMessage?: string;
+  /** Message shown when an entry is rejected. */
+  errorTitle?: string;
+  errorMessage?: string;
+  /**
+   * 'stop' rejects the entry outright; 'warning'/'information' let it through.
+   * Defaults to 'stop' for lists — a dropdown that accepts anything is not a
+   * dropdown.
+   */
+  errorStyle?: 'stop' | 'warning' | 'information';
+  /** Allow an empty cell. Defaults true — a blank template row is not an error. */
+  ignoreBlanks?: boolean;
+}
+
 export interface SheetActionPayload {
   type: SheetActionType;
   row?: number;
@@ -266,6 +309,16 @@ export interface SheetActionPayload {
   }>;
   sortBy?: { column: string; direction: 'asc' | 'desc' };
   topN?: number;
+  /**
+   * DATA_VALIDATION — dropdown lists and value rules. TASKS.md #166.
+   *
+   * `listSource` is either an explicit set of values or an A1 range reference
+   * (`Lists!$B$3:$B$9`). A range reference works even when the source sheet is
+   * hidden, which is what makes the hidden-Lists-sheet pattern viable.
+   */
+  validation?: DataValidationSpec;
+  /** HIDE_GRIDLINES — false restores them. Defaults to true (hide). */
+  showGridlines?: boolean;
   /** CREATE_CHART / UPDATE_CHART */
   destCell?: string;
   colorScheme?: 'default' | 'blue' | 'grey' | 'blueGrey' | 'green' | 'red' | 'orange' | 'purple' | 'yellow';

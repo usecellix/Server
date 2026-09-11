@@ -59,6 +59,7 @@ describe('mode-selector.e2e', () => {
         {} as never,
         {} as never,
         {} as never,
+        {} as never,
         { analyzeSheet: jest.fn().mockReturnValue({}) } as unknown as FormulaAnalyzer,
         {} as never,
         {} as never,
@@ -72,6 +73,9 @@ describe('mode-selector.e2e', () => {
           setMeta: jest.fn(),
           finalize: jest.fn(),
         } as never,
+        {} as never,
+        {} as never,
+        {} as never,
       );
 
       jest.spyOn(service as never, 'saveMessage' as never).mockResolvedValue(undefined as never);

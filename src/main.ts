@@ -74,6 +74,9 @@ async function bootstrap(): Promise<void> {
 
   const app = await NestFactory.create<NestFastifyApplication>(AppModule, new FastifyAdapter(), {
     bufferLogs: true,
+    // Razorpay webhook signature verification needs the exact request bytes
+    // on req.rawBody — Nest registers the JSON parser once with this enabled.
+    rawBody: true,
   });
   app.useLogger(app.get(Logger));
 
@@ -83,6 +86,7 @@ async function bootstrap(): Promise<void> {
   const requestFileLogger = app.get(RequestFileLoggerService);
 
   const fastify = app.getHttpAdapter().getInstance();
+
   fastify.addHook('onResponse', (request, reply, done) => {
     const body = (request as { body?: { message?: unknown } }).body;
     const headerTrace = request.headers[TRACE_ID_HEADER];

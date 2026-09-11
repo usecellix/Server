@@ -39,6 +39,33 @@ BATCH_SET schema (write several cells at once — the efficient way to lay down 
 - If you are unsure of the exact addresses, emit individual SET_CELL actions instead;
   a correct SET_CELL beats a malformed BATCH_SET.
 
+CREATE_TABLE schema (a REAL Excel table that auto-expands when the user types below it):
+{ "type": "CREATE_TABLE", "sheetName": "January", "range": "A1:M50", "tableName": "tblJanuary", "hasHeaders": true, "style": "TableStyleMedium2" }
+- tableName MUST have no spaces and be unique in the workbook
+- range covers the header row plus the initial data rows; the table grows on its own from there
+- Emit AFTER the header row has been written, never before
+
+SET_COLUMN_WIDTH schema (deliberate widths — autofit collapses an empty template to header width):
+{ "type": "SET_COLUMN_WIDTH", "sheetName": "January", "columns": ["A", "B"], "width": 130 }
+
+HIDE_GRIDLINES schema (make a dashboard read as a document, not a spreadsheet):
+{ "type": "HIDE_GRIDLINES", "sheetName": "Main" }
+- Per sheet: emit one per sheet. Pass "showGridlines": true to restore them.
+
+FORMAT_RANGE with a font family:
+{ "type": "FORMAT_RANGE", "sheetName": "Main", "range": "A1:N60", "format": { "fontName": "Aptos Narrow", "fontSize": 10 } }
+
+DATA_VALIDATION schema (a real dropdown / entry rule — "Payment Status should be a dropdown", "restrict Source to a list"):
+{ "type": "DATA_VALIDATION", "sheetName": "January", "range": "I2:I500", "validation": { "kind": "list", "listSource": "Lists!$B$3:$B$20", "promptTitle": "Payment Status", "promptMessage": "Choose a status", "errorTitle": "Invalid status", "errorMessage": "Pick a value from the list." } }
+- range MUST be the DATA cells of the single column being validated (exclude the header row)
+- listSource is EITHER a range reference string ("Lists!$B$3:$B$20" — keeps working when that sheet is hidden) OR an array of literal values (["Paid","Pending","Partial"])
+- validation.kind: list | decimal | wholeNumber | date | textLength; non-list kinds take operator + formula1 (+ formula2 for between/notBetween)
+- A list rule defaults to a hard "stop" alert — that is the point; do not weaken it to a warning unless the user asks
+
+HIDE_SHEET schema (put a lookup/support sheet out of the way — "hide the Lists sheet"):
+{ "type": "HIDE_SHEET", "sheetName": "Lists" }
+- Emit this only AFTER every DATA_VALIDATION rule referencing that sheet exists; a range reference still resolves once hidden, but the setup must be complete first
+
 AUTO_FILTER schema (add filter dropdowns to a table's header row — "add filters", "make it filterable"):
 { "type": "AUTO_FILTER", "sheetName": "Purchase Register", "range": "A1:N51" }
 - range MUST cover the full header + data range (the filter dropdowns go on the header row of that range)
@@ -132,6 +159,7 @@ CREATE_TABLE schema:
 
 CREATE_CHART schema:
 { "type": "CREATE_CHART", "sheetName": "Dashboard", "sourceSheetName": "Dashboard", "sourceRange": "A4:B9", "chartType": "ColumnClustered", "title": "Top Suppliers", "startCell": "D4", "endCell": "K18", "chartId": "Chart_topSuppliers" }
+- startCell MUST be at least two columns past the source range's LAST column (source ends at B → D is correct here; a source ending at D would need F). Never reuse this example's "D4" against a wider table — that places the chart over its own data.
 - sheetName is where the chart is placed; sourceSheetName/sourceRange identify its data (usually an AGGREGATE_TABLE output).
 - chartType: ColumnClustered, BarClustered (horizontal bar), Line, Pie, Doughnut — "bar" maps to BarClustered.
 - Always set chartId so follow-up UPDATE_CHART can target it.

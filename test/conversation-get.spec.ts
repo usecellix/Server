@@ -34,6 +34,9 @@ describe('ConversationService.getConversation', () => {
       conversationId: 'conv_1',
       messages: [{ id: 'm1', role: 'user', content: 'Find 2290' }],
       status: 'active',
+      // Derived on read for pre-#171 docs that were stored without a title.
+      title: 'Find 2290',
+      workbookId: undefined,
       sheetSnapshot: { sheetName: 'Sheet1' },
       updatedAt,
     });

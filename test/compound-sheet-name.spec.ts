@@ -60,6 +60,49 @@ describe('compound sheet name extraction (paid purchases / Sheet2 bug)', () => {
     ]);
   });
 
+  it('reuses the existing sheet verbatim for an idempotent "if it doesn\'t exist" create (COMPETITIVE_STUDY_SHORTCUT.md:71 — Main -> Main 2)', () => {
+    const ctxWithMain: WorkbookContext = {
+      ...emptyContext(),
+      sheets: [...emptyContext().sheets, { ...emptyContext().sheets[0], name: 'Main' }],
+    };
+
+    const result = buildDeterministicSubtaskActions(
+      {
+        id: 's1',
+        description: "Create sheet 'Main' if it doesn't exist",
+        targetSheet: 'Main',
+        dependsOn: [],
+        estimatedActions: 1,
+      },
+      ctxWithMain,
+    );
+
+    // Before the fix this returned "Main 2" — a real create landing under a
+    // name the request never asked for, matching the frontend's own
+    // handleAddSheet contract (activate-existing, never rename-to-avoid).
+    expect(result?.actions).toEqual([{ type: 'ADD_SHEET', name: 'Main' }]);
+  });
+
+  it('still dedupes a name collision when the description does NOT ask for idempotent reuse', () => {
+    const ctxWithMain: WorkbookContext = {
+      ...emptyContext(),
+      sheets: [...emptyContext().sheets, { ...emptyContext().sheets[0], name: 'Main' }],
+    };
+
+    const result = buildDeterministicSubtaskActions(
+      {
+        id: 's1',
+        description: "Create a new sheet called 'Main' as a copy",
+        targetSheet: 'Main',
+        dependsOn: [],
+        estimatedActions: 1,
+      },
+      ctxWithMain,
+    );
+
+    expect(result?.actions?.[0]?.name).toBe('Main 2');
+  });
+
   it('prunes phantom Sheet2 when a real ADD_SHEET + COPY share the batch', () => {
     const pruned = pruneSpuriousAddSheetActions([
       { type: 'ADD_SHEET', name: 'Sheet2' },

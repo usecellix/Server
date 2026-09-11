@@ -59,7 +59,13 @@ export interface RoutingDecision {
   fallbackUsed: boolean;
 }
 
-const COST_CAP_USD = 0.15;
+/**
+ * Shared per-call cost ceiling. Exported so other LLM call sites (e.g.
+ * `PlannerAgent`, spec 16 fix #4) can enforce the same cap this router already
+ * applies to its own high-tier routing decision, rather than each call site
+ * inventing its own number.
+ */
+export const COST_CAP_USD = 0.15;
 
 const RATE_LIMIT_RETRY_TIER: Record<LLMTier, LLMTier | null> = {
   high: 'medium',
@@ -142,10 +148,66 @@ export function scoreTaskComplexity(
   };
 }
 
-function estimateCostUsd(config: ModelConfig, promptTokenEstimate: number): number {
-  const estimatedPromptCost = (promptTokenEstimate / 1000) * config.costPer1kPrompt;
-  const estimatedCompletionCost = (config.maxTokens / 1000) * config.costPer1kCompletion;
+/**
+ * Cost estimate for one LLM call at a given prompt/completion token count.
+ * Exported (renamed from the router-only `estimateCostUsd`) so a caller with
+ * its own completion-token budget — e.g. a Planner call whose `maxTokens` is
+ * NOT the tier's flat `ModelConfig.maxTokens` — can price the call it is
+ * actually about to make, rather than the router's own fixed-budget estimate.
+ */
+export function estimateLlmCallCostUsd(
+  pricing: Pick<ModelConfig, 'costPer1kPrompt' | 'costPer1kCompletion'>,
+  promptTokens: number,
+  completionTokens: number,
+): number {
+  const estimatedPromptCost = (promptTokens / 1000) * pricing.costPer1kPrompt;
+  const estimatedCompletionCost = (completionTokens / 1000) * pricing.costPer1kCompletion;
   return estimatedPromptCost + estimatedCompletionCost;
+}
+
+function estimateCostUsd(config: ModelConfig, promptTokenEstimate: number): number {
+  return estimateLlmCallCostUsd(config, promptTokenEstimate, config.maxTokens);
+}
+
+export interface ResolvedModelPricing {
+  pricing: ModelConfig;
+  tier: LLMTier;
+  /** True when `model` did not match any of the LOW/MEDIUM/HIGH configured
+   * models and HIGH pricing was used as a conservative fallback — the caller
+   * should log this so the estimate is understood as approximate, not exact. */
+  approximate: boolean;
+}
+
+/**
+ * Resolve pricing for an arbitrary model string by matching it against the
+ * models actually configured for the three LLMTiers (`AppConfigService`), NOT
+ * by assuming a call is always HIGH tier. Needed because call sites like
+ * `PlannerAgent` can be pointed at a different model than
+ * `openRouterModelHigh` via a per-purpose override (`openRouterModelPlanner`,
+ * spec 16 fix #2) — pricing that model as HIGH unconditionally would silently
+ * misprice it the moment that override diverges from HIGH's actual model.
+ *
+ * A model matching none of the three configured models (e.g. an eval pointed
+ * at a model with no pricing entry here) falls back to HIGH pricing — the most
+ * expensive of the three — as a conservative default so an unrecognized model
+ * can never be UNDER-estimated into slipping past the cost cap. `approximate:
+ * true` flags this so the caller can log it rather than presenting the number
+ * as exact.
+ */
+export function resolvePricingForModel(
+  model: string,
+  config: Pick<AppConfigService, 'openRouterModelLow' | 'openRouterModelMedium' | 'openRouterModelHigh'>,
+): ResolvedModelPricing {
+  if (model === config.openRouterModelLow) {
+    return { pricing: MODEL_CONFIGS.low, tier: 'low', approximate: false };
+  }
+  if (model === config.openRouterModelMedium) {
+    return { pricing: MODEL_CONFIGS.medium, tier: 'medium', approximate: false };
+  }
+  if (model === config.openRouterModelHigh) {
+    return { pricing: MODEL_CONFIGS.high, tier: 'high', approximate: false };
+  }
+  return { pricing: MODEL_CONFIGS.high, tier: 'high', approximate: true };
 }
 
 @Injectable()

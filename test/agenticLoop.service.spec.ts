@@ -777,4 +777,81 @@ describe('AgenticLoopService verifier retry', () => {
     expect(result.actions).toEqual([insertColumnAction]);
     expect(verifier.verify).toHaveBeenCalledTimes(0);
   });
+
+  it('StructuralIntentChecker catches the "Main" -> "Main 2" name mismatch and self-heals within MAX_STEP_RETRIES, never reaching the LLM verifier or a VERIFY_FAIL', async () => {
+    // COMPETITIVE_STUDY_SHORTCUT.md:71 — a live run: an idempotent "if it
+    // doesn't exist" CREATE_SHEET for "Main" ignored the existence check and
+    // created "Main 2" instead. Every existing checker passes this (one
+    // action, well-formed, count matches estimatedActions) — only
+    // StructuralIntentChecker reads the emitted name against the subtask's
+    // targetSheet, so this must be caught deterministically, before the LLM
+    // verifier is ever consulted and before any VERIFY_FAIL reaches the user.
+    //
+    // Description is deliberately compound ("...and populate...") so
+    // buildDeterministicSubtaskActions defers to the real Executor (per
+    // compound-action.util.ts's detectSheetDataGenerationIntent branch)
+    // instead of resolving the name itself — this is the actual live path
+    // where the Executor LLM, not the deterministic util, picks the name.
+    const emptyWorkbook: WorkbookContext = {
+      activeSheetName: 'Sheet1',
+      sheets: [
+        {
+          name: 'Sheet1',
+          usedRange: 'A1:A1',
+          rowCount: 1,
+          columnCount: 1,
+          values: [['']],
+          formulas: [['']],
+          numberFormats: [['General']],
+          structure: 'unknown',
+          headerRowIndex: 0,
+        },
+      ],
+      namedRanges: [],
+      tables: [],
+    };
+
+    const createMainStep: SubTask = {
+      id: 's1',
+      description: "Create sheet 'Main' if it doesn't exist and populate the dashboard formulas",
+      targetSheet: 'Main',
+      dependsOn: [],
+      estimatedActions: 1,
+    };
+
+    const wrongNameAction: Action = { type: 'CREATE_SHEET', sheetName: 'Main 2' } as Action;
+    const correctNameAction: Action = { type: 'CREATE_SHEET', sheetName: 'Main' } as Action;
+
+    executor.execute.mockResolvedValueOnce({
+      subtaskId: 's1',
+      actions: [wrongNameAction],
+      isDone: true,
+    });
+
+    executor.retryStep.mockImplementationOnce(async (retryContext) => {
+      expect(retryContext.verifierFeedback).toContain('Main');
+      expect(retryContext.verifierFeedback).toContain('Main 2');
+      return { subtaskId: 's1', actions: [correctNameAction], isDone: true };
+    });
+
+    const result = await service.run(
+      createMainStep.description,
+      [createMainStep],
+      emptyWorkbook,
+      new SseEmitter(emit),
+    );
+
+    expect(executor.execute).toHaveBeenCalledTimes(1);
+    expect(executor.retryStep).toHaveBeenCalledTimes(1);
+    expect(result.actions).toEqual([correctNameAction]);
+    // Resolved within the retry budget: no failedSubtask, no partial delivery —
+    // the exact outcome that never reached the user across the 4 resubmissions
+    // this fix targets. Had this exhausted MAX_STEP_RETRIES instead,
+    // result.verifierPassed would be false and result.failedSubtask non-null.
+    expect(result.verifierPassed).toBe(true);
+    expect(result.failedSubtask).toBeNull();
+    expect(result.partialProgress).toBe(false);
+    // Caught deterministically — the expensive LLM verifier was never consulted.
+    expect(verifier.verify).not.toHaveBeenCalled();
+  });
 });

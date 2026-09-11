@@ -113,6 +113,15 @@ export interface ActionWave {
   actions: SheetActionPayload[];
   /** Accept-card label, e.g. "Create 12 sheets" / "Apply formatting". */
   label: string;
+  /**
+   * Positions of this wave's actions in the ORIGINAL input array.
+   *
+   * Carried so a caller can map a wave back to the plan subtasks that produced
+   * its actions without re-deriving identity from the rewritten action objects
+   * (see `wave-intent.util.ts` for why that matching has to be structural).
+   * Kept in step with `actions` through every merge below. TASKS.md #167.
+   */
+  actionIndexes: number[];
 }
 
 function phaseIndexOf(action: SheetActionPayload): number {
@@ -126,24 +135,30 @@ function phaseIndexOf(action: SheetActionPayload): number {
  * one phase — so a two-cell edit is never presented as a multi-step ceremony.
  */
 export function splitIntoActionWaves(actions: SheetActionPayload[]): ActionWave[] {
-  if (actions.length === 0) return [{ actions, label: describeWave(actions) }];
+  if (actions.length === 0) {
+    return [{ actions, label: describeWave(actions), actionIndexes: [] }];
+  }
 
-  const buckets = PHASES.map(() => [] as SheetActionPayload[]);
-  for (const action of actions) buckets[phaseIndexOf(action)].push(action);
+  const buckets = PHASES.map(() => [] as number[]);
+  actions.forEach((action, index) => buckets[phaseIndexOf(action)].push(index));
 
   const nonEmpty = buckets
-    .map((bucket, index) => ({ bucket, index }))
-    .filter(({ bucket }) => bucket.length > 0);
+    .map((indexes, index) => ({ indexes, index }))
+    .filter(({ indexes }) => indexes.length > 0);
+
+  const pick = (indexes: number[]) => indexes.map((i) => actions[i]);
 
   // One phase, or a small batch: a single card is the better review unit.
   if (nonEmpty.length <= 1 || actions.length < MIN_ACTIONS_TO_STAGE) {
-    const ordered = nonEmpty.flatMap(({ bucket }) => bucket);
-    return [{ actions: ordered, label: describeWave(ordered) }];
+    const orderedIndexes = nonEmpty.flatMap(({ indexes }) => indexes);
+    const ordered = pick(orderedIndexes);
+    return [{ actions: ordered, label: describeWave(ordered), actionIndexes: orderedIndexes }];
   }
 
-  let steps = nonEmpty.map(({ bucket, index }) => ({
-    actions: bucket,
-    label: describeStep(PHASES[index].label, bucket),
+  const steps: ActionWave[] = nonEmpty.map(({ indexes, index }) => ({
+    actions: pick(indexes),
+    label: describeStep(PHASES[index].label, pick(indexes)),
+    actionIndexes: indexes,
   }));
 
   // Merge the smallest neighbouring steps until within budget, rather than
@@ -155,8 +170,13 @@ export function splitIntoActionWaves(actions: SheetActionPayload[]): ActionWave[
     }
     const mergeInto = smallest === 0 ? 1 : smallest - 1;
     const [a, b] = mergeInto < smallest ? [mergeInto, smallest] : [smallest, mergeInto];
-    const merged = [...steps[a].actions, ...steps[b].actions];
-    steps.splice(a, 2, { actions: merged, label: describeWave(merged) });
+    const mergedActions = [...steps[a].actions, ...steps[b].actions];
+    const mergedIndexes = [...steps[a].actionIndexes, ...steps[b].actionIndexes];
+    steps.splice(a, 2, {
+      actions: mergedActions,
+      label: describeWave(mergedActions),
+      actionIndexes: mergedIndexes,
+    });
   }
 
   return steps;

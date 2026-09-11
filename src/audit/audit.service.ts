@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import { AuditLogEntry, LLMTier, MODEL_CONFIGS } from '../types/cellix.types';
+import { estimateLlmCallCostUsd } from '../excel-ai/llm/model-router';
 import { ChangeSetService } from './change-set.service';
 import { AuditEntry, AuditEntryDocument } from './schemas/audit-entry.schema';
 import { AuditLog, AuditLogDocument } from './schemas/audit-log.schema';
@@ -120,9 +121,11 @@ export class AuditService {
     const totalTokens = promptTokens + completionTokens;
     const config = MODEL_CONFIGS[tier];
 
-    const estimatedCostUsd =
-      (promptTokens / 1000) * config.costPer1kPrompt +
-      (completionTokens / 1000) * config.costPer1kCompletion;
+    // Spec 16 follow-up: this used to be its own copy of the prompt/completion
+    // cost formula — a THIRD copy alongside `ModelRouter`'s router-only
+    // `estimateCostUsd` and the Planner cost-cap check, all doing the same
+    // arithmetic independently. Now the one shared implementation.
+    const estimatedCostUsd = estimateLlmCallCostUsd(config, promptTokens, completionTokens);
 
     try {
       await this.auditLogModel.create({

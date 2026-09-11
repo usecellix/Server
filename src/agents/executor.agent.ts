@@ -1,7 +1,11 @@
 import { Injectable, Logger, Optional } from '@nestjs/common';
 import { AppConfigService } from '../config/app-config.service';
 import { WorkflowTraceService } from '../common/logging/workflow-trace.service';
-import { OpenRouterService } from '../excel-ai/services/openrouter.service';
+import {
+  LlmCompletionOutcome,
+  OpenRouterService,
+} from '../excel-ai/services/openrouter.service';
+import { addUsage, UsageTotals } from './utils/usage-accumulator.util';
 import { EXECUTOR_SYSTEM_PROMPT, buildExecutorUserMessage } from './prompts/executor.prompt';
 import { normalizeExecutorOutput } from './utils/normalize-executor-output.util';
 import { parseExecutorPayload } from './utils/parse-agent-json.util';
@@ -41,22 +45,40 @@ export class ExecutorAgent {
     context: WorkbookContext,
     previousActions: Action[] = [],
     correlationId = `req_${Date.now()}`,
+    /** Out-param — accumulates real promptTokens/completionTokens across this
+     * call (and its retry), same pattern as `PlannerAgent.plan()`. */
+    usageTotals?: UsageTotals,
+    /**
+     * Overrides `modelName` for this call only. Tier 3 (agenticLoop.service.ts)
+     * never passes this — it must stay on openRouterModelHigh unconditionally.
+     * Tier2GenerateVerifyService passes `config.openRouterModelTier2Generate`
+     * so a Tier-2-only model eval doesn't move Tier 3, which shares this same
+     * class/method. Omitted = today's unchanged behavior.
+     */
+    modelOverride?: string,
   ): Promise<ExecutorOutput> {
     const startedAt = Date.now();
-    const model = this.modelName;
+    const model = modelOverride ?? this.modelName;
     const userMessage = buildExecutorUserMessage(subtask, context, previousActions);
     // A subtask asking for many writes (e.g. a formula table spanning several
     // sheets) needs a bigger completion budget — a flat 2000 tokens truncated
     // large tables mid-way, and every retry hit the same fixed ceiling.
     const maxTokens = resolveExecutorMaxTokens(subtask.estimatedActions);
 
+    const outcome: LlmCompletionOutcome = {};
     let raw = await this.llm.complete({
       systemPrompt: EXECUTOR_SYSTEM_PROMPT,
       userMessage,
       model,
       temperature: 0.1,
       maxTokens,
+      // Explicit, not relying on complete()'s own 'low' default — prior
+      // OpenRouter generation inspection found gpt-5-mini spending ~35% of
+      // completion tokens on invisible reasoning here at default effort.
+      reasoningEffort: 'low',
+      outcome,
     });
+    addUsage(usageTotals, outcome.usage);
     this.structuredLogger.debugRawResponse(correlationId, 'executor', model, raw);
 
     let result = this.tryParseExecutor(raw, subtask);
@@ -71,13 +93,17 @@ export class ExecutorAgent {
         'First parse attempt failed',
       );
       this.logger.warn(`Executor JSON parse failed — retrying once. Raw snippet: ${this.clip(raw)}`);
+      const retryOutcome: LlmCompletionOutcome = {};
       raw = await this.llm.complete({
         systemPrompt: EXECUTOR_SYSTEM_PROMPT,
         userMessage: userMessage + JSON_RETRY_SUFFIX,
         model,
         temperature: 0.05,
         maxTokens,
+        reasoningEffort: 'low',
+        outcome: retryOutcome,
       });
+      addUsage(usageTotals, retryOutcome.usage);
       this.structuredLogger.debugRawResponse(correlationId, 'executor', model, raw);
       result = this.tryParseExecutor(raw, subtask);
     }
@@ -163,6 +189,9 @@ export class ExecutorAgent {
     context: WorkbookContext,
     previousActions: Action[] = [],
     correlationId = `req_${Date.now()}`,
+    usageTotals?: UsageTotals,
+    /** Same override as `execute()` — see its docstring. */
+    modelOverride?: string,
   ): Promise<ExecutorOutput> {
     const { originalStep, attempt, maxAttempts, verifierFeedback } = retryContext;
 
@@ -182,7 +211,14 @@ export class ExecutorAgent {
       verifierFeedback,
     };
 
-    return this.execute(originalStep, retryAwareContext, previousActions, correlationId);
+    return this.execute(
+      originalStep,
+      retryAwareContext,
+      previousActions,
+      correlationId,
+      usageTotals,
+      modelOverride,
+    );
   }
 
   private recordWorkflowNode(

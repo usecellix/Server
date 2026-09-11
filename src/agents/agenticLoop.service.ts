@@ -24,6 +24,7 @@ import { CompletenessChecker } from './checkers/completeness.checker';
 import { FormattingChecker } from './checkers/formatting.checker';
 import { SemanticFormulaChecker } from './checkers/semantic-formula.checker';
 import { OverwriteOccupancyChecker } from './checkers/overwrite-occupancy.checker';
+import { StructuralIntentChecker } from './checkers/structural-intent.checker';
 import { CheckerResult, mergeCheckerResults } from './checkers/checker.types';
 import { buildDeterministicSubtaskActions } from './utils/compound-action.util';
 import { StepRetryExhaustedError } from './errors';
@@ -33,12 +34,55 @@ import { shouldSkipVerifier } from './verifier-skip.policy';
 import { isDestructiveActionType } from './verifier-skip.policy';
 import { isExecutorBlockedSignal } from './utils/verifier-partial-parse.util';
 import { rebindFormatRangeNumberFormats } from './utils/preserve-number-format.util';
+import { UsageTotals } from './utils/usage-accumulator.util';
 
 export interface AgenticLoopOptions {
   conversationId?: string;
   correlationId?: string;
   toolEmit?: (event: string, data: Record<string, unknown>) => void;
   parseFailureTracker?: { hadFailure: boolean };
+  /** Out-param — every Executor/Verifier call this run makes accumulates its
+   * real usage here, same object the caller (OrchestratorService) passed to
+   * PlannerAgent.plan(), so one run produces one combined total. */
+  usageTotals?: UsageTotals;
+  /**
+   * Called as each execution wave finishes, with the actions THAT WAVE
+   * produced — TASKS.md #174 (progressive emission, the "B" half of #153).
+   *
+   * Lets the caller turn a finished wave into an Accept card immediately
+   * instead of holding everything until the whole loop returns. The loop stays
+   * ignorant of ChangeSets and SSE cards; it only reports "this much is done".
+   *
+   * Deliberately awaited: the caller creates a ChangeSet, and letting the next
+   * wave start before that resolves would let two waves race to emit cards out
+   * of order. A wave is 30-50s of LLM time, so a few ms of ChangeSet work costs
+   * nothing measurable.
+   *
+   * Never allowed to break the run — a throw here is logged and swallowed,
+   * because a presentation concern must not destroy work the loop has already
+   * done (the TASKS.md #173 lesson).
+   */
+  onWaveComplete?: (waveActions: Action[], waveIndex: number) => Promise<void>;
+  /**
+   * Set by `runWave` (STEPWISE_EXECUTION.md) — suppresses the hard `ERROR` SSE
+   * event this loop otherwise sends when it times out with nothing to show.
+   *
+   * That event exists for the one-shot path, where "nothing delivered" really
+   * is the end of the request. For a stepwise wave it is not: `executeStepwiseWave`
+   * treats a wave that timed out with zero actions as recoverable — it marks
+   * the wave skipped and moves on to the next one, which can still succeed.
+   *
+   * Without this flag, a live run showed the actual failure mode: the loop's
+   * raw `ERROR` reached the frontend, whose SSE handler treats `error` as
+   * terminal (`runtime.aborted = true`, spinner stops, turn shown as failed) —
+   * while the backend kept working for several more minutes underneath,
+   * trying the next wave. The user saw "Agentic loop timeout" and gave up on
+   * a turn that was, from the backend's perspective, still in progress and
+   * might have gone on to succeed. `VERIFY_FAIL`/`THINKING` events (both
+   * already non-fatal per `SseEmitter`) still fire, so the wave's own status
+   * line is not silent — only the hard-stop signal is withheld.
+   */
+  isStepwiseWave?: boolean;
 }
 
 export interface CompletedSubtaskResult {
@@ -57,7 +101,20 @@ export interface AgenticLoopResult {
   iterationsRun: number;
   verifierPassed: boolean;
   completedSubtasks: CompletedSubtaskResult[];
+  /**
+   * The single MOST RELEVANT failure — kept for callers/messages that only
+   * ever describe one ("a later step could not be completed: ..."). This is
+   * `failedSubtasks[0]` when non-empty, `null` otherwise; it is NOT
+   * necessarily the only failure. TASKS.md #195 found that a wave of many
+   * independent parallel subtasks (e.g. 12 month-sheet creates with no
+   * dependsOn between them) can have SEVERAL genuinely fail at once — using
+   * only this field silently discarded every failure but one, with no
+   * recorded reason anywhere for the rest. Prefer `failedSubtasks` for
+   * anything that needs to know the true failure count or list every reason.
+   */
   failedSubtask: FailedSubtaskResult | null;
+  /** Every subtask that failed this run, not just the first — see `failedSubtask`'s docblock. */
+  failedSubtasks: FailedSubtaskResult[];
   /** True when some subtasks completed but the full chain did not verify/pass. */
   partialProgress: boolean;
 }
@@ -84,7 +141,24 @@ export class AgenticLoopService {
   private readonly MAX_STEP_RETRIES = 2;
   private readonly MAX_FORMULA_RETRIES = 2;
   private readonly MAX_TOOL_REQUESTS = 5;
-  private readonly TIMEOUT_MS = 300_000;
+  /**
+   * Wall-clock budget for the whole execute+verify loop, measured from loop
+   * start (the Planner's own time is NOT counted against it).
+   *
+   * Raised from 300_000 on evidence, not preference: a live 20-subtask ledger
+   * build ran 542s end to end and died here with nothing to show. Its Main-sheet
+   * subtasks form a ~6-deep dependency chain (create -> headers -> Jan-Jun
+   * formulas -> Jul-Dec -> KPI row -> consolidated header/chart), and each level
+   * is a serial LLM round trip that no amount of sibling parallelism can
+   * shorten. Six levels at 30-50s each already approaches 300s before the
+   * verifier runs at all.
+   *
+   * This is a mitigation, not a fix. The real answer is TASKS.md #153's
+   * resumable loop, where a long build stops being one connection holding one
+   * budget. Until then a build that would have finished at 320s must not be
+   * thrown away at 300s.
+   */
+  private readonly TIMEOUT_MS = 480_000;
 
   constructor(
     private readonly executor: ExecutorAgent,
@@ -97,6 +171,7 @@ export class AgenticLoopService {
     private readonly overwriteOccupancyChecker: OverwriteOccupancyChecker,
     private readonly semanticFormulaChecker: SemanticFormulaChecker = new SemanticFormulaChecker(),
     private readonly structuredLogger: StructuredLogger = new StructuredLogger(),
+    private readonly structuralIntentChecker: StructuralIntentChecker = new StructuralIntentChecker(),
   ) {}
 
   async run(
@@ -109,12 +184,54 @@ export class AgenticLoopService {
     return this.runInternal(originalPrompt, subtasks, context, emitter, loopOptions);
   }
 
+  /**
+   * Executes and verifies ONE dependency wave, for stepwise Tier 3 runs
+   * (STEPWISE_EXECUTION.md SD-1/SD-3). The whole loop — Executor iterations,
+   * shadow-workbook dry run, deterministic checkers, scoped retry — runs
+   * exactly as it does for a full run; the only difference is the set of
+   * subtasks it is handed and the already-decided work it is told about.
+   *
+   * `priorActions` are the actions earlier accepted waves already produced.
+   * They are seeded as completed, invisible-to-retry state so this wave's
+   * Executor and the shadow workbook both see the sheets those waves created —
+   * without them, "populate Main" would plan against a workbook where Main does
+   * not exist.
+   *
+   * Deliberately delegates to `runInternal` rather than reimplementing the
+   * sequencing: a second copy of the verify/retry logic is exactly the
+   * two-implementations-of-one-rule drift this codebase keeps finding bugs in.
+   */
+  async runWave(
+    originalPrompt: string,
+    waveSubtasks: SubTask[],
+    priorActions: Array<{ subtask: SubTask; actions: Action[] }>,
+    context: WorkbookContext,
+    emitter: SseEmitter,
+    loopOptions: AgenticLoopOptions = {},
+  ): Promise<AgenticLoopResult> {
+    return this.runInternal(
+      originalPrompt,
+      waveSubtasks,
+      context,
+      emitter,
+      { ...loopOptions, isStepwiseWave: true },
+      priorActions,
+    );
+  }
+
   private async runInternal(
     originalPrompt: string,
     subtasks: SubTask[],
     context: WorkbookContext,
     emitter: SseEmitter,
     loopOptions: AgenticLoopOptions,
+    /**
+     * Stepwise runs only (STEPWISE_EXECUTION.md SD-1) — work earlier accepted
+     * waves already produced. Seeded as completed state so the shadow workbook
+     * and Executor context see those sheets/values, then filtered back out of
+     * every result, so this wave is verified and reported on its own terms.
+     */
+    priorActions: Array<{ subtask: SubTask; actions: Action[] }> = [],
   ): Promise<AgenticLoopResult> {
     const startedAt = Date.now();
     let iterationsRun = 0;
@@ -122,15 +239,28 @@ export class AgenticLoopService {
     const formulaValidationLog: FormulaValidationResult[] = [];
 
     const ordered = this.orderByDependencies(subtasks);
-    const subtaskStates: SubtaskActionState[] = ordered.map((subtask) => ({
+    const priorIds = new Set(priorActions.map((entry) => entry.subtask.id));
+    const priorStates: SubtaskActionState[] = priorActions.map((entry) => ({
+      subtask: entry.subtask,
+      actions: entry.actions,
+      droppedActions: [],
+      completed: true,
+      verified: true,
+    }));
+    const ownStates: SubtaskActionState[] = ordered.map((subtask) => ({
       subtask,
       actions: [],
       droppedActions: [],
       completed: false,
     }));
+    // Prior states come FIRST so shadow-workbook replay applies them before
+    // this wave's own actions — the dependency order they were accepted in.
+    const subtaskStates: SubtaskActionState[] = [...priorStates, ...ownStates];
 
     const waves = computeExecutionWaves(ordered);
-    const completedIds = new Set<string>();
+    // Prior waves' subtasks are already done: naming them completed is what
+    // makes their actions visible to this wave's Executor context.
+    const completedIds = new Set<string>(priorIds);
 
     for (const wave of waves) {
       if (Date.now() - startedAt > this.TIMEOUT_MS) {
@@ -188,10 +318,33 @@ export class AgenticLoopService {
         completedIds.add(subtask.id);
       }
 
-      // Live progress so the UI is not idle while remaining waves run.
-      const readyActions = subtaskStates.reduce((sum, s) => sum + (s.actions?.length ?? 0), 0);
-      const doneSteps = subtaskStates.filter((s) => s.completed && !s.failedReason).length;
-      const failedSteps = subtaskStates.filter((s) => Boolean(s.failedReason)).length;
+      // TASKS.md #174 — hand this wave's actions to the caller so a card can be
+      // rendered now. Runs BEFORE the progress status below so the card and its
+      // "N steps ready" line arrive in a sensible order.
+      if (loopOptions.onWaveComplete) {
+        const waveActions = wave.flatMap(
+          (subtask) =>
+            subtaskStates.find((state) => state.subtask.id === subtask.id)?.actions ?? [],
+        );
+        if (waveActions.length > 0) {
+          try {
+            await loopOptions.onWaveComplete(waveActions, waves.indexOf(wave));
+          } catch (error) {
+            this.logger.warn(
+              `onWaveComplete failed (continuing — progressive emission must never cost real work): ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+            );
+          }
+        }
+      }
+
+      // Live progress so the UI is not idle while remaining waves run. Counts
+      // THIS run's own states only — a stepwise wave must not report earlier
+      // accepted waves' work as if it just produced it.
+      const readyActions = ownStates.reduce((sum, s) => sum + (s.actions?.length ?? 0), 0);
+      const doneSteps = ownStates.filter((s) => s.completed && !s.failedReason).length;
+      const failedSteps = ownStates.filter((s) => Boolean(s.failedReason)).length;
       if (readyActions > 0 || doneSteps > 0) {
         emitter.send({
           type: 'CHECKPOINT',
@@ -214,9 +367,47 @@ export class AgenticLoopService {
     }
 
     if (timedOut) {
-      this.logger.warn('Agentic loop timed out before completion');
-      emitter.send({ type: 'ERROR', message: 'Agentic loop timeout' });
-      return this.buildLoopResult(subtaskStates, iterationsRun, false, {
+      // A timeout with work in hand is NOT a fatal error — TASKS.md #173.
+      //
+      // This unconditionally emitted ERROR, and the frontend's error branch
+      // sets `aborted = true` on the turn. So the partial-progress card that
+      // `conversation.service.ts` emits moments later was discarded before it
+      // could render. Three live runs ended that way: 11 minutes of work, 14
+      // subtasks completed, and the user shown nothing but "Agentic loop
+      // timeout".
+      //
+      // Reserve ERROR for the case where there is genuinely nothing to show.
+      // Otherwise say what happened as a status and let the partial card
+      // through — that is the §3.7 rule pointing the other way for once:
+      // reporting honestly here means NOT overstating a partial success as a
+      // total failure.
+      const deliverable = ownStates.filter(
+        (state) => (state.actions?.length ?? 0) > 0,
+      ).length;
+
+      this.logger.warn(
+        `Agentic loop timed out before completion (${deliverable} subtask(s) have actions to deliver)`,
+      );
+
+      if (deliverable > 0) {
+        emitter.send({
+          type: 'THINKING',
+          message:
+            `Ran out of time before finishing every step — ${deliverable} step(s) are ready to review.`,
+        });
+      } else if (loopOptions.isStepwiseWave) {
+        // See AgenticLoopOptions.isStepwiseWave — this wave's own caller
+        // treats zero-actions-plus-timeout as recoverable (skip, try the next
+        // wave), so the hard terminal signal must not go out here.
+        emitter.send({
+          type: 'THINKING',
+          message: 'This step ran out of time before producing changes — moving to the next one.',
+        });
+      } else {
+        emitter.send({ type: 'ERROR', message: 'Agentic loop timeout' });
+      }
+
+      return this.buildLoopResult(ownStates, iterationsRun, false, {
         preferCompletedOnly: true,
         defaultFailReason: 'Agentic loop timed out before completion',
       });
@@ -241,19 +432,28 @@ export class AgenticLoopService {
     while (!verifierPassed && verifierCycle < maxVerifierCycles && !timedOut) {
       if (Date.now() - startedAt > this.TIMEOUT_MS) {
         timedOut = true;
-        emitter.send({ type: 'ERROR', message: 'Agentic loop timeout' });
+        // See AgenticLoopOptions.isStepwiseWave: the caller of a stepwise wave
+        // treats this as recoverable, not terminal — the VERIFY_FAIL emitted
+        // just below the loop (non-fatal, per SseEmitter) still tells the user
+        // something went wrong with this step.
+        if (!loopOptions.isStepwiseWave) {
+          emitter.send({ type: 'ERROR', message: 'Agentic loop timeout' });
+        }
         break;
       }
 
       verifierCycle += 1;
       emitter.send({ type: 'THINKING', message: 'Running deterministic checks...' });
 
+      // Shadow spans EVERY state (prior waves included) so checks see the real
+      // accumulated workbook; the checks themselves grade only this run's own
+      // subtasks, so a stepwise wave never re-judges work already accepted.
       const shadow = this.buildShadowFromStates(context, subtaskStates);
       const verifyContext = this.enrichContextFromShadow(shadow);
       const cheapChecks = this.runDeterministicChecks(
         originalPrompt,
         ordered,
-        subtaskStates,
+        ownStates,
         verifyContext,
       );
 
@@ -335,7 +535,9 @@ export class AgenticLoopService {
 
       emitter.send({ type: 'THINKING', message: 'Verifying semantic correctness...' });
 
-      const allActions = this.flattenActions(subtaskStates);
+      // This wave's own actions decide whether the LLM verifier is worth
+      // running — prior waves' work was already verified when it was accepted.
+      const allActions = this.flattenActions(ownStates);
       const hasFormulaActions = allActions.some(
         (action) => action.type === 'SET_FORMULA' || action.type === 'FILL_DOWN',
       );
@@ -388,6 +590,7 @@ export class AgenticLoopService {
             verifyContext,
             validatorSummary,
             loopOptions.correlationId,
+            loopOptions.usageTotals,
           );
           verification = this.mergeWithLockedPasses(partial, ordered, lockedPassIds, lastSubtaskVerifyResults);
         }
@@ -500,9 +703,12 @@ export class AgenticLoopService {
       });
     }
 
-    this.applyVerifyResultsToStates(subtaskStates, lastSubtaskVerifyResults, verifierPassed);
+    // Own states only: a stepwise wave reports on the work IT did. Prior waves
+    // were already reported, accepted and change-set'd on their own requests —
+    // re-emitting them here would double-count every action in the run.
+    this.applyVerifyResultsToStates(ownStates, lastSubtaskVerifyResults, verifierPassed);
 
-    return this.buildLoopResult(subtaskStates, iterationsRun, verifierPassed, {
+    return this.buildLoopResult(ownStates, iterationsRun, verifierPassed, {
       preferCompletedOnly: !verifierPassed,
       defaultFailReason:
         retryExhaustedMessage ?? 'Could not complete and verify the full request',
@@ -558,24 +764,39 @@ export class AgenticLoopService {
         verified: state.verified === true || verifierPassed,
       }));
 
-    const failedState =
-      subtaskStates.find((state) => Boolean(state.failedReason)) ??
-      (!verifierPassed
-        ? subtaskStates.find((state) => state.verified === false) ??
-          subtaskStates.find((state) => !state.completed)
-        : undefined);
+    // TASKS.md #195 — collect EVERY failed subtask, not just the first. A wave
+    // of independent parallel subtasks (no dependsOn between them, e.g. 12
+    // month-sheet creates) can have several genuinely fail at once; using
+    // `.find()` alone silently discarded every failure but one, with no
+    // recorded reason anywhere for the rest — the exact live incident this
+    // fixes (9 of 12 month sheets failed, only 1 reason was ever recorded).
+    const explicitlyFailedStates = subtaskStates.filter((state) => Boolean(state.failedReason));
+    // A subtask with no explicit failedReason but that never verified/completed
+    // still failed — same fallback single-pass logic used before, just applied
+    // to every such state instead of only the first one found.
+    const implicitlyFailedStates = !verifierPassed
+      ? subtaskStates.filter(
+          (state) =>
+            !state.failedReason &&
+            (state.verified === false || !state.completed) &&
+            !explicitlyFailedStates.includes(state),
+        )
+      : [];
 
-    let failedSubtask: FailedSubtaskResult | null =
-      !verifierPassed && failedState
-        ? {
-            subtaskId: failedState.subtask.id,
-            reason:
-              failedState.failedReason ??
-              (options.timedOut
-                ? 'Timed out before this step completed'
-                : options.defaultFailReason),
-          }
-        : null;
+    let failedSubtasks: FailedSubtaskResult[] = !verifierPassed
+      ? [...explicitlyFailedStates, ...implicitlyFailedStates].map((state) => ({
+          subtaskId: state.subtask.id,
+          reason:
+            state.failedReason ??
+            (options.timedOut
+              ? 'Timed out before this step completed'
+              : options.defaultFailReason),
+        }))
+      : [];
+
+    // The single most-relevant failure, for callers/messages that only ever
+    // describe one — NOT necessarily the only failure. See its own docblock.
+    let failedSubtask: FailedSubtaskResult | null = failedSubtasks[0] ?? null;
 
     // Spec 22 Bug 2: never ship destructive actions as partial progress when
     // dependencies failed or the full chain did not verify.
@@ -593,10 +814,12 @@ export class AgenticLoopService {
       );
 
     if (withheldDestructive && failedSubtask) {
-      failedSubtask = {
+      const annotated = {
         ...failedSubtask,
         reason: `${failedSubtask.reason} — withheld destructive change(s) until prerequisites succeed`,
       };
+      failedSubtask = annotated;
+      failedSubtasks = [annotated, ...failedSubtasks.slice(1)];
     } else if (withheldDestructive && !failedSubtask) {
       failedSubtask = {
         subtaskId: candidateCompleted.find((e) =>
@@ -605,6 +828,7 @@ export class AgenticLoopService {
         reason:
           'Withheld destructive change(s) because the full request could not be verified safely',
       };
+      failedSubtasks = [failedSubtask];
     }
 
     const partialProgress =
@@ -630,6 +854,7 @@ export class AgenticLoopService {
       verifierPassed,
       completedSubtasks,
       failedSubtask,
+      failedSubtasks,
       partialProgress,
     };
   }
@@ -699,7 +924,14 @@ export class AgenticLoopService {
       context,
     );
     const overwriteOccupancy = this.overwriteOccupancyChecker.check(subtaskStates, context);
-    const merged = mergeCheckerResults([completeness, formatting, semantic, overwriteOccupancy]);
+    const structuralIntent = this.structuralIntentChecker.check(subtaskStates, context);
+    const merged = mergeCheckerResults([
+      completeness,
+      formatting,
+      semantic,
+      overwriteOccupancy,
+      structuralIntent,
+    ]);
 
     const needsSemanticReview =
       subtaskStates.some((state) =>
@@ -972,12 +1204,14 @@ export class AgenticLoopService {
               execContext,
               previousActions,
               loopOptions.correlationId,
+              loopOptions.usageTotals,
             )
           : await this.executor.execute(
               subtask,
               execContext,
               previousActions,
               loopOptions.correlationId,
+              loopOptions.usageTotals,
             );
         this.noteExecutorParseResult(result, loopOptions);
       } catch (error) {
@@ -1045,6 +1279,7 @@ export class AgenticLoopService {
           execContext,
           previousActions,
           loopOptions.correlationId,
+          loopOptions.usageTotals,
         );
         this.noteExecutorParseResult(result, loopOptions);
       } catch (error) {
@@ -1126,6 +1361,7 @@ export class AgenticLoopService {
           execContext,
           previousActions,
           loopOptions.correlationId,
+          loopOptions.usageTotals,
         );
         this.noteExecutorParseResult(result, loopOptions);
         continue;
@@ -1203,6 +1439,7 @@ export class AgenticLoopService {
         execContext,
         previousActions,
         loopOptions.correlationId,
+        loopOptions.usageTotals,
       );
     }
 

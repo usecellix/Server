@@ -8,7 +8,7 @@ import { Action, DroppedAction, ExecutorOutput, SubTask } from '../types/agent.t
 import { resolveRemarkValue, stripCalledLabel } from './called-value.util';
 import { annotateClearIntentOverwrite } from './clear-intent-overwrite.util';
 import { stripSheetPrefix } from './range-address.util';
-import { parseA1Range } from './range-merge.util';
+import { parseA1Cell, parseA1Range } from './range-merge.util';
 import { normalizeChartColorScheme } from './chart-color-scheme.util';
 
 /** Action types that sanitizeAction requires integer row/col for. */
@@ -21,6 +21,28 @@ const INDEX_RANGE_ACTION_TYPES = new Set<SheetActionType>([
   'CLEAR_ALL',
   'ADD_COMMENT',
   'DELETE_COMMENT',
+]);
+
+/**
+ * Single-cell counterparts of the above: sanitizeAction demands integer
+ * row/col for these too, but models routinely address them with an A1
+ * `address` string instead — the exact shape executor.prompt.ts demonstrates
+ * for BATCH_SET operations, directly above the line telling the model to
+ * "emit individual SET_CELL actions instead" when it is unsure of a BATCH_SET.
+ *
+ * Nothing between the Executor and the preview objects to the address form:
+ * it normalizes, passes `hasRequiredFields`, and verifies clean. Then
+ * `sanitizeAction` drops every one of them for want of row/col and
+ * `finalizeActions` returns an empty array, which surfaces to the user as
+ * "Something went wrong applying this change - try rephrasing" on a request
+ * the pipeline had already reported as "2 actions ready for preview".
+ * TASKS.md #183.
+ */
+const INDEX_CELL_ACTION_TYPES = new Set<SheetActionType>([
+  'SET_CELL',
+  'SET_FORMULA',
+  'CLEAR_CELL',
+  'HIGHLIGHT_CELL',
 ]);
 
 /**
@@ -98,6 +120,15 @@ export function normalizeSingleAction(
   if (typeof record.range === 'string') action.range = record.range;
   if (typeof record.sourceRange === 'string') action.sourceRange = record.sourceRange;
   if (typeof record.targetRange === 'string') action.targetRange = record.targetRange;
+  // DATA_VALIDATION carries its whole rule in one nested object. Dropping it
+  // here would leave a valid-looking action that installs no rule at all —
+  // the silent-loss shape TASKS.md #156/#157 both landed in. TASKS.md #166.
+  if (typeof record.showGridlines === 'boolean') {
+    action.showGridlines = record.showGridlines;
+  }
+  if (record.validation !== null && typeof record.validation === 'object') {
+    action.validation = record.validation as SheetActionPayload['validation'];
+  }
   if (typeof record.sourceSheetName === 'string') {
     action.sourceSheetName = record.sourceSheetName;
   }
@@ -465,6 +496,9 @@ export function normalizeSingleAction(
   if (INDEX_RANGE_ACTION_TYPES.has(type)) {
     expandRangeStringToIndices(action);
   }
+  if (INDEX_CELL_ACTION_TYPES.has(type)) {
+    expandCellAddressToIndices(action);
+  }
 
   if (!hasRequiredFields(action)) return null;
 
@@ -519,6 +553,35 @@ function expandRangeStringToIndices(action: SheetActionPayload): void {
   action.col = parsed.startCol;
   action.rowCount = parsed.endRow - parsed.startRow + 1;
   action.colCount = parsed.endCol - parsed.startCol + 1;
+}
+
+/**
+ * Resolve a single-cell `address` ("A1", "Main!C3") into 0-indexed row/col.
+ *
+ * Explicit indices always win — an action carrying both is taken at its word,
+ * exactly as `expandRangeStringToIndices` treats `range`. A range-shaped
+ * address ("A1:B2") on a single-cell action resolves to its top-left, which is
+ * the only cell such an action can mean.
+ */
+function expandCellAddressToIndices(action: SheetActionPayload): void {
+  if (isValidIndex(action.row) && isValidIndex(action.col)) {
+    return;
+  }
+  if (typeof action.address !== 'string' || !action.address.trim()) {
+    return;
+  }
+  const local = stripSheetPrefix(action.address);
+  const cell = parseA1Cell(local) ?? parseA1Range(local);
+  if (!cell) {
+    return;
+  }
+  if ('startRow' in cell) {
+    action.row = cell.startRow;
+    action.col = cell.startCol;
+    return;
+  }
+  action.row = cell.row;
+  action.col = cell.col;
 }
 
 export function normalizeExecutorOutput(

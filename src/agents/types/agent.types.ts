@@ -104,6 +104,41 @@ export interface PlannerOutput {
 }
 
 /**
+ * Two-pass planning (TASKS.md #191) — a coarse, cheap-to-generate top-level
+ * item the Planner's first pass identifies, expanded into real `SubTask[]` by
+ * a SEPARATE, phase-scoped second call. Exists because a single-pass plan for
+ * a large compound build (12 month sheets + a multi-section dashboard) has to
+ * describe everything in one JSON response, and repeatedly truncates even
+ * after exhausting the last-resort token ceiling (TASKS.md #170/#187/#190) —
+ * splitting the DESCRIBING into small, independent calls is the actual fix,
+ * not a bigger ceiling that the next larger request outgrows again.
+ */
+export interface PlanPhase {
+  id: string;
+  /** Free-text description of what this phase covers — fed to the expansion
+   *  call, not the Executor. Not a SubTask.description. */
+  kind: string;
+  targetSheet: string;
+  /**
+   * When set, this phase covers ONE repeated structure applied once per
+   * entry (e.g. ["January", ..., "December"] for 12 near-identical month
+   * sheets) — the expansion call is told to produce one group of subtasks
+   * PER entry, not a single subtask describing all of them at once.
+   */
+  repeatFor?: string[];
+  /** Ids of other PHASES this one depends on — resolved to real subtask ids
+   *  once both phases have been expanded (see `stitchPhaseSubtasks`). */
+  dependsOn: string[];
+}
+
+export interface CoarsePlanOutput {
+  phases: PlanPhase[];
+  clarificationsNeeded: string[];
+  confidence: 'high' | 'medium' | 'low';
+  reasoning: string;
+}
+
+/**
  * An action the Executor emitted that could not be normalized into a usable action.
  * Carried out of normalization so it is logged and verified against — never silently discarded.
  */
@@ -166,4 +201,17 @@ export interface AgentRunOptions {
   routerAssumption?: string;
   /** Router complexity tier (0–3) — keys Planner max_tokens budget. */
   complexity?: 0 | 1 | 2 | 3;
+  /**
+   * Called as each execution wave completes, so the caller can emit an Accept
+   * card for finished work instead of waiting for the whole run. TASKS.md #174.
+   */
+  onWaveComplete?: (waveActions: Action[], waveIndex: number) => Promise<void>;
+  /**
+   * A plan the caller has ALREADY computed, handed over instead of being
+   * re-derived. Set by the stepwise gate when it plans, finds a single wave and
+   * declines — without this the one-shot path pays for a second full Planner
+   * call on every simple request. Must be a copy the caller no longer holds a
+   * reference to. TASKS.md #196.
+   */
+  precomputedPlan?: PlannerOutput;
 }

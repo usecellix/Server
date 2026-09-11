@@ -10,6 +10,7 @@ import { FastifyReply } from 'fastify';
 import { Model } from 'mongoose';
 import { ConversationRequestDto } from '../dto/conversation-request.dto';
 import {
+  CONVERSATION_TTL_MS,
   Conversation,
   ConversationDocument,
   ConversationMessageEntry,
@@ -27,10 +28,22 @@ import { ActionWave, splitIntoActionWaves } from '../utils/action-wave.util';
 import { classifyIntent, detectAmbiguity } from '../llm/ambiguity-detector';
 import { LLMTier, SheetSnapshot } from '../../types/cellix.types';
 import { OrchestratorService } from '../../agents/orchestrator.service';
+import { AgentRunStateService, WaveDecision } from '../../agents/agent-run-state.service';
+import { AgentRunDocument } from '../../agents/schemas/agent-run.schema';
+import { ContinueRunDto } from '../dto/continue-run.dto';
+import {
+  isStepwiseExecutionEnabled,
+  shouldRunStepwise,
+} from '../utils/stepwise-execution-flag.util';
 import { SseEmitter } from '../../agents/sse.emitter';
 import { ToolBridgeService } from '../../agents/tool-bridge.service';
 import { buildAgentWorkbookContext } from '../../agents/utils/workbook-context.builder';
+import { computeExecutionWaves } from '../../agents/utils/task-graph.util';
 import { WriteRouteNoActionError } from '../errors/write-route-no-action.error';
+import { CreditGateService } from '../../credit/credit-gate.service';
+import { CreditLedgerService } from '../../credit/credit-ledger.service';
+import { resolveCreditCost } from '../../credit/credit-cost-catalog';
+import { ChitchatService } from './chitchat.service';
 import { ConversationEngineService, EngineResponse, LlmRequestError } from './conversation-engine.service';
 import { DataQueryService } from './data-query.service';
 import { FindExportService, FindExportSheetSlice } from './find-export.service';
@@ -73,6 +86,14 @@ import { SheetAnalyzerService } from './sheet-analyzer.service';
 import { Tier0DirectService, Tier0Result } from './tier0-direct.service';
 import { Tier1SingleActionService } from './tier1-single-action.service';
 import { Tier2GenerateVerifyService } from './tier2-generate-verify.service';
+import { assessTierEscalation } from '../utils/tier-escalation.util';
+import { attributeActionsToSubtasks, intentForWave } from '../utils/wave-intent.util';
+import {
+  selectEarlyEmittable,
+  splitEarlyByPhase,
+  excludeAlreadyEmitted,
+  keysFor,
+} from '../utils/progressive-emit.util';
 import { StructuredLogger } from '../../agents/logging/structured-logger';
 import { WorkbookContext as AgentWorkbookContext } from '../../agents/types/agent.types';
 import { SheetAction } from '../types/sheet-actions.types';
@@ -102,11 +123,27 @@ import {
   type LlmFailure,
 } from '../utils/llm-failure-message.util';
 import { annotateAnswerConsistency } from '../utils/answer-consistency.util';
+import { deriveConversationTitle, truncateTitle } from '../utils/conversation-title.util';
 import { WorkflowTraceService } from '../../common/logging/workflow-trace.service';
 import type { WorkflowTraceStatus } from '../../common/logging/schemas/workflow-trace.schema';
 
 const MAX_MESSAGES = 50;
-const CONVERSATION_TTL_MS = Number(process.env.CONVERSATION_TTL_HOURS ?? 168) * 60 * 60 * 1000;
+
+/** History list page size ceiling (TASKS.md #171) — never return unbounded history. */
+const HISTORY_MAX_LIMIT = 50;
+const HISTORY_DEFAULT_LIMIT = 25;
+
+/** One row of the history list — summary only, no message bodies (TASKS.md #171). */
+export interface ConversationSummary {
+  conversationId: string;
+  workbookId?: string;
+  title: string;
+  firstMessage: string;
+  lastMessage: string;
+  messageCount: number;
+  status: string;
+  updatedAt: Date | null;
+}
 
 @Injectable()
 export class ConversationService {
@@ -122,6 +159,7 @@ export class ConversationService {
     private readonly openRouter: OpenRouterService,
     private readonly orchestrator: OrchestratorService,
     private readonly llmRouter: LlmRouterService,
+    private readonly chitchat: ChitchatService,
     private readonly contextCache: ContextCacheService,
     private readonly dataQuery: DataQueryService,
     private readonly findExport: FindExportService,
@@ -133,6 +171,9 @@ export class ConversationService {
     private readonly tier2GenerateVerify: Tier2GenerateVerifyService,
     private readonly structuredLogger: StructuredLogger,
     private readonly workflowTrace: WorkflowTraceService,
+    private readonly creditGate: CreditGateService,
+    private readonly creditLedger: CreditLedgerService,
+    private readonly agentRunState: AgentRunStateService,
   ) {}
 
   private enrichAgentContext(
@@ -345,6 +386,34 @@ export class ConversationService {
    * orchestration — no SSE emission here, so callers control emit ordering
    * (e.g. 'answer' before the first 'actions' event) exactly as before.
    */
+  /**
+   * Label for a progressive card — TASKS.md #174.
+   *
+   * Deliberately plainer than `describeStep` in action-wave.util.ts: mid-run we
+   * know what this wave did but not where it sits in the finished build, so the
+   * label states the work and claims nothing about position.
+   */
+  private describeProgressiveWave(actions: SheetAction[]): string {
+    const creates = actions.filter((a) =>
+      ['ADD_SHEET', 'CREATE_SHEET', 'COPY_SHEET'].includes(String(a.type)),
+    ).length;
+    if (creates > 0 && creates === actions.length) {
+      return `Create ${creates} sheet${creates === 1 ? '' : 's'}`;
+    }
+
+    const sheets = new Set(
+      actions.map((a) => String(a.sheetName ?? '').trim()).filter(Boolean),
+    );
+    if (creates > 0) {
+      return sheets.size > 1
+        ? `Create and fill ${sheets.size} sheets`
+        : `Create and fill ${[...sheets][0] || 'sheet'}`;
+    }
+    return sheets.size > 1
+      ? `Write content on ${sheets.size} sheets`
+      : `Write content on ${[...sheets][0] || 'sheet'}`;
+  }
+
   private async createActionWaveChangeSets(
     actions: SheetAction[],
     input: { conversationId: string; traceId: string; prompt: string; context: AgentWorkbookContext },
@@ -397,14 +466,25 @@ export class ConversationService {
     });
   }
 
+  /**
+   * @param userId Owner of this conversation, resolved from the session by the
+   *   controller (TASKS.md #170). Deliberately a separate parameter rather than
+   *   a DTO field — a client-supplied userId would let a caller write into, and
+   *   later list, another user's history.
+   */
   async handleConversation(
     request: ConversationRequestDto,
     reply: FastifyReply,
     traceId = '-',
+    userId?: string,
   ): Promise<void> {
     this.validateRequest(request);
 
-    const conversation = await this.getOrCreateConversation(request.conversationId, request.workbookId);
+    const conversation = await this.getOrCreateConversation(
+      request.conversationId,
+      request.workbookId,
+      userId,
+    );
     const activeRequestRaw = await this.applyRefinementContext(request);
     let activeRequest: ConversationRequestDto = {
       ...activeRequestRaw,
@@ -475,6 +555,16 @@ export class ConversationService {
         return;
       }
       // Regex matched but handler returned null — fall through to full path.
+    }
+
+    // CHITCHAT gate — before SheetAnalyzer, same reason as the instant shortcut
+    // above: a greeting needs no workbook context, no TOON compression, and no
+    // Tier 0-3 dispatch. Fails open to TASK (classifyIntent never throws out of
+    // this call), so a classifier outage just costs one extra tiering pass.
+    const intentLabel = await this.llmRouter.classifyIntent(activeRequest.message);
+    if (intentLabel === 'CHITCHAT') {
+      await this.handleChitchat(activeRequest, request, conversation, reply, traceId);
+      return;
     }
 
     let analysis = this.sheetAnalyzer.analyze(activeRequest.sheetData);
@@ -740,6 +830,7 @@ export class ConversationService {
               history,
               analysis,
               emit,
+              userId,
             );
           } else {
             await this.streamWithOpenAi(
@@ -1318,6 +1409,7 @@ export class ConversationService {
     history: ConversationMessageEntry[],
     analysis: ReturnType<SheetAnalyzerService['analyze']>,
     emit: (event: string, data: Record<string, unknown>) => void,
+    userId?: string,
   ): Promise<void> {
     const startedAt = Date.now();
     const outcome = this.resolveInitialWriteOutcome(routerDecision);
@@ -1407,7 +1499,18 @@ export class ConversationService {
               actionHint,
               agentContext,
             );
-            if (tier1Result.actions.length > 0) {
+            // TASKS.md #165 — the word-based lane guess was made before any work
+            // existed; now that it does, check it. Escalating discards this
+            // lane's LLM call, which is why the thresholds are conservative.
+            const t1Escalation = assessTierEscalation(tier1Result.actions);
+            if (t1Escalation.escalate) {
+              this.logger.warn(
+                `[${traceId}] Tier 1 escalating to planner: ${t1Escalation.reason}`,
+              );
+              outcome.escalatedFrom = 1;
+              outcome.escalationReason = t1Escalation.reason ?? undefined;
+            } else if (tier1Result.actions.length > 0) {
+              outcome.finalActionCount = tier1Result.actions.length;
               outcome.tier = 1;
               outcome.llmCallCount = 1;
               this.logger.log(
@@ -1440,6 +1543,30 @@ export class ConversationService {
           }
         }
       } else if (complexity === 2 && actionHint) {
+        // CREDIT_SYSTEM.md CD-4 — pre-flight gate before the LLM call, not after.
+        // userId is only absent for the eval-bypass auth path (auth.guard.ts) or
+        // a session with no user id; skip the gate rather than block a caller
+        // this codebase doesn't yet have an identity to charge.
+        if (userId) {
+          const gateResult = await this.creditGate.checkBalance(userId, 'FORMULA_GENERATE_OR_FIX');
+          if (!gateResult.allowed && gateResult.reason === 'insufficient_balance') {
+            emit('error', {
+              message: 'You are out of credits for this action.',
+              code: 'INSUFFICIENT_CREDIT',
+              availableBalance: gateResult.availableBalance,
+              requiredCredits: gateResult.requiredCredits,
+            });
+            await this.markCompleted(conversationId);
+            this.finalizeWorkflow(traceId, 'failed', {
+              route: 'write',
+              tier: 2,
+              sseOutput: { error: 'insufficient_credit' },
+            });
+            endSseResponse(reply);
+            return;
+          }
+        }
+
         const basePrompt =
           routedRequest.promptContext ?? richWorkbookContext.prompt_context ?? undefined;
         const { enrichedContext } = this.enrichAgentContext(
@@ -1455,6 +1582,18 @@ export class ConversationService {
           traceId,
           { conversationId, toolEmit: emit },
         );
+        // TASKS.md #165 — same check as Tier 1. Tier 2 is where this matters
+        // most: it can legitimately emit a handful of actions, so a result that
+        // creates several sheets is a build that slipped past the classifier.
+        const t2Escalation = assessTierEscalation(tier2Result.actions);
+        if (t2Escalation.escalate) {
+          this.logger.warn(
+            `[${traceId}] Tier 2 escalating to planner: ${t2Escalation.reason}`,
+          );
+          outcome.escalatedFrom = 2;
+          outcome.escalationReason = t2Escalation.reason ?? undefined;
+        } else {
+        outcome.finalActionCount = tier2Result.actions.length;
         outcome.tier = 2;
         // Executor+Verifier, plus optional Bug 1 retry (+ verify) and Bug 4 tool follow-up.
         outcome.llmCallCount = tier2Result.toolFollowUp
@@ -1473,12 +1612,45 @@ export class ConversationService {
           reply,
           emit,
           routerDecision.assumption,
+          userId,
         );
         return;
+        }
       }
 
       outcome.tier = 3;
       outcome.llmCallCount = 3;
+
+      // CREDIT_SYSTEM.md CD-4 — pre-flight gate before the Planner ever
+      // runs, mirroring Tier 2's gate above. Uses hasAnyBalance rather than
+      // checkBalance: a Tier 3 request's real cost (TIER3_AGENTIC_BUILD is
+      // priced per DELIVERED subtask) isn't known until the plan exists and
+      // the build finishes, so only a coarse "can they afford anything at
+      // all" check is possible here — the real floor is enforced at the
+      // completion-time debit in streamWithOrchestrator/finishStepwiseRun.
+      if (userId) {
+        const hasBalance = await this.creditGate.hasAnyBalance(userId);
+        if (!hasBalance) {
+          emit('error', {
+            message: 'You are out of credits for this action.',
+            code: 'INSUFFICIENT_CREDIT',
+          });
+          await this.markCompleted(conversationId);
+          this.finalizeWorkflow(traceId, 'failed', {
+            route: 'write',
+            tier: 3,
+            sseOutput: { error: 'insufficient_credit' },
+          });
+          endSseResponse(reply);
+          return;
+        }
+      }
+
+      // Over-sorting is only visible if lane 3's OWN action count is recorded:
+      // a three-minute pipeline that produced two actions was the wrong lane.
+      const reportActionCount = (count: number) => {
+        outcome.finalActionCount = count;
+      };
       await this.streamWithOrchestrator(
         {
           ...routedRequest,
@@ -1492,6 +1664,8 @@ export class ConversationService {
         emit,
         routerDecision.assumption,
         (routerDecision.complexity ?? 3) as 0 | 1 | 2 | 3,
+        reportActionCount,
+        userId,
       );
     } finally {
       const classifiedTier = (routerDecision.complexity ?? 3) as 0 | 1 | 2 | 3;
@@ -1507,13 +1681,31 @@ export class ConversationService {
         actionHint: routerDecision.actionHint ?? '',
         llmCallCount: outcome.llmCallCount,
         durationMs: Date.now() - startedAt,
+        // TASKS.md #165 — the three fields that make mis-sorting MEASURABLE
+        // rather than a matter of opinion. Pairing the lane with what it
+        // actually produced is what turns "is the classifier any good?" into a
+        // query: a lane 1/2 run with a large `finalActionCount` was
+        // under-sorted; a lane 3 run with two or three actions was over-sorted.
+        escalatedFrom: outcome.escalatedFrom,
+        escalationReason: outcome.escalationReason,
+        finalActionCount: outcome.finalActionCount,
       });
+      if (outcome.escalatedFrom) {
+        this.logger.warn(
+          `[${traceId}] ROUTING MISS: classified tier ${outcome.escalatedFrom}, escalated to ${outcome.tier} — ${outcome.escalationReason}`,
+        );
+      }
     }
   }
 
   private resolveInitialWriteOutcome(routerDecision: RouterDecision): {
     tier: 0 | 1 | 2 | 3;
     llmCallCount: number;
+    /** Set when a fast lane bailed upward mid-flight. TASKS.md #165. */
+    escalatedFrom?: 1 | 2;
+    escalationReason?: string;
+    /** Actions the run finally produced — pairs with `tier` to expose mis-sorting. */
+    finalActionCount?: number;
   } {
     const complexity = routerDecision.complexity ?? 3;
     if (complexity === 0) {
@@ -1844,6 +2036,7 @@ export class ConversationService {
     reply: FastifyReply,
     emit: (event: string, data: Record<string, unknown>) => void,
     assumption?: string,
+    userId?: string,
   ): Promise<void> {
     if (result.actions.length === 0) {
       this.assertWriteRouteProducedActions({
@@ -1943,6 +2136,28 @@ export class ConversationService {
     });
     emit('conversation_end', { summary: 'Review changes and accept or reject.', tier: 2 });
     await this.markCompleted(conversationId);
+    if (userId) {
+      // CREDIT_SYSTEM.md CD-3 — debit once, at turn completion, now that a real
+      // ChangeSet exists. Rejection later is a workbook-state decision, not a
+      // billing one (CD-3) — this fires regardless of whether the user accepts.
+      const debitResult = await this.creditLedger.debit(userId, 'FORMULA_GENERATE_OR_FIX', 1, {
+        conversationId,
+        changeSetId: changeSet.changeSetId,
+      });
+      if (debitResult.debited && debitResult.balances) {
+        emit('credits', {
+          planCredits: debitResult.balances.planCredits,
+          purchasedCredits: debitResult.balances.purchasedCredits,
+          oneTimeCredits: debitResult.balances.oneTimeCredits,
+          debited: resolveCreditCost('FORMULA_GENERATE_OR_FIX'),
+          actionType: 'FORMULA_GENERATE_OR_FIX',
+        });
+      }
+      // debitResult.debited === false here means the balance was consumed by a
+      // race since the pre-flight gate check (CD-6) — CD-4 treats this as an
+      // accepted, rare timing artifact, not a reason to fail an already-verified
+      // turn or withhold the ChangeSet the user is about to see.
+    }
     this.logWorkflowChangeSet(traceId, changeSet.changeSetId, actions, changeSet.changes.length);
     this.finalizeWorkflow(traceId, 'awaiting_accept', {
       changeSetId: changeSet.changeSetId,
@@ -2076,6 +2291,456 @@ export class ConversationService {
     });
   }
 
+  /**
+   * Plans a Tier 3 build, and — when the plan has more than one dependency wave
+   * — persists it as an `agent_run`, executes ONLY wave 0, emits its Accept
+   * card, and ends the stream (STEPWISE_EXECUTION.md SD-1/SD-3).
+   *
+   * Returns true when it took ownership of the response. Returns false to mean
+   * "not stepwise after all" — a single-wave plan, or a plan that must ask a
+   * clarification first — in which case the caller runs the unchanged one-shot
+   * path. Deliberately never throws for a can't-do-stepwise reason: falling
+   * back to the behaviour that already works beats failing a real request.
+   */
+  private async tryStartStepwiseRun(opts: {
+    request: ConversationRequestDto;
+    reply: FastifyReply;
+    conversationId: string;
+    traceId: string;
+    emit: (event: string, data: Record<string, unknown>) => void;
+    sseEmitter: SseEmitter;
+    enrichedContext: AgentWorkbookContext;
+    promptContext: string;
+    conversationHistory: { role: 'user' | 'assistant'; content: string }[];
+    routerAssumption?: string;
+    complexity?: 0 | 1 | 2 | 3;
+    telemetry: LlmCallTelemetry;
+    userId?: string;
+    startedAt: number;
+    /**
+     * Out-param: receives the plan when stepwise declines, so the one-shot
+     * path can reuse it instead of paying for a second Planner call.
+     * TASKS.md #196.
+     */
+    declinedPlan?: { value?: PlannerOutput };
+  }): Promise<boolean> {
+    // CREDIT_SYSTEM.md CD-4 — pre-flight gate before the Planner even runs,
+    // mirroring the one-shot Tier 3 path's gate. Placed here rather than
+    // only right before createRun below, so a user with zero balance doesn't
+    // burn a real Planner LLM call before being blocked. hasAnyBalance, not
+    // checkBalance: TIER3_AGENTIC_BUILD is priced per delivered subtask, and
+    // the real subtask count isn't known until this very plan exists.
+    if (opts.userId) {
+      const hasBalance = await this.creditGate.hasAnyBalance(opts.userId);
+      if (!hasBalance) {
+        opts.emit('error', {
+          message: 'You are out of credits for this action.',
+          code: 'INSUFFICIENT_CREDIT',
+        });
+        await this.markCompleted(opts.conversationId);
+        this.finalizeWorkflow(opts.traceId, 'failed', {
+          route: 'write',
+          tier: 3,
+          sseOutput: { error: 'insufficient_credit' },
+        });
+        endSseResponse(opts.reply);
+        return true;
+      }
+    }
+
+    const { plan, openQuestions, mustAsk } = await this.orchestrator.planForStepwiseRun(
+      {
+        prompt: opts.request.message,
+        context: opts.enrichedContext,
+        conversationHistory: opts.conversationHistory,
+        promptContext: opts.promptContext,
+        conversationId: opts.conversationId,
+        correlationId: opts.traceId,
+        toolEmit: opts.emit,
+        routerAssumption: opts.routerAssumption,
+        complexity: opts.complexity ?? 3,
+      },
+      opts.sseEmitter,
+      opts.telemetry,
+    );
+
+    if (mustAsk) {
+      await this.saveMessage(opts.conversationId, {
+        id: `msg_${Date.now()}_assistant`,
+        role: 'assistant',
+        content: '[Clarification needed]',
+        type: 'clarification',
+        timestamp: new Date(),
+      });
+      opts.emit('done', { message: 'awaiting_clarification' });
+      endSseResponse(opts.reply);
+      return true;
+    }
+
+    const waves = computeExecutionWaves(plan.subtasks);
+    if (!shouldRunStepwise(waves.length)) {
+      // Single-wave plan: gating it would add a round trip and buy nothing.
+      // Hand the plan to the one-shot path rather than making it re-plan. The
+      // handover is a deep copy, so neither path can mutate the other's plan —
+      // the isolation the old "just re-plan" note was protecting, without the
+      // second Planner call it cost on every simple request. TASKS.md #196.
+      if (opts.declinedPlan) {
+        opts.declinedPlan.value = JSON.parse(JSON.stringify(plan)) as PlannerOutput;
+      }
+      this.logger.log(
+        `Stepwise declined trace=${opts.traceId} waves=${waves.length} — ` +
+          `falling back to one-shot (reusing plan, no re-plan)`,
+      );
+      return false;
+    }
+
+    const run = await this.agentRunState.createRun({
+      conversationId: opts.conversationId,
+      userId: opts.userId,
+      traceId: opts.traceId,
+      prompt: opts.request.message,
+      subtasks: plan.subtasks,
+      context: opts.enrichedContext,
+      promptContext: opts.promptContext,
+      conversationHistory: opts.conversationHistory,
+      routerAssumption: opts.routerAssumption,
+    });
+
+    this.logger.log(
+      `Stepwise run ${run.runId} started trace=${opts.traceId} subtasks=${plan.subtasks.length} waves=${waves.length}`,
+    );
+
+    // STEPWISE_EXECUTION.md §3 originally called for emitting the whole plan
+    // up front via the existing 'plan' SSE event, so the user sees the shape
+    // of the build before approving its first step. Reverted: 'plan' is the
+    // Plan MODE contract — a read-only preview whose card says "review it,
+    // then run it as an action" and renders a "Run as Action" button that
+    // re-sends the prompt. Emitting it here, while the build is ALREADY
+    // executing, produced exactly that confusing button on a live run (a real
+    // user report). The per-wave "Step N of M" Accept cards already show
+    // progress as it happens; a proper plan-overview needs its own event type
+    // and rendering (no run button, informational only) — scoped as separate
+    // follow-up work rather than bolted on here under time pressure.
+    if (openQuestions.length > 0) {
+      opts.emit('status', {
+        message: `Proceeding under an assumption — ${openQuestions[0]}`,
+      });
+    }
+
+    await this.executeStepwiseWave(run, opts.reply, opts.emit, opts.sseEmitter, opts.telemetry);
+    return true;
+  }
+
+  /**
+   * Runs the run's next executable wave, emits its Accept card, and ends the
+   * stream with `wave_ready` — the event that distinguishes "paused, call
+   * /continue" from "finished" (STEPWISE_EXECUTION.md §3).
+   */
+  private async executeStepwiseWave(
+    run: AgentRunDocument,
+    reply: FastifyReply,
+    emit: (event: string, data: Record<string, unknown>) => void,
+    sseEmitter: SseEmitter,
+    telemetry: LlmCallTelemetry,
+  ): Promise<void> {
+    const next = this.agentRunState.nextExecutableWave(run);
+
+    if (!next) {
+      await this.finishStepwiseRun(run, reply, emit);
+      return;
+    }
+
+    await this.agentRunState.markStatus(run, 'running');
+
+    // Everything earlier waves produced, so this wave's Executor and shadow
+    // workbook see the sheets those waves created (SD-1).
+    const priorActions = run.subtaskStates
+      .filter((state) => state.actions.length > 0)
+      .map((state) => ({
+        subtask: run.subtasks.find((subtask) => subtask.id === state.subtaskId)!,
+        actions: state.actions as SheetAction[],
+      }))
+      .filter((entry) => Boolean(entry.subtask));
+
+    const waveResult = await this.orchestrator.runStepwiseWave(
+      {
+        prompt: run.prompt,
+        context: run.context as AgentWorkbookContext,
+        conversationHistory: run.conversationHistory,
+        promptContext: run.promptContext,
+        conversationId: run.conversationId,
+        correlationId: run.traceId,
+        toolEmit: emit,
+        routerAssumption: run.routerAssumption,
+        complexity: 3,
+        waveSubtasks: next.subtasks,
+        priorActions,
+      },
+      sseEmitter,
+      telemetry,
+    );
+
+    await this.agentRunState.recordWaveResult(
+      run,
+      next.waveIndex,
+      next.subtasks.map((subtask) => {
+        const completed = waveResult.completedSubtasks.find(
+          (entry) => entry.subtaskId === subtask.id,
+        );
+        // TASKS.md #195 — look this subtask up in the FULL failure list, not
+        // just the single most-relevant one. A wave of many independent
+        // parallel subtasks (e.g. 12 month-sheet creates with no dependsOn
+        // between them) can have several genuinely fail at once; matching
+        // only `failedSubtask` left every failure but one with no recorded
+        // reason at all in this run's persisted state.
+        const failed = waveResult.failedSubtasks.find((entry) => entry.subtaskId === subtask.id);
+        return {
+          subtaskId: subtask.id,
+          actions: completed?.actions ?? [],
+          completed: Boolean(completed),
+          verified: completed?.verified,
+          failedReason: failed?.reason,
+        };
+      }),
+    );
+
+    // A wave that produced nothing must not emit an empty Accept card — it is
+    // a failure to report, not a step to approve. SD-4 says continue rather
+    // than abort, so the run advances with this wave marked skipped.
+    if (waveResult.actions.length === 0) {
+      const reason =
+        waveResult.failedSubtask?.reason ?? 'This step produced no changes to apply';
+      this.logger.warn(`Stepwise run ${run.runId} wave ${next.waveIndex} empty: ${reason}`);
+      emit('status', { message: `Step skipped — ${reason}` });
+      await this.agentRunState.applyDecision(run, 'skipped');
+      await this.executeStepwiseWave(run, reply, emit, sseEmitter, telemetry);
+      return;
+    }
+
+    // TASKS.md #195 — a wave that DID produce some actions can still have lost
+    // OTHER independent subtasks silently (e.g. 3 of 12 month sheets built,
+    // 9 failed) — the Accept card only ever described what succeeded. Surface
+    // the gap the same way the one-shot path's `undeliveredSubtasks` already
+    // does, so "only got one sheet" has a visible, honest explanation instead
+    // of looking like the request was simply under-specified.
+    if (waveResult.failedSubtasks.length > 0) {
+      const missing = waveResult.failedSubtasks;
+      this.logger.warn(
+        `Stepwise run ${run.runId} wave ${next.waveIndex}: ${missing.length} of ${next.subtasks.length} ` +
+          `subtask(s) failed — ${missing.map((m) => m.subtaskId).join(', ')}`,
+      );
+      emit('status', {
+        message:
+          missing.length === 1
+            ? `Note: 1 of ${next.subtasks.length} planned steps in this batch produced no changes — ${missing[0].reason.slice(0, 110)}`
+            : `Note: ${missing.length} of ${next.subtasks.length} planned steps in this batch produced no changes (e.g. ${missing[0].reason.slice(0, 90)})`,
+      });
+    }
+
+    const changeSet = await this.changeSetService.createPreview({
+      conversationId: run.conversationId,
+      traceId: run.traceId,
+      prompt: run.prompt,
+      context: run.context as AgentWorkbookContext,
+      actions: waveResult.actions,
+      provenance: {
+        sourceRefs: buildWorkbookSourceRefsFromActions(
+          waveResult.actions,
+          run.context.activeSheetName || 'workbook',
+          run.context.activeSheetName,
+        ),
+        workbookId: run.context.activeSheetName || 'workbook',
+        activeSheetName: run.context.activeSheetName,
+      },
+    });
+
+    const label = this.describeProgressiveWave(waveResult.actions);
+    const previousChangeSetId = run.changeSetIds[run.changeSetIds.length - 1];
+
+    emit('actions', {
+      actions: waveResult.actions,
+      explanation: label,
+      userFacingSummary: buildUserFacingSummary({
+        answer: label,
+        actions: waveResult.actions,
+        changes: changeSet.changes,
+        activeSheetName: run.context.activeSheetName,
+        planSubtasks: next.subtasks.map((subtask) => ({
+          id: subtask.id,
+          description: subtask.description,
+          targetSheet: subtask.targetSheet,
+        })),
+      }),
+      internalDetails: buildInternalDetails({
+        tier: 3,
+        model: telemetry.model,
+        processingLabel: label,
+        actions: waveResult.actions,
+        legacyExplanation: label,
+      }),
+      changeSetId: changeSet.changeSetId,
+      changes: changeSet.changes,
+      irreversibleActionTypes: changeSet.irreversibleActionTypes,
+      tier: 3,
+      stepIndex: next.waveIndex + 1,
+      stepTotal: run.waveTotal,
+      stepLabel: label,
+      stepwise: true,
+      runId: run.runId,
+      ...(previousChangeSetId ? { dependsOnChangeSetId: previousChangeSetId } : {}),
+    });
+
+    run.changeSetIds.push(changeSet.changeSetId);
+    await run.save();
+    this.logWorkflowChangeSet(
+      run.traceId,
+      changeSet.changeSetId,
+      waveResult.actions,
+      changeSet.changes.length,
+    );
+
+    // The stream ends here but the RUN does not — this is what tells the client
+    // to accept and then call /continue, rather than treating the build as done.
+    emit('wave_ready', {
+      runId: run.runId,
+      waveIndex: next.waveIndex,
+      waveTotal: run.waveTotal,
+      hasMore: true,
+      changeSetId: changeSet.changeSetId,
+    });
+    endSseResponse(reply);
+  }
+
+  /** Closes out a run whose waves are all decided, reporting skips honestly. */
+  private async finishStepwiseRun(
+    run: AgentRunDocument,
+    reply: FastifyReply,
+    emit: (event: string, data: Record<string, unknown>) => void,
+  ): Promise<void> {
+    const skipped = this.agentRunState.summarizeSkipped(run);
+    await this.agentRunState.markStatus(run, 'completed');
+    await this.markCompleted(run.conversationId);
+
+    // An incomplete build reported as complete is the false-completeness
+    // failure CODEBASE_ANALYSIS.md §3.7 keeps re-teaching — say what was left.
+    const summary =
+      skipped.length === 0
+        ? 'All steps applied.'
+        : skipped.length === 1
+          ? `Done — 1 step was not applied: ${skipped[0].description}`
+          : `Done — ${skipped.length} steps were not applied (e.g. ${skipped[0].description})`;
+
+    if (run.userId) {
+      // CREDIT_SYSTEM.md CD-3 — debit ONCE for the whole run, here, since
+      // this is the single place a stepwise run's completion is known —
+      // finishStepwiseRun fires exactly once, when nextExecutableWave(run)
+      // has returned null (checked by executeStepwiseWave before calling
+      // this). Debiting per-wave instead would double-charge, since a run
+      // spans several /continue round-trips for what the user experiences
+      // as ONE request. Quantity is every subtask across every wave that
+      // actually delivered actions — the real total, not the plan's own
+      // subtask count (which can exceed delivery when a subtask was
+      // skipped/rejected, per `skipped` above).
+      const subtaskCount = run.subtaskStates.filter((state) => state.completed).length;
+      const debitResult = await this.creditLedger.debit(run.userId, 'TIER3_AGENTIC_BUILD', subtaskCount, {
+        conversationId: run.conversationId,
+      });
+      if (debitResult.debited && debitResult.balances) {
+        emit('credits', {
+          planCredits: debitResult.balances.planCredits,
+          purchasedCredits: debitResult.balances.purchasedCredits,
+          oneTimeCredits: debitResult.balances.oneTimeCredits,
+          debited: resolveCreditCost('TIER3_AGENTIC_BUILD', subtaskCount),
+          actionType: 'TIER3_AGENTIC_BUILD',
+        });
+      }
+      // debitResult.debited === false here means the balance was consumed by
+      // a race since the pre-flight gate check (CD-6) — CD-4 treats this as
+      // an accepted, rare timing artifact, not a reason to withhold the
+      // already-applied build from the user.
+    }
+
+    emit('conversation_end', {
+      summary,
+      tier: 3,
+      runId: run.runId,
+      skippedSubtasks: skipped,
+    });
+    emit('wave_ready', {
+      runId: run.runId,
+      waveIndex: run.waveIndex,
+      waveTotal: run.waveTotal,
+      hasMore: false,
+    });
+    this.logger.log(
+      `Stepwise run ${run.runId} complete waves=${run.waveTotal} skipped=${skipped.length}`,
+    );
+    endSseResponse(reply);
+  }
+
+  /**
+   * `POST /excel-ai/conversation/continue` — records the client's decision on
+   * the wave just emitted and generates the next one (STEPWISE_EXECUTION.md §3).
+   *
+   * This is the only place wave N+1's Executor can be reached, which is what
+   * enforces SD-3's no-look-ahead rule structurally rather than by convention.
+   */
+  async continueRun(
+    body: ContinueRunDto,
+    reply: FastifyReply,
+    traceId: string | undefined,
+    userId?: string,
+  ): Promise<void> {
+    const run = await this.agentRunState.loadRunForUser(body.runId, userId);
+
+    initSseResponse(reply);
+    const emit = (event: string, data: Record<string, unknown>) =>
+      writeSseEvent(reply, event, { ...data, conversationId: run.conversationId });
+    const sseEmitter = new SseEmitter(emit);
+    const telemetry: LlmCallTelemetry = { provider: 'openrouter', modelTier: 'high' };
+
+    try {
+      if (run.status === 'completed' || run.status === 'abandoned') {
+        emit('conversation_end', { summary: 'This build has already finished.', tier: 3 });
+        emit('wave_ready', {
+          runId: run.runId,
+          waveIndex: run.waveIndex,
+          waveTotal: run.waveTotal,
+          hasMore: false,
+        });
+        endSseResponse(reply);
+        return;
+      }
+
+      // Readback first: the next wave must plan against the OBSERVED result of
+      // the wave just accepted, not the shadow workbook's prediction of it.
+      if (body.decision === 'accepted') {
+        await this.agentRunState.applyReadback(
+          run,
+          body.readback as AgentWorkbookContext['sheets'] | undefined,
+        );
+      }
+
+      const { cascadeSkipped } = await this.agentRunState.applyDecision(
+        run,
+        body.decision as WaveDecision,
+      );
+      if (cascadeSkipped.length > 0) {
+        emit('status', {
+          message: `Skipping ${cascadeSkipped.length} step(s) that depended on the step you did not accept.`,
+        });
+      }
+
+      await this.executeStepwiseWave(run, reply, emit, sseEmitter, telemetry);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Continue failed';
+      this.logger.warn(`Stepwise continue failed run=${run.runId} error="${message}"`);
+      await this.agentRunState.markStatus(run, 'failed').catch(() => undefined);
+      emit('error', { message });
+      endSseResponse(reply);
+    }
+  }
+
   private async streamWithOrchestrator(
     request: ConversationRequestDto,
     reply: FastifyReply,
@@ -2086,6 +2751,10 @@ export class ConversationService {
     emit: (event: string, data: Record<string, unknown>) => void,
     routerAssumption?: string,
     complexity?: 0 | 1 | 2 | 3,
+    /** Reports the finished action count back for routing telemetry. TASKS.md #165. */
+    reportActionCount?: (count: number) => void,
+    /** Owner of any stepwise run this request starts — never from the body. */
+    userId?: string,
   ): Promise<void> {
     const startedAt = Date.now();
     const intent = classifyIntent(request.message);
@@ -2116,8 +2785,128 @@ export class ConversationService {
     const sseEmitter = new SseEmitter(emit);
 
     try {
+      // TASKS.md #174 — progressive emission ("B"). Turn each finished
+      // execution wave into an Accept card immediately instead of holding every
+      // card until the whole run returns.
+      //
+      // Only creation and plain-content actions go out early: the consolidation,
+      // chart and presentation passes rewrite formulas, chart anchors and
+      // formatting once they can see the whole build, and a card must never
+      // promise an action a later pass will change (see progressive-emit.util).
+      //
+      // Everything shown early is recorded by structural key so the final
+      // emission — which still runs finalizeActions over ALL actions, because
+      // the global passes need that — can exclude it instead of double-showing.
+      const progressive = {
+        emittedKeys: [] as string[],
+        cardCount: 0,
+        lastChangeSetId: undefined as string | undefined,
+        onWaveComplete: undefined as
+          | ((waveActions: SheetAction[], waveIndex: number) => Promise<void>)
+          | undefined,
+      };
+
+      progressive.onWaveComplete = async (waveActions) => {
+        const early = selectEarlyEmittable(waveActions);
+        if (early.length === 0) return;
+
+        // One card per phase, never a mixed one — TASKS.md #175.
+        for (const group of splitEarlyByPhase(early)) {
+          await emitProgressiveCard(group);
+        }
+      };
+
+      const emitProgressiveCard = async (early: SheetAction[]) => {
+        const changeSet = await this.changeSetService.createPreview({
+          conversationId,
+          traceId,
+          prompt: request.message,
+          context: enrichedContext,
+          actions: early,
+          provenance: {
+            sourceRefs: buildWorkbookSourceRefsFromActions(
+              early,
+              enrichedContext.activeSheetName || 'workbook',
+              enrichedContext.activeSheetName,
+            ),
+            workbookId: enrichedContext.activeSheetName || 'workbook',
+            activeSheetName: enrichedContext.activeSheetName,
+          },
+        });
+
+        progressive.cardCount += 1;
+        const label = this.describeProgressiveWave(early);
+
+        emit('actions', {
+          actions: early,
+          explanation: label,
+          userFacingSummary: buildUserFacingSummary({
+            answer: label,
+            actions: early,
+            changes: changeSet.changes,
+            activeSheetName: enrichedContext.activeSheetName,
+          }),
+          internalDetails: buildInternalDetails({
+            tier: 3,
+            model: telemetry.model,
+            processingLabel: label,
+            actions: early,
+            legacyExplanation: label,
+          }),
+          changeSetId: changeSet.changeSetId,
+          changes: changeSet.changes,
+          irreversibleActionTypes: changeSet.irreversibleActionTypes,
+          tier: 3,
+          stepLabel: label,
+          // Deliberately no stepIndex/stepTotal: the total is unknown while the
+          // run is still going, and a "Step 1 of ?" badge would be a worse lie
+          // than none. The final emission carries the real numbering.
+          progressive: true,
+          ...(progressive.lastChangeSetId
+            ? { dependsOnChangeSetId: progressive.lastChangeSetId }
+            : {}),
+        });
+
+        progressive.lastChangeSetId = changeSet.changeSetId;
+        progressive.emittedKeys.push(...keysFor(early));
+        this.logWorkflowChangeSet(traceId, changeSet.changeSetId, early, changeSet.changes.length);
+      };
+
+      // TASKS.md #153 / STEPWISE_EXECUTION.md — plan the whole build, then
+      // execute and preview only the FIRST wave, ending the stream so the
+      // client can accept before anything downstream is generated (SD-3).
+      // Falls through to the one-shot path below whenever the flag is off or
+      // the plan turns out to be a single wave (nothing to gate).
+      // Receives the plan when stepwise declines, so the one-shot call below
+      // reuses it instead of re-planning. TASKS.md #196.
+      const declinedPlan: { value?: PlannerOutput } = {};
+      if (isStepwiseExecutionEnabled()) {
+        const handled = await this.tryStartStepwiseRun({
+          request,
+          reply,
+          conversationId,
+          traceId,
+          emit,
+          sseEmitter,
+          enrichedContext,
+          promptContext,
+          conversationHistory,
+          routerAssumption,
+          complexity,
+          telemetry,
+          userId,
+          startedAt,
+          declinedPlan,
+        });
+        if (handled) {
+          success = true;
+          return;
+        }
+      }
+
       const orchestratorResult = await this.orchestrator.runDetailed(
         {
+          precomputedPlan: declinedPlan.value,
           prompt: request.message,
           context: enrichedContext,
           conversationHistory,
@@ -2127,8 +2916,13 @@ export class ConversationService {
           toolEmit: emit,
           routerAssumption,
           complexity: complexity ?? 3,
+          onWaveComplete: progressive.onWaveComplete,
         },
         sseEmitter,
+        // Populates telemetry.usage/model from the real Planner+Executor+Verifier
+        // calls this run makes — previously never wired, so every Tier-3
+        // audit_logs row here always reported promptTokens/completionTokens: 0.
+        telemetry,
       );
       const rawActions = orchestratorResult.actions;
 
@@ -2148,17 +2942,50 @@ export class ConversationService {
 
       if (!orchestratorResult.verifierPassed) {
         if (orchestratorResult.partialProgress && rawActions.length > 0) {
+          // TASKS.md #195 — describe EVERY failed subtask, not just the first.
+          // A wave of independent parallel subtasks (e.g. many month-sheet
+          // creates with no dependsOn between them) can have several
+          // genuinely fail at once; reporting only `failedSubtask` understated
+          // how much of the request actually failed.
           const failedReason =
-            orchestratorResult.failedSubtask?.reason ??
-            'A later step could not be completed';
-          const actions = this.engine.finalizeActions(
+            orchestratorResult.failedSubtasks.length > 1
+              ? `${orchestratorResult.failedSubtasks.length} steps could not be completed, including: ${orchestratorResult.failedSubtasks[0].reason}`
+              : orchestratorResult.failedSubtask?.reason ??
+                'A later step could not be completed';
+          const finalized = this.engine.finalizeActions(
             rawActions,
             analysis,
             richWorkbookContext,
             request.message,
             enrichedContext.priorTurnActions,
+            // TASKS.md #172 — this argument was missing here while the success
+            // path passed it, so a partial run silently lost the client's
+            // probed capabilities and fell back to the non-dynamic-array
+            // consolidation even on a host that supports it (#152).
+            request.excelCapabilities,
           );
+
+          // PHASE-ORDER the actions before they are previewed — TASKS.md #172.
+          //
+          // The success path gets this from `createActionWaveChangeSets` ->
+          // `splitIntoActionWaves`, which buckets create -> content -> formula
+          // -> format -> layout -> chart. This branch built a preview straight
+          // from `finalizeActions`, which does NOT reorder, so actions reached
+          // Excel in the order the plan happened to accumulate them.
+          //
+          // That ordering is actively hostile here: planner.prompt.ts rule 0
+          // requires the Main-sheet subtasks to be emitted FIRST and the twelve
+          // month subtasks LAST (a token-budget rule, so a truncated plan loses
+          // the boilerplate rather than the dashboard). Correct for planning,
+          // wrong for applying — it puts `=SUM(July!H:H)` on Main ahead of the
+          // ADD_SHEET that creates July. The dependency graph orders EXECUTION
+          // against the shadow workbook; nothing was ordering the real write.
+          //
+          // Flattening the waves keeps this branch's single-card UX while
+          // giving it the same ordering guarantee the success path has.
+          const actions = splitIntoActionWaves(finalized).flatMap((wave) => wave.actions);
           actionsCount = actions.length;
+          reportActionCount?.(actions.length);
 
           const answer =
             `I completed **${orchestratorResult.completedSubtasks.length}** step(s) and prepared **${actions.length}** change(s) for preview, ` +
@@ -2211,6 +3038,7 @@ export class ConversationService {
               changeSetId: changeSet.changeSetId,
               partialProgress: true,
               failedSubtask: orchestratorResult.failedSubtask,
+              failedSubtasks: orchestratorResult.failedSubtasks,
             },
           });
 
@@ -2225,6 +3053,7 @@ export class ConversationService {
             irreversibleActionTypes: changeSet.irreversibleActionTypes,
             partialProgress: true,
             failedSubtask: orchestratorResult.failedSubtask,
+            failedSubtasks: orchestratorResult.failedSubtasks,
             tier: 3,
           });
           emit('conversation_end', {
@@ -2285,7 +3114,7 @@ export class ConversationService {
         });
       }
 
-      const actions = this.engine.finalizeActions(
+      const finalizedActions = this.engine.finalizeActions(
         rawActions,
         analysis,
         richWorkbookContext,
@@ -2293,12 +3122,31 @@ export class ConversationService {
         enrichedContext.priorTurnActions,
         request.excelCapabilities,
       );
-      actionsCount = actions.length;
 
+      // TASKS.md #174 — finalize still runs over EVERY action, because the
+      // consolidation, chart and presentation passes need the whole build in
+      // view. Anything already shown as a progressive card is removed here so
+      // it is not offered twice; what remains are the phases those passes own
+      // plus anything no early card covered.
+      const actions = excludeAlreadyEmitted(finalizedActions, progressive.emittedKeys);
+
+      if (progressive.cardCount > 0) {
+        this.logger.log(
+          `Progressive emission: ${progressive.cardCount} card(s) sent during the run ` +
+            `(${progressive.emittedKeys.length} actions); ${actions.length} of ` +
+            `${finalizedActions.length} finalized actions remain for the closing cards.`,
+        );
+      }
+
+      actionsCount = finalizedActions.length;
+      reportActionCount?.(finalizedActions.length);
+
+      // Asserted against the FULL finalized list: a run whose entire output was
+      // already delivered progressively is a success, not an empty write.
       this.assertWriteRouteProducedActions({
         conversationId,
         message: request.message,
-        actionsLength: actions.length,
+        actionsLength: finalizedActions.length,
       });
 
       const answer = `I'll apply the prepared changes to your sheet.`;
@@ -2308,6 +3156,24 @@ export class ConversationService {
       // writes that depend on them exist as their own card. A pure-write or
       // pure-create batch (the common case) comes back as a single wave,
       // identical to today's behavior.
+      // Everything was already delivered progressively — emitting the closing
+      // set would render a "0 changes ready for review" card. TASKS.md #174.
+      if (actions.length === 0 && progressive.cardCount > 0) {
+        this.logger.log(
+          `Progressive emission delivered the entire build in ${progressive.cardCount} card(s); no closing card needed.`,
+        );
+        emit('conversation_end', { summary: 'Review changes and accept or reject.', tier: 3 });
+        await this.markCompleted(conversationId);
+        this.finalizeWorkflow(traceId, 'awaiting_accept', {
+          route: 'write',
+          tier: 3,
+          durationMs: Date.now() - startedAt,
+        });
+        endSseResponse(reply);
+        success = true;
+        return;
+      }
+
       const waveChangeSets = await this.createActionWaveChangeSets(actions, {
         conversationId,
         traceId,
@@ -2337,6 +3203,22 @@ export class ConversationService {
       // own subtasks is incomplete, and saying so is the §3.7 rule this
       // codebase keeps re-learning. The Accept card already excludes these from
       // its promises; this makes the omission visible rather than merely quiet.
+      // TASKS.md #171 — the build proceeded under an assumption; say so. These
+      // are questions the Planner raised and we deliberately did NOT block on,
+      // so hiding them would be the §3.7 false-completeness shape: the user
+      // would see a finished workbook and never learn a guess was made.
+      if (orchestratorResult.openQuestions.length > 0) {
+        const asked = orchestratorResult.openQuestions;
+        this.logger.log(
+          `Proceeded under ${asked.length} open assumption(s) rather than blocking: ${asked.join(' | ')}`,
+        );
+        emit('status', {
+          message:
+            `I built this using my best reading of your request. ${asked.length === 1 ? 'One thing' : `${asked.length} things`} to confirm: ` +
+            asked.map((q) => q.trim()).join(' '),
+        });
+      }
+
       if (orchestratorResult.undeliveredSubtasks.length > 0) {
         const missing = orchestratorResult.undeliveredSubtasks;
         this.logger.warn(
@@ -2351,7 +3233,21 @@ export class ConversationService {
         });
       }
 
-      let previousChangeSetId: string | undefined;
+      // TASKS.md #167 — map each finalized action back to the subtask that
+      // produced it, so every staged step can describe its OWN work. The
+      // provenance was always in `completedSubtasks`; `finalizeActions` takes a
+      // flat array and dropped it (CODEBASE_ANALYSIS.md §3.7's shape again).
+      const actionAttribution = attributeActionsToSubtasks(
+        actions,
+        orchestratorResult.completedSubtasks ?? [],
+      );
+
+      // Seeded from the last progressive card so the closing cards cannot be
+      // accepted before the content they depend on. Without this the chain
+      // restarts and a formatting card could apply to sheets that do not exist
+      // yet — the #80 dependency guard would refuse it, but as a confusing
+      // failure rather than a disabled button. TASKS.md #174.
+      let previousChangeSetId: string | undefined = progressive.lastChangeSetId;
       let firstUserFacingSummary: ReturnType<typeof buildUserFacingSummary> | undefined;
       for (const [waveIndex, { wave, changeSet }] of waveChangeSets.entries()) {
         const isFirstWave = !previousChangeSetId;
@@ -2361,9 +3257,33 @@ export class ConversationService {
           changes: changeSet.changes,
           assumption: isFirstWave ? routerAssumption : undefined,
           activeSheetName: enrichedContext.activeSheetName,
-          // What the build DOES, in the Planner's own words, instead of a list
-          // of the mechanical actions it emits. TASKS.md #149.
-          planSubtasks: orchestratorResult.planSubtasks,
+          // Plan intent, scoped to THIS step's own actions.
+          //
+          // TASKS.md #161 had to disable intent entirely for staged builds
+          // because every card rendered the same whole-plan bullets — "Create
+          // 13 sheets" promising the formulas and charts three steps away,
+          // which is #155's over-promising in a new shape. That fix was
+          // correct and explicitly temporary: it left every staged card
+          // describing machinery ("83 formatting changes") when the data
+          // needed to describe work existed one layer up.
+          //
+          // Now each wave reports only the subtasks its own actions came from,
+          // so the over-promising is impossible by construction rather than by
+          // suppression. A wave that attributes to nothing (pure pass-generated
+          // formatting on unowned sheets) yields [] and correctly falls back to
+          // #140's action rollup — never an empty card, the bug #149 already
+          // hit once. TASKS.md #167.
+          planSubtasks:
+            waveChangeSets.length === 1
+              ? orchestratorResult.planSubtasks
+              : (() => {
+                  const scoped = intentForWave(
+                    wave.actionIndexes,
+                    actionAttribution,
+                    orchestratorResult.planSubtasks,
+                  );
+                  return scoped.length > 0 ? scoped : undefined;
+                })(),
         });
         firstUserFacingSummary ??= userFacingSummary;
         const internalDetails = buildInternalDetails({
@@ -2397,6 +3317,35 @@ export class ConversationService {
 
         this.logWorkflowChangeSet(traceId, changeSet.changeSetId, wave.actions, changeSet.changes.length);
         previousChangeSetId = changeSet.changeSetId;
+      }
+
+      if (userId) {
+        // CREDIT_SYSTEM.md CD-3 — debit once, at turn completion, now that
+        // the full build is known to have verified. TIER3_AGENTIC_BUILD is
+        // priced per DELIVERED subtask (credit-cost-catalog.ts), so the
+        // quantity is orchestratorResult.completedSubtasks.length — the real
+        // number of subtasks the Executor actually produced actions for, not
+        // the plan's own subtask count (which can exceed delivery, per
+        // TASKS.md #155's undeliveredSubtasks tracking above).
+        const subtaskCount = orchestratorResult.completedSubtasks.length;
+        const debitResult = await this.creditLedger.debit(userId, 'TIER3_AGENTIC_BUILD', subtaskCount, {
+          conversationId,
+          changeSetId: lastChangeSet.changeSetId,
+        });
+        if (debitResult.debited && debitResult.balances) {
+          emit('credits', {
+            planCredits: debitResult.balances.planCredits,
+            purchasedCredits: debitResult.balances.purchasedCredits,
+            oneTimeCredits: debitResult.balances.oneTimeCredits,
+            debited: resolveCreditCost('TIER3_AGENTIC_BUILD', subtaskCount),
+            actionType: 'TIER3_AGENTIC_BUILD',
+          });
+        }
+        // debitResult.debited === false here means the balance was consumed
+        // by a race since the pre-flight gate check (CD-6) — CD-4 treats
+        // this as an accepted, rare timing artifact, not a reason to fail an
+        // already-verified turn or withhold the ChangeSet the user is about
+        // to see.
       }
 
       emit('conversation_end', { summary: 'Review changes and accept or reject.', tier: 3 });
@@ -2481,15 +3430,21 @@ export class ConversationService {
     emit('thinking', { message: '🧠 Building a step-by-step plan across your workbook…' });
 
     try {
-      const plan = await this.orchestrator.planOnly({
-        prompt: request.message,
-        context: enrichedContext,
-        conversationHistory,
-        promptContext,
-        conversationId,
-        correlationId: traceId,
-        complexity,
-      });
+      const plan = await this.orchestrator.planOnly(
+        {
+          prompt: request.message,
+          context: enrichedContext,
+          conversationHistory,
+          promptContext,
+          conversationId,
+          correlationId: traceId,
+          complexity,
+        },
+        // Same wiring as streamWithOrchestrator — this path only calls the
+        // Planner, but previously reported promptTokens/completionTokens: 0
+        // for the same reason (telemetry.usage was never populated).
+        telemetry,
+      );
 
       if (plan.clarificationsNeeded.length > 0) {
         const question = plan.clarificationsNeeded.join(' ');
@@ -3037,6 +3992,7 @@ export class ConversationService {
   private async getOrCreateConversation(
     conversationId?: string,
     workbookId?: string,
+    userId?: string,
   ): Promise<ConversationDocument> {
     if (conversationId) {
       const existing = await this.conversationModel.findOne({ conversationId });
@@ -3046,14 +4002,33 @@ export class ConversationService {
       if (existing.expiresAt && existing.expiresAt.getTime() < Date.now()) {
         throw new GoneException('CONVERSATION_EXPIRED');
       }
+      // Ownership check (TASKS.md #171). A conversation that already has an
+      // owner can only be continued by that owner — otherwise a guessed or
+      // leaked conversationId would let one user append to, and read back,
+      // another's thread. Reported as NOT_FOUND rather than FORBIDDEN so the
+      // response doesn't confirm the id exists.
+      if (userId && existing.userId && existing.userId !== userId) {
+        throw new NotFoundException('CONVERSATION_NOT_FOUND');
+      }
       if (existing.messages.length >= MAX_MESSAGES) {
         throw new BadRequestException('CONTEXT_TOO_LARGE');
       }
       // Backfill only — never overwrite an already-recorded workbookId (mirrors
       // the frontend's own mint-once discipline from TASKS.md #21). Covers a
       // conversation that started before the client had minted/persisted one.
+      let dirty = false;
       if (workbookId && !existing.workbookId) {
         existing.workbookId = workbookId;
+        dirty = true;
+      }
+      // Same backfill discipline for userId: claims a pre-#170 conversation for
+      // the user continuing it, but never reassigns one that already has an
+      // owner (that case threw above).
+      if (userId && !existing.userId) {
+        existing.userId = userId;
+        dirty = true;
+      }
+      if (dirty) {
         await existing.save();
       }
       return existing;
@@ -3066,12 +4041,24 @@ export class ConversationService {
       status: 'active',
       expiresAt: new Date(Date.now() + CONVERSATION_TTL_MS),
       ...(workbookId ? { workbookId } : {}),
+      ...(userId ? { userId } : {}),
     });
   }
 
-  async getConversation(conversationId: string) {
+  /**
+   * Full conversation body, scoped to its owner (TASKS.md #171).
+   *
+   * `userId` is the *caller's* id, resolved from the session by the controller —
+   * requesting a conversation owned by someone else is rejected as NOT_FOUND,
+   * not silently returned. Unowned (pre-#170) conversations stay readable by id,
+   * which is exactly the access level they had before this change.
+   */
+  async getConversation(conversationId: string, userId?: string) {
     const doc = await this.conversationModel.findOne({ conversationId }).lean();
     if (!doc) {
+      throw new NotFoundException('CONVERSATION_NOT_FOUND');
+    }
+    if (userId && doc.userId && doc.userId !== userId) {
       throw new NotFoundException('CONVERSATION_NOT_FOUND');
     }
     if (doc.expiresAt && doc.expiresAt.getTime() < Date.now()) {
@@ -3081,9 +4068,135 @@ export class ConversationService {
       conversationId: doc.conversationId,
       messages: doc.messages ?? [],
       status: doc.status,
+      title: doc.title ?? deriveConversationTitle(doc.messages ?? []),
+      workbookId: doc.workbookId,
       sheetSnapshot: doc.sheetSnapshot,
       updatedAt: (doc as { updatedAt?: Date }).updatedAt ?? doc.expiresAt,
     };
+  }
+
+  /**
+   * A user's past conversations, newest first (TASKS.md #171).
+   *
+   * Returns summaries only — id, title, previews, counts — never message bodies:
+   * the list has to stay small enough to load on panel open, and full content is
+   * one `getConversation` call away once the user picks one.
+   *
+   * Pagination is cursor-based on `updatedAt` rather than skip/limit, so a
+   * conversation being updated mid-scroll can't shift rows across page
+   * boundaries and cause a duplicate or a skip.
+   */
+  async listConversations(
+    userId: string,
+    options: { limit?: number; cursor?: string; workbookId?: string } = {},
+  ): Promise<{ conversations: ConversationSummary[]; nextCursor: string | null }> {
+    const limit = Math.min(
+      Math.max(Math.trunc(options.limit ?? HISTORY_DEFAULT_LIMIT), 1),
+      HISTORY_MAX_LIMIT,
+    );
+
+    const filter: Record<string, unknown> = { userId };
+    // #173 is still open (global vs per-workbook history). The list is global by
+    // default — the ChatGPT/Cursor model the request was modelled on — but the
+    // filter is accepted now so answering #173 the other way is a caller change,
+    // not a schema or query rewrite.
+    if (options.workbookId) {
+      filter.workbookId = options.workbookId;
+    }
+    if (options.cursor) {
+      const cursorDate = new Date(options.cursor);
+      if (Number.isNaN(cursorDate.getTime())) {
+        throw new BadRequestException('INVALID_CURSOR');
+      }
+      filter.updatedAt = { $lt: cursorDate };
+    }
+
+    // limit + 1 so "is there another page" is answered by the query itself
+    // rather than by a second count() that could disagree with it.
+    const docs = await this.conversationModel
+      .find(filter)
+      .sort({ updatedAt: -1 })
+      .limit(limit + 1)
+      .select('conversationId workbookId title messages status updatedAt createdAt')
+      .lean();
+
+    const hasMore = docs.length > limit;
+    const page = hasMore ? docs.slice(0, limit) : docs;
+
+    const conversations = page.map((doc) => {
+      const messages = doc.messages ?? [];
+      const updatedAt = (doc as { updatedAt?: Date }).updatedAt;
+      return {
+        conversationId: doc.conversationId,
+        workbookId: doc.workbookId,
+        title: doc.title ?? deriveConversationTitle(messages),
+        firstMessage: truncateTitle(messages.find((m) => m.role === 'user')?.content ?? ''),
+        lastMessage: truncateTitle(messages[messages.length - 1]?.content ?? ''),
+        messageCount: messages.length,
+        status: doc.status,
+        updatedAt: updatedAt ?? (doc as { createdAt?: Date }).createdAt ?? null,
+      };
+    });
+
+    const last = page[page.length - 1] as { updatedAt?: Date } | undefined;
+    return {
+      conversations,
+      nextCursor: hasMore && last?.updatedAt ? last.updatedAt.toISOString() : null,
+    };
+  }
+
+  /**
+   * User-set rename, overriding the auto-derived first-message title
+   * (TASKS.md #177). Same ownership discipline as `getConversation`/
+   * `getOrCreateConversation`: a mismatched owner is reported as NOT_FOUND, not
+   * FORBIDDEN, so the response doesn't confirm the id exists. An unowned
+   * (pre-#170) conversation may still be renamed by anyone holding its id —
+   * the same access level `getConversation` already grants it for reads.
+   */
+  async renameConversation(
+    conversationId: string,
+    userId: string,
+    title: string,
+  ): Promise<{ conversationId: string; title: string }> {
+    const trimmed = truncateTitle(title);
+    if (!trimmed) {
+      throw new BadRequestException('TITLE_REQUIRED');
+    }
+
+    const doc = await this.conversationModel.findOne({ conversationId });
+    if (!doc) {
+      throw new NotFoundException('CONVERSATION_NOT_FOUND');
+    }
+    if (doc.userId && doc.userId !== userId) {
+      throw new NotFoundException('CONVERSATION_NOT_FOUND');
+    }
+
+    doc.title = trimmed;
+    await doc.save();
+    return { conversationId: doc.conversationId, title: trimmed };
+  }
+
+  /**
+   * Hard delete (TASKS.md #177) — chat history is explicitly framed as
+   * read/reopen/rename/delete, not soft-archive, matching the ChatGPT/Cursor
+   * baseline this feature was modelled on. There is nothing downstream that
+   * references a conversation by its Mongo `_id` in a way a delete would
+   * orphan: `change_sets`/`workflow_traces` correlate by `conversationId`
+   * string and already tolerate that id resolving to nothing once a
+   * conversation expires via TTL (`DATABASE_SCHEMA.md` §4) — a user delete is
+   * the same shape of dangling reference, just user-triggered instead of
+   * time-triggered.
+   */
+  async deleteConversation(conversationId: string, userId: string): Promise<void> {
+    const doc = await this.conversationModel.findOne({ conversationId }).select('userId').lean();
+    if (!doc) {
+      throw new NotFoundException('CONVERSATION_NOT_FOUND');
+    }
+    if (doc.userId && doc.userId !== userId) {
+      throw new NotFoundException('CONVERSATION_NOT_FOUND');
+    }
+
+    await this.conversationModel.deleteOne({ conversationId });
   }
 
   private conversationExpiresAt(): Date {
@@ -3094,6 +4207,14 @@ export class ConversationService {
     conversationId: string,
     message: ConversationMessageEntry,
   ): Promise<void> {
+    // Title is set from the first user message and never rewritten afterwards
+    // (TASKS.md #171) — `$setOnInsert` doesn't apply here since the doc already
+    // exists, so the "only if absent" condition lives in the filter instead.
+    const titleUpdate =
+      message.role === 'user' && message.content?.trim()
+        ? { title: truncateTitle(message.content) }
+        : {};
+
     await this.conversationModel.updateOne(
       { conversationId },
       {
@@ -3101,11 +4222,97 @@ export class ConversationService {
         $set: { updatedAt: new Date(), expiresAt: this.conversationExpiresAt() },
       },
     );
+
+    if (Object.keys(titleUpdate).length > 0) {
+      await this.conversationModel.updateOne(
+        {
+          conversationId,
+          $or: [{ title: { $exists: false } }, { title: null }, { title: '' }],
+        },
+        { $set: titleUpdate },
+      );
+    }
   }
 
   private async getRecentMessages(conversationId: string): Promise<ConversationMessageEntry[]> {
     const doc = await this.conversationModel.findOne({ conversationId }).lean();
     return doc?.messages?.slice(-MAX_MESSAGES) ?? [];
+  }
+
+  /**
+   * CHITCHAT route (see LlmRouterService.classifyIntent): one LOW-tier call,
+   * streamed as plain `chunk` SSE events — never `actions`, since there is
+   * nothing to preview/accept. Tagged `route: 'chitchat'` in workflow_traces
+   * so tier-a-metrics.util.ts (which assumes every traced request could have
+   * written something) doesn't fold this in with write-route requests.
+   */
+  private async handleChitchat(
+    activeRequest: ConversationRequestDto,
+    request: ConversationRequestDto,
+    conversation: ConversationDocument,
+    reply: FastifyReply,
+    traceId: string,
+  ): Promise<void> {
+    initSseResponse(reply);
+    const conversationId = conversation.conversationId;
+    const emit = (event: string, data: Record<string, unknown>) =>
+      writeSseEvent(reply, event, { ...data, conversationId });
+
+    this.startWorkflowTrace({
+      traceId,
+      conversationId,
+      workbookId: conversation.workbookId,
+      message: activeRequest.message,
+      mode: activeRequest.mode,
+      request: activeRequest,
+    });
+    this.workflowTrace.setMeta(traceId, { route: 'chitchat' });
+
+    await this.saveMessage(conversationId, {
+      id: `msg_${Date.now()}`,
+      role: 'user',
+      content: request.message,
+      type: 'command',
+      timestamp: new Date(),
+    });
+
+    let fullText = '';
+    try {
+      for await (const token of this.chitchat.streamReply(activeRequest.message)) {
+        fullText += token;
+        emit('chunk', { text: token });
+      }
+    } catch (err) {
+      this.logger.error(`Chitchat reply failed trace=${traceId} conversation=${conversationId}`, err);
+      fullText = fullText.trim() || "Hi! I'm having trouble responding right now — try again in a moment.";
+      emit('chunk', { text: fullText });
+    }
+
+    await this.saveMessage(conversationId, {
+      id: `msg_${Date.now()}_assistant`,
+      role: 'assistant',
+      content: fullText.trim(),
+      type: 'answer',
+      timestamp: new Date(),
+    });
+
+    this.workflowTrace.appendNode(traceId, {
+      id: 'router',
+      type: 'router',
+      label: 'Router → chitchat',
+      status: 'success',
+      output: { route: 'chitchat', responseLength: fullText.length },
+      meta: { route: 'chitchat' },
+    });
+
+    emit('conversation_end', { summary: 'Ready for your next message.' });
+    await this.markCompleted(conversationId);
+    this.finalizeWorkflow(traceId, 'completed', {
+      route: 'chitchat',
+      sseOutput: { kind: 'chitchat', responseLength: fullText.length },
+    });
+
+    endSseResponse(reply);
   }
 
   private async markCompleted(conversationId: string): Promise<void> {

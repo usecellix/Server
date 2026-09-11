@@ -40,11 +40,11 @@ export class Tier1SingleActionService {
       throw new Error('numeric_find_replace_escalation_required');
     }
 
-    const model = this.config.openRouterModelLow;
+    const model = this.config.openRouterModelTier1;
     const raw = await this.openRouter.complete({
       systemPrompt: buildTier1SystemPrompt(actionHint),
       userMessage: buildTier1UserMessage(message, actionHint, workbookContext),
-      tier: 'low',
+      tier: 'medium',
       model,
       temperature: 0,
       maxTokens: 512,

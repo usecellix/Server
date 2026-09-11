@@ -6,7 +6,11 @@ import { LlmRequestError } from '../errors/llm-request.error';
 import { injectMissingFormats } from '../excel/format-context-reader';
 import { ModelRouter, RoutingDecision } from '../llm/model-router';
 import { buildFormatContextSection } from '../llm/system-prompt-builder';
-import { buildActionPreviewPrompt, buildCellixSystemPrompt } from '../prompt/cellix-system-prompt';
+import {
+  buildActionPreviewPrompt,
+  buildWorkbookContextSection,
+  getStaticPromptSection,
+} from '../prompt/cellix-system-prompt';
 import { ConversationTurn, WorkbookContext as RichWorkbookContext } from '../../types/cellix.types';
 import { extractJsonFromLlmText, hasActionPayload } from '../utils/parse-llm-response.util';
 import { routeShortcutAction } from '../utils/shortcut-router.util';
@@ -26,6 +30,7 @@ import {
 } from '../utils/sheet-header-state.util';
 import { applyPresentationPass } from '../utils/presentation-pass.util';
 import { applyConsolidationPass } from '../utils/consolidation-pass.util';
+import { applyChartPlacementPass } from '../utils/chart-placement.util';
 import { formatIndianCurrency } from '../utils/indian-format.util';
 import { DataQueryService, FindMatch } from './data-query.service';
 import { IntentClassifierService, intentIsReadOnly } from './intent-classifier.service';
@@ -367,7 +372,14 @@ export class ConversationEngineService {
     const formatSection = richWorkbookContext
       ? buildFormatContextSection(richWorkbookContext)
       : '';
-    const systemPrompt = `${buildCellixSystemPrompt(ctx, analysis.isEmpty)}
+
+    // Split static and per-request content into separate system messages so the
+    // leading ~1024+ tokens stay byte-identical across requests — that's what
+    // OpenAI's automatic prompt caching (via OpenRouter) keys off. Concatenating
+    // workbook data into the same string as the static rules defeated caching
+    // on every call. See TASKS.md #163.
+    const staticSystemPrompt = getStaticPromptSection(analysis.isEmpty);
+    const volatileSystemPrompt = `${buildWorkbookContextSection(ctx)}
 ${formatSection ? `\n\n${formatSection}` : ''}
 
 ${buildActionPreviewPrompt(classification.intent)}
@@ -388,7 +400,8 @@ Sheet has ${analysis.rowCount} rows, ${analysis.columnCount} columns. Next appen
       : '';
 
     return [
-      { role: 'system', content: systemPrompt },
+      { role: 'system', content: staticSystemPrompt },
+      { role: 'system', content: volatileSystemPrompt },
       ...prior,
       {
         role: 'user',
@@ -538,7 +551,10 @@ Sheet has ${analysis.rowCount} rows, ${analysis.columnCount} columns. Next appen
     const consolidated = applyConsolidationPass(sanitized, {
       dynamicArrays: excelCapabilities?.dynamicArrays,
     });
-    return applyPresentationPass(consolidated, {
+    // Keep charts off the tables they plot (TASKS.md #133/#163) before styling,
+    // so the presentation pass sees final anchors.
+    const charted = applyChartPlacementPass(consolidated);
+    return applyPresentationPass(charted, {
       userMessage,
       context: richWorkbookContext,
     });
@@ -595,6 +611,18 @@ Sheet has ${analysis.rowCount} rows, ${analysis.columnCount} columns. Next appen
     if (rowOnlyTypes.has(action.type)) return false;
     if (action.type === 'WRITE_TABLE') return false;
     if (action.type === 'MERGE_CELLS' || action.type === 'FORMAT_RANGE') return false;
+    // A whole-range CLEAR (CLEAR_CONTENT/CLEAR_ALL/CLEAR_FORMAT) that happens to
+    // start at row 0 is not an accidental header clobber — it's a deliberate
+    // "clear the sheet" request, already vetted by annotateClearIntentOverwrite
+    // (see clear-intent-overwrite.util.ts) before this ever runs. Without this
+    // exemption every such clear was silently dropped here, past the point
+    // where the caller (finalizeActions) could tell the difference between "no
+    // actions" and "actions the guard ate" — the Accept card just failed with
+    // no actions at all. TASKS.md #179.
+    const clearRangeTypes = new Set(['CLEAR_CONTENT', 'CLEAR_ALL', 'CLEAR_FORMAT']);
+    if (clearRangeTypes.has(action.type) && action.explicitOverwriteConfirmed === true) {
+      return false;
+    }
     return action.row === ConversationEngineService.HEADER_ROW;
   }
 

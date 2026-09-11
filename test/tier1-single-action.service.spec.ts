@@ -34,7 +34,7 @@ describe('Tier1SingleActionService', () => {
   beforeEach(() => {
     openRouter = { complete: jest.fn() };
     const config = {
-      openRouterModelLow: 'openai/gpt-5-mini',
+      openRouterModelTier1: 'openai/gpt-5-mini',
     } as unknown as AppConfigService;
     service = new Tier1SingleActionService(
       openRouter as unknown as OpenRouterService,
@@ -68,7 +68,7 @@ describe('Tier1SingleActionService', () => {
 
     expect(openRouter.complete).toHaveBeenCalledTimes(1);
     expect(openRouter.complete).toHaveBeenCalledWith(
-      expect.objectContaining({ tier: 'low' }),
+      expect.objectContaining({ tier: 'medium' }),
     );
     expect(result.actions).toHaveLength(1);
     expect(result.actions[0].type).toBe('SORT_RANGE');

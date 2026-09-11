@@ -21,6 +21,10 @@ export type LlmUsage = {
   completionTokens?: number;
   totalTokens?: number;
   reasoningTokens?: number;
+  /** Prompt tokens served from the provider's cache (see TASKS.md #163) — a
+   *  non-zero value is the only real proof caching is working; the dashboard
+   *  total lags too much to catch a regression in the moment. */
+  cachedTokens?: number;
 };
 
 /**
@@ -31,10 +35,40 @@ export type LlmUsage = {
 export type LlmCompletionOutcome = {
   finishReason?: string | null;
   truncated?: boolean;
+  /** Real usage for this call, when the provider returned one. */
+  usage?: LlmUsage;
 };
 
 /** finishReason values that mean "cut off by the token budget", across providers. */
 const TRUNCATION_FINISH_REASONS = new Set(['length', 'max_tokens', 'max_output_tokens']);
+
+/**
+ * Bounds every OpenRouter call. Found and fixed after a live eval run showed
+ * a Tier 3 request hang server-side indefinitely — never erroring, never
+ * completing — while a manual retry of the identical request got a clean,
+ * fast 402 from the provider. Nothing upstream of this client sets a timeout,
+ * so a request the provider never resolves (rejected in a way that doesn't
+ * surface, overloaded, or genuinely hung) previously stalled forever with no
+ * way to recover except killing the process. The SDK's own `timeoutMs`
+ * request option throws `RequestTimeoutError`, which `isTransientNetworkError`
+ * now recognizes — routing a timeout through the same retry-once/fallback
+ * path as a dropped connection, rather than a silent hang.
+ *
+ * Non-streaming calls (Router/Tier1/Tier2/Executor/Verifier/Planner's
+ * `complete()`) — these are single request/response round trips with no
+ * partial progress to lose, so a tighter bound is safe.
+ */
+const REQUEST_TIMEOUT_MS = 120_000;
+
+/**
+ * Streaming calls (`streamChat`) — the SDK's `timeoutMs` uses
+ * `AbortSignal.timeout()`, which bounds total elapsed time from request
+ * start, NOT time-to-first-byte or inter-chunk gaps. A legitimately long
+ * Tier 3 stream (100s+ observed live) must not be killed mid-flight for
+ * still being alive, so this is deliberately looser than REQUEST_TIMEOUT_MS —
+ * it exists to catch "never responds at all", not "is slow".
+ */
+const STREAM_TIMEOUT_MS = 240_000;
 
 export function isTruncationFinishReason(reason: string | null | undefined): boolean {
   return typeof reason === 'string' && TRUNCATION_FINISH_REASONS.has(reason.toLowerCase());
@@ -72,6 +106,9 @@ type ChatCompletionResult = {
     totalTokens?: number;
     completionTokensDetails?: {
       reasoningTokens?: number | null;
+    };
+    promptTokensDetails?: {
+      cachedTokens?: number | null;
     };
   };
 };
@@ -197,6 +234,29 @@ export class OpenRouterService {
               `structured output from this call may parse but be incomplete.`,
           );
         }
+        // Real per-call usage, for callers that need to attribute audit-log
+        // cost/tokens to the actual call rather than the estimate that sized
+        // the request. Was computed below for the PROMPT_CACHE log line but
+        // never surfaced to the caller — audit_logs rows for the Tier-3
+        // Planner/Executor/Verifier path always reported 0 as a result.
+        if (response.usage) {
+          opts.outcome.usage = {
+            promptTokens: response.usage.promptTokens,
+            completionTokens: response.usage.completionTokens,
+            totalTokens: response.usage.totalTokens,
+            reasoningTokens: response.usage.completionTokensDetails?.reasoningTokens ?? undefined,
+            cachedTokens: response.usage.promptTokensDetails?.cachedTokens ?? undefined,
+          };
+        }
+      }
+
+      const cachedTokens = response.usage?.promptTokensDetails?.cachedTokens ?? 0;
+      const promptTokens = response.usage?.promptTokens ?? 0;
+      if (promptTokens > 0) {
+        this.logger.log(
+          `PROMPT_CACHE model=${model} promptTokens=${promptTokens} cachedTokens=${cachedTokens} ` +
+            `hitRate=${((cachedTokens / promptTokens) * 100).toFixed(1)}%`,
+        );
       }
 
       return text;
@@ -314,24 +374,27 @@ export class OpenRouterService {
           `reasoningCap=${reasoningCap ?? 'none'}`,
       );
 
-      const stream = await client.chat.send({
-        chatRequest: {
-          model,
-          messages,
-          stream: true,
-          streamOptions: { includeUsage: true },
-          temperature: 0.25,
-          maxCompletionTokens: completionBudget,
-          ...(reasoningCap
-            ? // SDK typings may omit max_tokens on reasoning — cast for providers that support it.
-              {
-                reasoning: { effort: 'low' as ReasoningEffort, max_tokens: reasoningCap } as {
-                  effort: ReasoningEffort;
-                },
-              }
-            : {}),
+      const stream = await client.chat.send(
+        {
+          chatRequest: {
+            model,
+            messages,
+            stream: true,
+            streamOptions: { includeUsage: true },
+            temperature: 0.25,
+            maxCompletionTokens: completionBudget,
+            ...(reasoningCap
+              ? // SDK typings may omit max_tokens on reasoning — cast for providers that support it.
+                {
+                  reasoning: { effort: 'low' as ReasoningEffort, max_tokens: reasoningCap } as {
+                    effort: ReasoningEffort;
+                  },
+                }
+              : {}),
+          },
         },
-      });
+        { timeoutMs: STREAM_TIMEOUT_MS },
+      );
 
       let streamedChars = 0;
       let lastUsage: LlmUsage | undefined;
@@ -433,20 +496,23 @@ export class OpenRouterService {
       reasoning.max_tokens = opts.reasoningMaxTokens;
     }
 
-    const response = await client.chat.send({
-      chatRequest: {
-        model: opts.model,
-        messages: opts.messages,
-        ...(opts.responseFormat === 'json_object'
-          ? { responseFormat: { type: 'json_object' } }
-          : {}),
-        stream: false,
-        temperature: opts.temperature,
-        maxCompletionTokens: opts.maxCompletionTokens,
-        // SDK typings may omit max_tokens on reasoning — cast for providers that support it.
-        reasoning: reasoning as { effort: ReasoningEffort },
+    const response = await client.chat.send(
+      {
+        chatRequest: {
+          model: opts.model,
+          messages: opts.messages,
+          ...(opts.responseFormat === 'json_object'
+            ? { responseFormat: { type: 'json_object' } }
+            : {}),
+          stream: false,
+          temperature: opts.temperature,
+          maxCompletionTokens: opts.maxCompletionTokens,
+          // SDK typings may omit max_tokens on reasoning — cast for providers that support it.
+          reasoning: reasoning as { effort: ReasoningEffort },
+        },
       },
-    });
+      { timeoutMs: REQUEST_TIMEOUT_MS },
+    );
 
     return response as ChatCompletionResult;
   }
@@ -503,7 +569,7 @@ export class OpenRouterService {
 
   private isTransientNetworkError(error: unknown): boolean {
     if (!error || typeof error !== 'object') return false;
-    const err = error as Error & { cause?: { code?: string }; code?: string };
+    const err = error as Error & { cause?: { code?: string }; code?: string; name?: string };
     const message = String(err.message ?? '').toLowerCase();
     const code = err.code ?? err.cause?.code;
     return (
@@ -511,10 +577,25 @@ export class OpenRouterService {
       message.includes('econnreset') ||
       message.includes('fetch failed') ||
       message.includes('socket hang up') ||
+      // A live 235s hang (Sept 2026) surfaced as a bare `DOMException
+      // [TimeoutError]: The operation was aborted due to timeout` — Node's own
+      // `AbortSignal.timeout()` shape, thrown when the SDK's `timeoutMs` option
+      // (REQUEST_TIMEOUT_MS below) fires but the underlying fetch never
+      // rejected with the SDK's own RequestTimeoutError/RequestAbortedError
+      // wrapper. `err.name` alone missed it because DOMException's name is the
+      // generic `'TimeoutError'`, not one of the two SDK-specific names below —
+      // checking the message text too is what catches this shape.
+      message.includes('aborted due to timeout') ||
       code === 'ECONNRESET' ||
       code === 'ECONNREFUSED' ||
       code === 'ETIMEDOUT' ||
-      code === 'UND_ERR_SOCKET'
+      code === 'UND_ERR_SOCKET' ||
+      // @openrouter/sdk's own client-side timeout/abort errors (REQUEST_TIMEOUT_MS
+      // below) — a provider that never responds must surface the same way a
+      // dropped connection does, not hang the request indefinitely.
+      err.name === 'RequestTimeoutError' ||
+      err.name === 'RequestAbortedError' ||
+      err.name === 'TimeoutError'
     );
   }
 
@@ -532,6 +613,9 @@ export class OpenRouterService {
     const completionDetails = usage.completionTokensDetails as
       | Record<string, unknown>
       | undefined;
+    const promptDetails = (usage.promptTokensDetails ?? usage.prompt_tokens_details) as
+      | Record<string, unknown>
+      | undefined;
 
     return {
       promptTokens: this.numberValue(usage.promptTokens) ?? this.numberValue(usage.prompt_tokens),
@@ -541,6 +625,9 @@ export class OpenRouterService {
       reasoningTokens:
         this.numberValue(completionDetails?.reasoningTokens) ??
         this.numberValue(completionDetails?.reasoning_tokens),
+      cachedTokens:
+        this.numberValue(promptDetails?.cachedTokens) ??
+        this.numberValue(promptDetails?.cached_tokens),
     };
   }
 

@@ -69,6 +69,7 @@ describe('PlannerAgent token exhaustion (Spec 16)', () => {
     const llm = { complete: completeImpl } as unknown as OpenRouterService;
     const config = {
       openRouterModelHigh: 'openai/gpt-5',
+      openRouterModelPlanner: 'openai/gpt-5',
     } as unknown as AppConfigService;
     return new PlannerAgent(llm, config);
   }
@@ -235,7 +236,10 @@ describe('OpenRouterService reasoning_token_exhaustion alert', () => {
 describe('PlannerAgent truncation detection', () => {
   function buildAgent(completeImpl: jest.Mock): PlannerAgent {
     const llm = { complete: completeImpl } as unknown as OpenRouterService;
-    const config = { openRouterModelHigh: 'openai/gpt-5' } as unknown as AppConfigService;
+    const config = {
+      openRouterModelHigh: 'openai/gpt-5',
+      openRouterModelPlanner: 'openai/gpt-5',
+    } as unknown as AppConfigService;
     return new PlannerAgent(llm, config);
   }
 
