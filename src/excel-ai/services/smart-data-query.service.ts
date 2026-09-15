@@ -56,7 +56,7 @@ export class SmartDataQueryService {
     });
 
     const systemPrompt = buildDataQuerySystemPrompt();
-    const userMessage = buildDataQueryUserMessage(message, sheet);
+    const userMessage = buildDataQueryUserMessage(message, sheet, workbookContext);
 
     try {
       const answer = await this.openRouter.complete({

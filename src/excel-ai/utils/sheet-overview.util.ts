@@ -174,9 +174,20 @@ export function formatSheetOverviewMarkdown(overview: SheetOverview): string {
   }
 
   const qty = overview.numericSummaries.find((s) => /\b(qty|quantity)\b/i.test(s.column));
-  const tax = overview.numericSummaries.find((s) =>
-    /\b(tax amount|gst|cgst|sgst|igst)\b/i.test(s.column) && !/\b%/i.test(s.column),
+  // An Indian purchase register splits GST across IGST / CGST / SGST, so
+  // reporting only the first match called the IGST column "GST" and understated
+  // the total (₹3,26,610 of an actual ₹7,09,920). Sum every tax column.
+  // TASKS.md #223.
+  const taxColumns = overview.numericSummaries.filter(
+    (s) => /\b(tax amount|gst|cgst|sgst|igst)\b/i.test(s.column) && !/%/.test(s.column),
   );
+  const tax = taxColumns.length
+    ? {
+        column: taxColumns.map((s) => s.column).join(' + '),
+        sum: taxColumns.reduce((total, s) => total + s.sum, 0),
+        count: taxColumns[0].count,
+      }
+    : undefined;
   const preTax = overview.numericSummaries.find((s) =>
     /\b(unit price|price|taxable|pre[- ]?tax|invoice amount|net)\b/i.test(s.column) &&
     !/\btotal\b/i.test(s.column),
@@ -467,6 +478,13 @@ function parseDateLike(value: unknown): Date | null {
       const date = new Date(Date.UTC(y, mo, d));
       if (!Number.isNaN(date.getTime())) return date;
     }
+    // V8's Date parser is lenient enough to read an invoice number as a date:
+    // `new Date('INV/2024/001')` returns 01-Jan-2024. That made the Invoice No
+    // column look like the sheet's date column and produced a reported range of
+    // 31-12-2023 – 30-11-2024 for data that runs 01-04-2024 – 27-06-2024.
+    // Only hand the loose parser strings that actually look like dates.
+    // TASKS.md #223.
+    if (!/^[0-9][0-9a-z ,:.\/-]*$/i.test(value.trim())) return null;
     const parsed = new Date(value);
     if (!Number.isNaN(parsed.getTime())) return parsed;
   }
@@ -484,7 +502,17 @@ function detectDateRange(
   tableRows: unknown[][],
   headers: string[],
 ): { column: string; from: string; to: string } | null {
-  for (let i = 0; i < headers.length; i += 1) {
+  // A column whose HEADER says date wins over whichever column happens to
+  // parse first, so an ID column can never pre-empt the real one. TASKS.md #223.
+  const order = headers
+    .map((_, index) => index)
+    .sort((a, b) => {
+      const aNamed = /\b(date|dt|period|month|day)\b/i.test(headers[a] ?? '') ? 0 : 1;
+      const bNamed = /\b(date|dt|period|month|day)\b/i.test(headers[b] ?? '') ? 0 : 1;
+      return aNamed - bNamed || a - b;
+    });
+
+  for (const i of order) {
     const name = headers[i]?.trim();
     if (!name) continue;
     let dateHits = 0;

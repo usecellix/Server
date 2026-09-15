@@ -39,13 +39,24 @@ const ACTION_CATALOG: Record<SheetActionType, CatalogEntry> = {
   INSERT_ROW: { advertise: true },
   INSERT_COLUMN: { advertise: true },
   DELETE_COLUMN: { advertise: true },
-  HIDE_ROW: { advertise: false, reason: 'Handled deterministically by the Tier 0 shortcut lane.' },
-  UNHIDE_ROW: { advertise: false, reason: 'Handled deterministically by the Tier 0 shortcut lane.' },
-  SHOW_ROW: { advertise: false, reason: 'Alias of UNHIDE_ROW; Tier 0 lane resolves it.' },
-  HIDE_COLUMN: { advertise: false, reason: 'Handled deterministically by the Tier 0 shortcut lane.' },
-  UNHIDE_COLUMN: { advertise: false, reason: 'Handled deterministically by the Tier 0 shortcut lane.' },
-  SHOW_COLUMN: { advertise: false, reason: 'Alias of UNHIDE_COLUMN; Tier 0 lane resolves it.' },
-  SET_ROW_HEIGHT: { advertise: false, reason: 'Cosmetic sizing; Tier 0/1 lanes handle explicit requests.' },
+  // The Tier 0 lane only resolves these when the user names a column LETTER.
+  // "Hide the Narration column" (a header name) escalates to Tier 3, where the
+  // Executor had no hide verb and improvised SET_COLUMN_WIDTH width:0 with a
+  // `columns: ["I"]` field that sanitizeAction then dropped — "1 action,
+  // verified: true" followed by "Something went wrong". Third instance of the
+  // #166 pattern. TASKS.md #215.
+  HIDE_ROW: { advertise: true },
+  UNHIDE_ROW: { advertise: true },
+  SHOW_ROW: { advertise: false, reason: 'Alias of UNHIDE_ROW; UNHIDE_ROW is the advertised spelling.' },
+  HIDE_COLUMN: { advertise: true },
+  UNHIDE_COLUMN: { advertise: true },
+  SHOW_COLUMN: { advertise: false, reason: 'Alias of UNHIDE_COLUMN; UNHIDE_COLUMN is the advertised spelling.' },
+  // Fourth instance of the #166 pattern: the Tier 0 lane only matches the
+  // literal "set row height" wording, so "Set the height of rows 2 to 5 to 25"
+  // reached Tier 3, where the Executor had the type name but no schema and
+  // emitted a bare { type, sheetName } that sanitizeAction dropped. Advertised
+  // with a schema alongside SET_COLUMN_WIDTH (#169). TASKS.md #216.
+  SET_ROW_HEIGHT: { advertise: true },
   // Was withheld because "explicit widths go through Tier 0/1" — the same false
   // premise HIDE_SHEET carried (#166): those lanes never run inside a Tier 3
   // build, so a dashboard that wants a wide label column and narrow number
@@ -67,6 +78,10 @@ const ACTION_CATALOG: Record<SheetActionType, CatalogEntry> = {
   COPY_FILTERED_RANGE: { advertise: true },
   FORMAT_MATCHING_ROWS: { advertise: true },
   SET_MATCHING_ROWS: { advertise: true },
+  // The only safe way to answer "delete blank rows" / "delete rows where X":
+  // which rows match is resolved against the real cells at apply time instead
+  // of being guessed as a DELETE_ROW row/rowCount pair. TASKS.md #234.
+  DELETE_MATCHING_ROWS: { advertise: true },
   CONDITIONAL_FORMAT: { advertise: true },
   DELETE_CONDITIONAL_FORMAT: {
     advertise: false,
@@ -81,8 +96,11 @@ const ACTION_CATALOG: Record<SheetActionType, CatalogEntry> = {
   DATA_VALIDATION: { advertise: true },
   DEFINE_NAMED_RANGE: { advertise: true },
   CLEAR_CONTENT: { advertise: true },
-  UNMERGE_CELLS: { advertise: false, reason: 'Rarely requested; MERGE_CELLS is the planned direction.' },
-  CLEAR_FORMAT: { advertise: false, reason: 'FORMAT_RANGE with clearFill is the advertised way to strip formatting.' },
+  // "Unmerge all merged cells in this sheet" and "Clear all formatting in
+  // A1:I31" are both guide use cases (T1.3) that reach Tier 3; withholding the
+  // verbs made the Executor improvise shapes that were dropped. TASKS.md #215.
+  UNMERGE_CELLS: { advertise: true },
+  CLEAR_FORMAT: { advertise: true },
   CLEAR_ALL: {
     advertise: false,
     reason: 'Destructive and easy to over-apply; clear intents are routed deterministically instead.',
@@ -94,6 +112,10 @@ const ACTION_CATALOG: Record<SheetActionType, CatalogEntry> = {
   DELETE_SHEET: { advertise: true },
   RENAME_SHEET: { advertise: true },
   COPY_SHEET: { advertise: true },
+  // Guide T1.1's "move sheet" had no action at all, so the Executor built it
+  // out of copy + rename + delete — a plan that passed deterministic checks
+  // and would have destroyed the sheet. TASKS.md #212.
+  MOVE_SHEET: { advertise: true },
   // Was withheld as "Tier 0 handles it" — true for *"hide the Lists sheet"* as a
   // standalone request, and false for the case that matters: a Tier 3 build that
   // creates a lookup sheet to back its dropdowns and wants it out of the way. The
@@ -101,8 +123,17 @@ const ACTION_CATALOG: Record<SheetActionType, CatalogEntry> = {
   // unreachable exactly when it was needed. This is the FREEZE_PANES bug this
   // file's own header describes, in a second form. TASKS.md #166.
   HIDE_SHEET: { advertise: true },
-  SHOW_SHEET: { advertise: false, reason: 'Handled deterministically by the Tier 0 shortcut lane.' },
-  SET_SHEET_COLOR: { advertise: false, reason: 'Cosmetic tab colour; Tier 0/1 lanes handle explicit requests.' },
+  // Withheld as "Tier 0 handles it" — the same false premise as HIDE_SHEET
+  // (#166) and SET_COLUMN_WIDTH (#169), and worse here: HIDE_SHEET *was*
+  // advertised, so "Unhide the Working sheet" reached the Executor with hide as
+  // the only sheet-visibility verb it had been given and it hid the sheet —
+  // the exact opposite of the request. TASKS.md #211.
+  SHOW_SHEET: { advertise: true },
+  // Same trap: "Change the Summary tab colour to blue" is not matched by the
+  // Tier 0 regex (it colours the active sheet only), so it escalated to Tier 3,
+  // where the Executor had no way to express it and burned two retries before
+  // failing with "could not complete and verify". TASKS.md #211.
+  SET_SHEET_COLOR: { advertise: true },
   PROTECT_SHEET: { advertise: false, reason: 'Handled deterministically by the Tier 0 shortcut lane.' },
   UNPROTECT_SHEET: { advertise: false, reason: 'Handled deterministically by the Tier 0 shortcut lane.' },
 
@@ -118,7 +149,9 @@ const ACTION_CATALOG: Record<SheetActionType, CatalogEntry> = {
     advertise: false,
     reason: 'Revert-only inverse of a CREATE_CHART create (TASKS.md #15) — not something the Executor should propose directly.',
   },
-  ADD_COMMENT: { advertise: false, reason: 'Comments are not part of any current planned workflow.' },
+  // Guide T1.3 lists "add / remove comment" as a Tier 1 operation, and the
+  // router already routes it here. TASKS.md #215.
+  ADD_COMMENT: { advertise: true },
   DELETE_COMMENT: { advertise: false, reason: 'Comments are not part of any current planned workflow.' },
 
   // ---- Not expressible in Office.js ----

@@ -41,6 +41,11 @@ export const REVERSIBILITY_CATALOG: Record<SheetActionType, ReversibilityCatalog
   CLEAR_CONTENT: { reversible: true },
   CLEAR_ALL: { reversible: true },
   SET_MATCHING_ROWS: { reversible: true },
+  DELETE_MATCHING_ROWS: {
+    reversible: false,
+    reason:
+      'Deleting rows removes cells the generic cell-diff can restore values into, but nothing recreates the rows themselves — the same structural gap DELETE_ROW has. TASKS.md #234.',
+  },
   SORT_RANGE: { reversible: true }, // permutes values within the same address set, no shift
   FILL_DOWN: { reversible: true },
   FILL_RIGHT: { reversible: true },
@@ -80,6 +85,11 @@ export const REVERSIBILITY_CATALOG: Record<SheetActionType, ReversibilityCatalog
     reversible: false,
     reason:
       "A rename isn't a cell-value change — the generic cell-diff would treat the old sheet name's cells as deleted and the new name's cells as newly created, producing an incorrect revert rather than renaming back.",
+  },
+  MOVE_SHEET: {
+    reversible: false,
+    reason:
+      'Tab order is not cell data — nothing captures the sheet\'s previous position to move it back. A true inverse is cheap to add later (capture the index at preview time, emit the opposite MOVE_SHEET), but until then a move must report itself as irreversible rather than claim a revert it cannot perform. TASKS.md #212.',
   },
   COPY_SHEET: {
     reversible: false,

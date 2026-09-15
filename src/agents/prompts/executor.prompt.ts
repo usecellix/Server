@@ -66,6 +66,57 @@ HIDE_SHEET schema (put a lookup/support sheet out of the way — "hide the Lists
 { "type": "HIDE_SHEET", "sheetName": "Lists" }
 - Emit this only AFTER every DATA_VALIDATION rule referencing that sheet exists; a range reference still resolves once hidden, but the setup must be complete first
 
+MOVE_SHEET schema (reorder a tab — "move the Summary sheet to the first position", "put Working after GSTR-2A"):
+{ "type": "MOVE_SHEET", "sheetName": "Summary", "position": 0 }
+{ "type": "MOVE_SHEET", "sheetName": "Working", "afterSheet": "GSTR-2A" }
+- position is 0-based; or name a neighbour with beforeSheet/afterSheet
+- NEVER express a move as copy + rename + delete — that risks destroying the sheet being moved
+
+COPY_SHEET schema (duplicate a sheet WITH its data — "copy the Purchase Register sheet and name it March Copy"):
+{ "type": "COPY_SHEET", "sheetName": "Purchase Register", "newSheetName": "March Copy" }
+- sheetName is the sheet being copied; newSheetName is the copy's name
+- A plain ADD_SHEET makes an EMPTY sheet — never answer a copy/duplicate request with one
+
+HIDE_COLUMN / UNHIDE_COLUMN schema (hide or reveal whole columns — "hide the Narration column", "unhide column C"):
+{ "type": "HIDE_COLUMN", "sheetName": "Purchase Register", "col": 8, "colCount": 1 }
+- col is a 0-BASED column index (A=0, B=1 … I=8) — resolve a header NAME to its index using the headers in context
+- Never fake a hide with SET_COLUMN_WIDTH width 0, and never use a "columns" array — those are dropped before preview
+
+DELETE_MATCHING_ROWS schema (delete rows by CONDITION — "delete blank rows", "delete rows where GSTIN is blank", "remove rows with no amount"):
+{ "type": "DELETE_MATCHING_ROWS", "sheetName": "Purchase Register", "range": "A1:I31", "hasHeaders": true }
+{ "type": "DELETE_MATCHING_ROWS", "sheetName": "Purchase Register", "range": "A1:I31", "hasHeaders": true, "filter": { "column": "GSTIN", "operator": "equals", "value": "" } }
+- Omit "filter" to mean "rows where EVERY cell is empty"; supply it to delete rows matching one column's condition
+- Which rows match is resolved against the real cells when the change is applied, so you do NOT compute row numbers
+- NEVER answer a conditional delete with DELETE_ROW and a guessed row/rowCount — on a sheet with no matching rows that destroys real data. Use DELETE_ROW only when the user names explicit row NUMBERS ("delete row 7", "delete rows 10-12")
+
+SET_ROW_HEIGHT / SET_COLUMN_WIDTH schema (sizing — "set the height of rows 2 to 5 to 25", "make column B 20 wide"):
+{ "type": "SET_ROW_HEIGHT", "sheetName": "Purchase Register", "row": 1, "rowCount": 4, "height": 25 }
+{ "type": "SET_COLUMN_WIDTH", "sheetName": "Purchase Register", "col": 1, "colCount": 1, "width": 20 }
+- row/col are 0-BASED (row 2 in Excel is row: 1); rowCount/colCount cover the whole requested span
+- height/width are REQUIRED — an action without them is dropped before preview
+
+HIDE_ROW / UNHIDE_ROW schema (hide or reveal whole rows — "hide rows 5 to 10"):
+{ "type": "HIDE_ROW", "sheetName": "Purchase Register", "row": 4, "rowCount": 6 }
+- row is 0-based; rowCount is how many consecutive rows
+
+CLEAR_FORMAT schema (strip fills/fonts/borders/number formats, keep values and formulas — "clear all formatting in A1:I31"):
+{ "type": "CLEAR_FORMAT", "sheetName": "Purchase Register", "row": 0, "col": 0, "rowCount": 31, "colCount": 9 }
+
+UNMERGE_CELLS schema ("unmerge all merged cells in this sheet"):
+{ "type": "UNMERGE_CELLS", "sheetName": "Purchase Register", "row": 0, "col": 0, "rowCount": 1, "colCount": 3 }
+
+ADD_COMMENT schema ("add a comment to E9 saying …"):
+{ "type": "ADD_COMMENT", "sheetName": "Purchase Register", "address": "E9", "comment": "Check this amount" }
+- the cell goes in "address" (A1 notation); a "cell" field is not accepted
+
+SHOW_SHEET schema (make a hidden sheet visible again — "unhide the Working sheet", "show the Lists tab"):
+{ "type": "SHOW_SHEET", "sheetName": "Working" }
+- Use this for ANY unhide/show/reveal request. Never emit HIDE_SHEET for one — that hides the sheet the user just asked to see
+
+SET_SHEET_COLOR schema (colour a sheet tab — "make the Summary tab blue"):
+{ "type": "SET_SHEET_COLOR", "sheetName": "Summary", "color": "#0000FF" }
+- sheetName is the sheet the user named, which is not necessarily the active sheet; color is a hex string
+
 AUTO_FILTER schema (add filter dropdowns to a table's header row — "add filters", "make it filterable"):
 { "type": "AUTO_FILTER", "sheetName": "Purchase Register", "range": "A1:N51" }
 - range MUST cover the full header + data range (the filter dropdowns go on the header row of that range)

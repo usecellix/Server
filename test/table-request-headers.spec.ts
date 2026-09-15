@@ -88,3 +88,32 @@ describe('tryDeterministicTableCreate — single gate for both call sites (Phase
     expect(result!.actions[0].type).toBe('WRITE_TABLE');
   });
 });
+
+// TASKS.md #210 — requests about data already in the sheet were answered with
+// five rows of invented values ("Value 1", "Sample Person 1") by this
+// deterministic lane, in ~800ms, without the LLM ever being asked.
+describe('table-request.util — never invent a table for real-data work (#210)', () => {
+  it.each([
+    'Insert a column at the start and fill serial numbers 1 to 30 in it',
+    'Add a column that calculates the GST inclusive amount as taxable amount times 1.18',
+    'Add a column that computes IGST at 18% for each row',
+    'Fill the Status column based on the Amount column',
+    'Insert a new column with the GST amount',
+  ])('returns no deterministic table for %j', (message) => {
+    expect(parseTableCreateRequest(message)).toBeNull();
+    expect(tryDeterministicTableCreate(message)).toBeNull();
+  });
+
+  it('still builds a table when the user asks for dummy rows', () => {
+    const plan = parseTableCreateRequest('create a table with headers Name, Age, City and 3 dummy rows');
+    expect(plan).not.toBeNull();
+    expect(plan!.headers).toEqual(['Name', 'Age', 'City']);
+    expect(plan!.rowCount).toBe(3);
+  });
+
+  it('still builds the GST table for an explicit GST sheet request', () => {
+    const plan = parseTableCreateRequest('create a GST sheet with 5 dummy rows');
+    expect(plan).not.toBeNull();
+    expect(plan!.headers).toContain('Supplier GSTIN');
+  });
+});

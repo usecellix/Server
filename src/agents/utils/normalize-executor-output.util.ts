@@ -167,6 +167,9 @@ export function normalizeSingleAction(
   if (typeof record.sourceName === 'string') action.sourceName = record.sourceName;
   if (typeof record.copyFrom === 'string') action.copyFrom = record.copyFrom;
   if (typeof record.newSheetName === 'string') action.newSheetName = record.newSheetName;
+  // MOVE_SHEET neighbours — TASKS.md #212.
+  if (typeof record.beforeSheet === 'string') action.beforeSheet = record.beforeSheet;
+  if (typeof record.afterSheet === 'string') action.afterSheet = record.afterSheet;
   // DELETE_CONDITIONAL_FORMAT — revert-only, not advertised to the Executor (TASKS.md #40).
   if (typeof record.ruleId === 'string') action.ruleId = record.ruleId;
   // DELETE_CHART — revert-only, not advertised to the Executor (TASKS.md #15).
@@ -392,6 +395,32 @@ export function normalizeSingleAction(
     }
   }
 
+  // Same range/filter shape as SET_MATCHING_ROWS, minus the target column —
+  // an omitted filter is meaningful here ("rows where every cell is empty").
+  // TASKS.md #234.
+  if (type === 'DELETE_MATCHING_ROWS') {
+    if (typeof record.sheetName === 'string') action.sheetName = record.sheetName;
+    if (typeof record.range === 'string') action.range = stripSheetPrefix(record.range);
+    else if (typeof record.sourceRange === 'string') {
+      action.range = stripSheetPrefix(record.sourceRange);
+    }
+    action.hasHeaders = record.hasHeaders === undefined ? true : Boolean(record.hasHeaders);
+    if (record.filter && typeof record.filter === 'object') {
+      const filter = record.filter as Record<string, unknown>;
+      if (
+        (typeof filter.column === 'string' || typeof filter.column === 'number') &&
+        typeof filter.operator === 'string' &&
+        (typeof filter.value === 'string' || typeof filter.value === 'number')
+      ) {
+        action.filter = {
+          column: String(filter.column),
+          operator: filter.operator as NonNullable<SheetActionPayload['filter']>['operator'],
+          value: filter.value,
+        };
+      }
+    }
+  }
+
   if (type === 'SET_MATCHING_ROWS') {
     if (typeof record.sheetName === 'string') action.sheetName = record.sheetName;
     if (typeof record.range === 'string') action.range = stripSheetPrefix(record.range);
@@ -499,6 +528,14 @@ export function normalizeSingleAction(
   if (INDEX_CELL_ACTION_TYPES.has(type)) {
     expandCellAddressToIndices(action);
   }
+  // Comments are single-cell but live in INDEX_RANGE_ACTION_TYPES, so only the
+  // `range` conversion ran for them — an ADD_COMMENT addressed the documented
+  // way (`address: "E9"`, which is what executor.prompt.ts now shows) still
+  // reached sanitizeAction without row/col and was dropped. TASKS.md #215.
+  if (type === 'ADD_COMMENT' || type === 'DELETE_COMMENT') {
+    expandCellAddressToIndices(action);
+  }
+  expandColumnLettersToIndices(action, record);
 
   if (!hasRequiredFields(action)) return null;
 
@@ -530,6 +567,54 @@ function hasRequiredFields(action: SheetActionPayload): boolean {
 
 function isValidIndex(value: unknown): value is number {
   return typeof value === 'number' && Number.isInteger(value) && value >= 0;
+}
+
+const COLUMN_ACTION_TYPES = new Set<SheetActionType>([
+  'HIDE_COLUMN',
+  'UNHIDE_COLUMN',
+  'SHOW_COLUMN',
+  'SET_COLUMN_WIDTH',
+  'DELETE_COLUMN',
+]);
+
+function columnLetterToIndex(letters: string): number | null {
+  const upper = letters.trim().toUpperCase();
+  if (!/^[A-Z]{1,3}$/.test(upper)) return null;
+  let index = 0;
+  for (let i = 0; i < upper.length; i += 1) {
+    index = index * 26 + (upper.charCodeAt(i) - 64);
+  }
+  const zeroBased = index - 1;
+  return zeroBased <= 16383 ? zeroBased : null;
+}
+
+/**
+ * Column actions addressed the way models like to write them — `columns:
+ * ["I"]`, `column: "C"`, `columnLetter: "B"` — instead of the 0-based `col`
+ * the schema wants. Same failure shape as the A1-address conversions above
+ * (#183): it verifies clean, then sanitizeAction drops it for want of `col`
+ * and the user is told to rephrase. Convert rather than discard. TASKS.md #215.
+ */
+function expandColumnLettersToIndices(
+  action: SheetActionPayload,
+  /** The raw model output — singular `column`/`columnLetter` are never copied onto the action. */
+  record: Record<string, unknown>,
+): void {
+  if (!COLUMN_ACTION_TYPES.has(action.type) || isValidIndex(action.col)) return;
+
+  const raw = record.columns ?? record.column ?? record.columnLetter ?? record.columnLetters;
+  const letters = Array.isArray(raw) ? raw : raw === undefined ? [] : [raw];
+  const indices = letters
+    .filter((value): value is string => typeof value === 'string')
+    .map((value) => columnLetterToIndex(value))
+    .filter((value): value is number => value !== null)
+    .sort((a, b) => a - b);
+
+  if (indices.length === 0) return;
+  action.col = indices[0];
+  if (!isValidIndex(action.colCount)) {
+    action.colCount = indices[indices.length - 1] - indices[0] + 1;
+  }
 }
 
 /**

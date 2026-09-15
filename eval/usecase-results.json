@@ -1,0 +1,74 @@
+[
+  {
+    "id": "row-delete-blank-gstin",
+    "section": "T1.2",
+    "prompt": "Delete all rows where column D is blank",
+    "expect": [
+      "DELETE_MATCHING_ROWS|DELETE_ROW"
+    ],
+    "forbid": [
+      "DELETE_SHEET"
+    ],
+    "ms": 10494,
+    "http": 200,
+    "types": [
+      "DELETE_MATCHING_ROWS"
+    ],
+    "actions": [
+      {
+        "type": "DELETE_MATCHING_ROWS",
+        "sheetName": "Purchase Register",
+        "range": "A1:I31",
+        "hasHeaders": true,
+        "filter": {
+          "column": "GSTIN",
+          "operator": "equals",
+          "value": ""
+        }
+      }
+    ],
+    "text": "[answer] I'll apply the prepared changes to your sheet.\n[explanation] Multi-agent pipeline: planned, executed, and verified.",
+    "errors": [],
+    "statuses": [
+      "Progress: 1 step(s) ready · 1 change(s) prepared — continuing…",
+      "Running deterministic checks...",
+      "Actions verified",
+      "1 actions ready for preview"
+    ],
+    "verdict": "PASS"
+  },
+  {
+    "id": "row-delete-blank-sheet",
+    "section": "T1.2",
+    "prompt": "Delete blank rows in the Purchase Register sheet",
+    "expect": [
+      "DELETE_MATCHING_ROWS"
+    ],
+    "forbid": [
+      "DELETE_SHEET",
+      "DELETE_ROW"
+    ],
+    "ms": 8771,
+    "http": 200,
+    "types": [
+      "DELETE_MATCHING_ROWS"
+    ],
+    "actions": [
+      {
+        "type": "DELETE_MATCHING_ROWS",
+        "sheetName": "Purchase Register",
+        "range": "A1:I31",
+        "hasHeaders": true
+      }
+    ],
+    "text": "[answer] I'll apply the prepared changes to your sheet.\n[explanation] Multi-agent pipeline: planned, executed, and verified.",
+    "errors": [],
+    "statuses": [
+      "Progress: 1 step(s) ready · 1 change(s) prepared — continuing…",
+      "Running deterministic checks...",
+      "Actions verified",
+      "1 actions ready for preview"
+    ],
+    "verdict": "PASS"
+  }
+]

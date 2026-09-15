@@ -100,7 +100,16 @@ export class CreditLedgerService {
           },
         },
       ],
-      { new: true },
+      // The update above is an aggregation PIPELINE (an array), which is what
+      // makes the floor check and the fixed consumption order atomic (CD-6 /
+      // CD-8). Mongoose 9 refuses an array update unless the caller says it
+      // means a pipeline — without this flag every billable request throws
+      // "Cannot pass an array to query updates unless the `updatePipeline`
+      // option is set" at debit time, which surfaced in the task pane as a red
+      // error on a request the pipeline had already planned and verified.
+      // The unit specs mock findOneAndUpdate, so only a live Mongo call shows
+      // it. TASKS.md #233.
+      { new: true, updatePipeline: true },
     );
 
     if (!updated) {

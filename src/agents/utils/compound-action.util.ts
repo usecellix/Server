@@ -147,7 +147,14 @@ export function detectEmptySheetIntent(text: string): boolean {
 }
 
 export function detectCopySheetIntent(text: string): boolean {
-  return /\b(as\s+a\s+copy|copy\s+of|duplicate|clone)\b/i.test(text);
+  return (
+    /\b(as\s+a\s+copy|copy\s+of|duplicate|clone|replicate)\b/i.test(text) ||
+    // "Copy the Purchase Register sheet and name it March Copy" — the guide's
+    // own T1.1 phrasing — matched none of the above, so the request became a
+    // blank ADD_SHEET with no copyFrom and none of the data. TASKS.md #213.
+    /\bcopy\s+(?:[A-Za-z0-9_'-]+\s+){0,4}?(?:sheet|tab)\b/i.test(text) ||
+    /\bcopy\s+(?:sheet|tab)\b/i.test(text)
+  );
 }
 
 /** When copyFrom is omitted, creates a blank sheet via worksheets.add(name). */

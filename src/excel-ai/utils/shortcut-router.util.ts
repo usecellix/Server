@@ -31,14 +31,36 @@ function parseRowRange(message: string): { rowStart: number; rowEnd: number } | 
   return null;
 }
 
+/**
+ * A column *letter*, not a word that happens to follow "column". "Hide column
+ * Amount" used to resolve to column index 18,100,283 and "Set column width of
+ * column B to 20" read "width" as the letters — both then failed inside
+ * Office.js with an opaque error. A single letter is unambiguous; two or three
+ * letters must be written in caps (AB, XFD) to count, so header names like
+ * "Amount", "Notes" or "width" fall through to the LLM, which can resolve a
+ * name against the real headers. TASKS.md #216.
+ */
+function isColumnLetters(token: string, original: string): boolean {
+  if (!/^[A-Za-z]{1,3}$/.test(token)) return false;
+  const upper = token.toUpperCase();
+  if (columnLetterToIndex(upper) > 16383) return false; // past XFD
+  if (upper.length === 1) return true;
+  return new RegExp(`\\b${upper}\\b`).test(original);
+}
+
 function parseColumnRef(message: string): string | null {
-  const colMatch = message.match(/col(?:umn)?\s+([A-Z]+)/i);
-  return colMatch ? colMatch[1].toUpperCase() : null;
+  const colMatch = message.match(/col(?:umn)?\s+([A-Za-z]+)\b/i);
+  if (!colMatch) return null;
+  return isColumnLetters(colMatch[1], message) ? colMatch[1].toUpperCase() : null;
 }
 
 function parseColumnRange(message: string): { colStart: string; colEnd: string } | null {
-  const rangeMatch = message.match(/col(?:umn)?s?\s+([A-Z]+)\s*(?:through|to|-)\s*([A-Z]+)/i);
-  if (rangeMatch) {
+  const rangeMatch = message.match(/col(?:umn)?s?\s+([A-Za-z]+)\s*(?:through|to|-)\s*([A-Za-z]+)\b/i);
+  if (
+    rangeMatch &&
+    isColumnLetters(rangeMatch[1], message) &&
+    isColumnLetters(rangeMatch[2], message)
+  ) {
     return { colStart: rangeMatch[1].toUpperCase(), colEnd: rangeMatch[2].toUpperCase() };
   }
 
@@ -62,12 +84,56 @@ function parseColumnWidth(message: string): number | null {
   return match ? parseFloat(match[1]) : null;
 }
 
+/**
+ * "Hide the sheet called Working" used to yield the sheet name "called
+ * Working", and "Show the sheets in this workbook" (a listing question) fell
+ * back to the ACTIVE sheet and proposed unhiding it. Names now drop the
+ * called/named lead-in, "X sheet" word order is understood, and a plural or
+ * trailing phrase yields null so the caller can decline instead of guessing.
+ * TASKS.md #216.
+ */
 function parseSheetName(message: string): string | null {
   const quoted = message.match(/["']([^"']+)["']/);
-  if (quoted) return quoted[1];
+  if (quoted) return quoted[1].trim();
 
-  const named = message.match(/sheet\s+([A-Za-z0-9_\- ]+?)(?:\s*$|\s+and|\s+please)/i);
-  return named ? named[1].trim() : null;
+  const after = message.match(
+    /(?:sheet|tab)\s+(?:called\s+|named\s+)?([A-Za-z0-9_][A-Za-z0-9_\- ]*?)(?:\s*$|\s+and\b|\s+please\b|[.,!?])/i,
+  );
+  const afterName = after?.[1]?.trim();
+  if (
+    afterName &&
+    !/^(?:in|of|from|to|list|names?|tabs?|sheets?)$/i.test(afterName) &&
+    // "Colour the Summary tab blue" — the trailing word is the colour, not the
+    // sheet; fall through to the name sitting before the noun. TASKS.md #216.
+    !parseColor(afterName)
+  ) {
+    return afterName;
+  }
+
+  // "Hide the Working sheet" — the name sits before the noun. Take the words
+  // immediately preceding a SINGULAR sheet/tab and strip the verb/article
+  // lead-in; "Show the sheets in this workbook" is plural and yields nothing.
+  const before = message.match(/((?:[A-Za-z0-9_-]+\s+){1,4}?)(?:sheet|tab)\b(?!s)/i);
+  if (before) {
+    const words = before[1]
+      .trim()
+      .split(/\s+/)
+      .filter(
+        (word) =>
+          !/^(?:show|hide|unhide|reveal|delete|remove|drop|create|add|make|set|change|colour|color|rename|move|copy|duplicate|protect|freeze|the|a|an|this|that|these|those|my|to|of|in|on|for|please|kindly|all|both|active|current|hidden|new)$/i.test(
+            word,
+          ),
+      );
+    const beforeName = words.join(' ').trim();
+    if (beforeName) return beforeName;
+  }
+
+  return null;
+}
+
+/** "this/current/active sheet" — the only case where defaulting to the active sheet is what was asked. */
+function refersToActiveSheet(message: string): boolean {
+  return /\b(this|current|active)\s+(?:sheet|tab)\b/i.test(message);
 }
 
 function parseColor(message: string): string | null {
@@ -127,6 +193,19 @@ export function hasConditionalShortcutBlocker(text: string): boolean {
   return /\b(where|if|that have|that has|with totals|but allow|except|only when)\b/i.test(text);
 }
 
+/**
+ * "Lock the header row so nobody edits it" is a protection request, but the
+ * freeze shortcut owns the word "lock" and froze the row instead — visually
+ * similar, functionally unrelated (the row stayed editable). Editing words mean
+ * protection, which this lane cannot express per-range, so let the LLM take it.
+ * TASKS.md #216.
+ */
+function asksForEditProtection(text: string): boolean {
+  return /\b(edit|edits|editing|editable|protect|protected|protection|read[- ]only|chang(?:e|es|ing)|modif(?:y|ies|ying)|overwrit)/i.test(
+    text,
+  );
+}
+
 const SHORTCUT_REGISTRY: ShortcutHandler[] = [
   {
     id: 'freeze-top-row',
@@ -135,9 +214,10 @@ const SHORTCUT_REGISTRY: ShortcutHandler[] = [
       /freeze\s+(?:the\s+)?(?:top\s+row|first\s+row|row\s+1|header)/i,
       /lock\s+(?:the\s+)?(?:top\s+row|first\s+row|header\s+row)/i,
     ],
-    handler: (_msg, activeSheetName) => [
-      { type: 'FREEZE_PANES', sheetName: activeSheetName, freezeRows: 1, freezeColumns: 0 },
-    ],
+    handler: (msg, activeSheetName) => {
+      if (/\block\b/i.test(msg) && asksForEditProtection(msg)) return null;
+      return [{ type: 'FREEZE_PANES', sheetName: activeSheetName, freezeRows: 1, freezeColumns: 0 }];
+    },
   },
   {
     id: 'freeze-row-count',
@@ -266,7 +346,14 @@ const SHORTCUT_REGISTRY: ShortcutHandler[] = [
   {
     id: 'set-row-height',
     description: 'Set row height for one or more rows',
-    patterns: [/set\s+row\s+height/i, /row\s+height\s+to/i, /make\s+rows?\s+taller|shorter/i],
+    patterns: [
+      /set\s+row\s+height/i,
+      /row\s+height\s+to/i,
+      // "Set the height of rows 2 to 5 to 25" — the natural phrasing matched
+      // none of the above and escalated to Tier 3. TASKS.md #216.
+      /(?:set|change|adjust)\s+(?:the\s+)?height\s+(?:of\s+)?rows?/i,
+      /make\s+rows?\s+(?:taller|shorter)/i,
+    ],
     handler: (msg, activeSheetName) => {
       const range = parseRowRange(msg);
       const height = parseRowHeight(msg.replace(/.*(?:height|to|taller|shorter)\s*/i, ''));
@@ -312,33 +399,42 @@ const SHORTCUT_REGISTRY: ShortcutHandler[] = [
   {
     id: 'hide-sheet',
     description: 'Hide a sheet tab',
-    patterns: [/(?<![a-z])hide\s+(?:the\s+)?(?:sheet|tab)/i],
+    // Allow the name to sit between the verb and the noun ("hide the Working
+    // sheet"), not just after it ("hide sheet Working"). TASKS.md #216.
+    patterns: [/(?<![a-z])hide\s+(?:[A-Za-z0-9_-]+\s+){0,4}?(?:sheet|tab)\b/i],
     handler: (msg, activeSheetName) => {
-      const name = parseSheetName(msg);
-      return [{ type: 'HIDE_SHEET', sheetName: name ?? activeSheetName }];
+      const name = parseSheetName(msg) ?? (refersToActiveSheet(msg) ? activeSheetName : null);
+      if (!name) return null;
+      return [{ type: 'HIDE_SHEET', sheetName: name }];
     },
   },
   {
     id: 'show-sheet',
     description: 'Show a hidden sheet tab',
-    patterns: [/(?:show|unhide)\s+(?:the\s+)?(?:sheet|tab)/i],
-    handler: (msg, activeSheetName) => {
+    patterns: [/(?:show|unhide)\s+(?:[A-Za-z0-9_-]+\s+){0,4}?(?:sheet|tab)\b/i],
+    handler: (msg) => {
+      // "Show the sheets in this workbook" / "show sheet list" are questions,
+      // not unhide requests — without a named sheet, decline. TASKS.md #216.
       const name = parseSheetName(msg);
-      return [{ type: 'SHOW_SHEET', sheetName: name ?? activeSheetName }];
+      if (!name) return null;
+      return [{ type: 'SHOW_SHEET', sheetName: name }];
     },
   },
   {
     id: 'set-sheet-color',
     description: 'Change sheet tab color',
     patterns: [
-      /(?:color|colour)\s+(?:this\s+)?(?:sheet|tab)/i,
-      /(?:set|change)\s+(?:sheet|tab)\s+(?:color|colour)/i,
+      /(?:color|colour)\s+(?:[A-Za-z0-9_-]+\s+){0,4}?(?:sheet|tab)\b/i,
+      /(?:set|change)\s+(?:[A-Za-z0-9_-]+\s+){0,4}?(?:sheet|tab)\s+(?:color|colour)/i,
       /make\s+(?:the\s+)?(?:sheet|tab)\s+(\w+)/i,
     ],
     handler: (msg, activeSheetName) => {
       const color = parseColor(msg);
       if (!color) return null;
-      return [{ type: 'SET_SHEET_COLOR', sheetName: activeSheetName, color }];
+      // "Colour the Summary tab blue" coloured whichever sheet happened to be
+      // active. Prefer the sheet the user named. TASKS.md #216.
+      const named = parseSheetName(msg);
+      return [{ type: 'SET_SHEET_COLOR', sheetName: named ?? activeSheetName, color }];
     },
   },
   {

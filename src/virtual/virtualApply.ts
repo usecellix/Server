@@ -76,6 +76,12 @@ function applyAction(wb: ShadowWorkbook, action: Action): void {
     case 'COPY_SHEET':
       virtualCopySheet(wb, action);
       break;
+    // Intentionally not simulated: the shadow workbook models cell values, and
+    // tab ORDER changes none of them — every downstream checker reads sheets by
+    // name. Explicit case rather than a silent default-break, per
+    // ARCHITECTURE.md AD-3. TASKS.md #212.
+    case 'MOVE_SHEET':
+      break;
     case 'DELETE_SHEET':
       virtualDeleteSheet(wb, action.sheetName ?? '');
       break;
@@ -158,6 +164,9 @@ function applyAction(wb: ShadowWorkbook, action: Action): void {
       break;
     case 'SET_MATCHING_ROWS':
       virtualSetMatchingRows(wb, action);
+      break;
+    case 'DELETE_MATCHING_ROWS':
+      virtualDeleteMatchingRows(wb, action);
       break;
     case 'MERGE_CELLS':
       virtualMergeCells(wb, action);
@@ -755,6 +764,54 @@ function virtualClearRange(wb: ShadowWorkbook, action: Action, clearFormat: bool
 }
 
 /** TASKS.md #66 — SET_MATCHING_ROWS: write `value` into `targetColumn` for every row matching `filter` (or all data rows if omitted). */
+/**
+ * Resolves the same predicate the Office.js handler will — against the shadow's
+ * cell values — so the Verifier sees which rows actually disappear rather than
+ * trusting a row/rowCount the model guessed. No filter means "every cell in the
+ * row is empty". TASKS.md #234.
+ */
+function virtualDeleteMatchingRows(wb: ShadowWorkbook, action: Action): void {
+  const sheetName = action.sheetName ?? wb.activeSheetName;
+  const sheet = getSheet(wb, sheetName);
+  const rangeStr = action.range ?? action.sourceRange;
+  if (!sheet || !rangeStr) return;
+
+  const bounds = parseA1Range(stripSheetPrefix(rangeStr));
+  if (!bounds) return;
+
+  const rows = readRangeValues(sheet, rangeStr);
+  if (rows.length === 0) return;
+
+  const hasHeaders = action.hasHeaders !== false;
+  const firstDataOffset = hasHeaders ? 1 : 0;
+
+  let offsets: number[];
+  if (action.filter) {
+    try {
+      offsets = findMatchingRowOffsets(rows, hasHeaders, action.filter);
+    } catch {
+      return;
+    }
+  } else {
+    offsets = rows
+      .map((row, offset) => ({ row, offset }))
+      .filter(
+        ({ row, offset }) =>
+          offset >= firstDataOffset &&
+          row.every((cell) => cell === null || String(cell ?? '').trim() === ''),
+      )
+      .map(({ offset }) => offset);
+  }
+
+  if (offsets.length === 0) return;
+  // virtualDeleteRows takes 1-based sheet row numbers.
+  virtualDeleteRows(
+    wb,
+    sheetName,
+    offsets.map((offset) => bounds.startRow + offset + 1),
+  );
+}
+
 function virtualSetMatchingRows(wb: ShadowWorkbook, action: Action): void {
   const sheetName = action.sheetName ?? wb.activeSheetName;
   const sheet = getSheet(wb, sheetName);

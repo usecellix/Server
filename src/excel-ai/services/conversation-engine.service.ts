@@ -37,6 +37,7 @@ import { IntentClassifierService, intentIsReadOnly } from './intent-classifier.s
 import { LlmCallTelemetry, LlmUsage, OpenRouterChatMessage, OpenRouterService } from './openrouter.service';
 import { SheetAnalysis, SheetAnalyzerService } from './sheet-analyzer.service';
 import { pruneSpuriousAddSheetActions } from '../../agents/utils/compound-action.util';
+import { guardConditionalRowDeletes } from '../utils/conditional-row-delete.guard';
 import { annotateClearIntentOverwrite } from '../../agents/utils/clear-intent-overwrite.util';
 import {
   buildSheetOverview,
@@ -543,7 +544,35 @@ Sheet has ${analysis.rowCount} rows, ${analysis.columnCount} columns. Next appen
       }
       finalActions = validation.valid;
     }
+    // A conditional row delete whose row numbers the model invented is the one
+    // failure in this audit that destroys data rather than doing nothing.
+    // TASKS.md #234.
+    const rowDeleteGuard = guardConditionalRowDeletes(
+      finalActions,
+      userMessage,
+      richWorkbookContext,
+    );
+    if (rowDeleteGuard.dropped.length > 0) {
+      this.logger.error(
+        `Blocked ${rowDeleteGuard.dropped.length} guessed conditional row delete(s): ` +
+          rowDeleteGuard.dropped.join('; ') +
+          ` — message: "${String(userMessage ?? '').slice(0, 120)}"`,
+      );
+    }
+    finalActions = rowDeleteGuard.actions;
+
     const sanitized = this.sanitizeActions(finalActions, analysis, richWorkbookContext);
+    // A verified batch arriving here and leaving empty is the "1 action,
+    // verified: true" → "Something went wrong — try rephrasing" failure
+    // (#183, #215): the drop happened silently, so only a raw-log crawl could
+    // tell which action shape was rejected. Name them. TASKS.md #215.
+    if (finalActions.length > 0 && sanitized.length === 0) {
+      this.logger.error(
+        `All ${finalActions.length} action(s) dropped by sanitizeActions — nothing will reach the preview. ` +
+          `Types: ${finalActions.map((action) => action.type).join(', ')}. ` +
+          `Shapes: ${JSON.stringify(finalActions).slice(0, 600)}`,
+      );
+    }
     // Make a consolidated table actually consolidate (TASKS.md #142), then style
     // what this batch builds (TASKS.md #138). Both append only — neither
     // reorders or relocates content, so the planner's anchor arithmetic holds.
@@ -755,6 +784,52 @@ Sheet has ${analysis.rowCount} rows, ${analysis.columnCount} columns. Next appen
         return { ...action, row, col };
       case 'WRITE_TABLE':
         if (!Array.isArray(action.headers) || !Array.isArray(action.rows)) return null;
+        return action;
+      // These reached the switch with no case of their own and fell into
+      // `default: return null` — so every conditional format, filter,
+      // validation rule and gridline toggle produced by the Tier 3 path was
+      // discarded AFTER passing verification, surfacing as "Something went
+      // wrong applying this change" (colour scale, data bars) or as an answer
+      // claiming "DATA_VALIDATION" with no validation attached. Tier 1/2 emit
+      // these on a path that skips finalizeActions, which is why the same
+      // action type worked there and vanished here. TASKS.md #215.
+      case 'CONDITIONAL_FORMAT':
+        if (!action.range || !action.rule) return null;
+        return action;
+      case 'DELETE_CONDITIONAL_FORMAT':
+        if (!action.sheetName || !action.ruleId) return null;
+        return action;
+      case 'DATA_VALIDATION':
+        if (!action.range || !action.validation) return null;
+        return action;
+      case 'AUTO_FILTER':
+        if (!action.range) return null;
+        return action;
+      case 'HIDE_GRIDLINES':
+        return action;
+      case 'DELETE_MATCHING_ROWS':
+        if (!action.sheetName || !action.range) return null;
+        if (action.filter && (!action.filter.column || !action.filter.operator)) return null;
+        if (action.hasHeaders === undefined) action.hasHeaders = true;
+        return action;
+      case 'MOVE_SHEET':
+        if (!action.sheetName) return null;
+        if (
+          action.position === undefined &&
+          !action.beforeSheet &&
+          !action.afterSheet
+        ) {
+          return null;
+        }
+        return action;
+      case 'SET_RANGE_VALUES':
+        if (!action.range || !Array.isArray(action.operations)) return null;
+        return action;
+      case 'DELETE_TABLE':
+        if (!action.tableName && !action.name) return null;
+        return action;
+      case 'DELETE_CHART':
+        if (!action.chartId && !action.name) return null;
         return action;
       case 'FREEZE_PANES':
       case 'UNFREEZE_PANES':

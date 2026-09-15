@@ -14,6 +14,12 @@ export function isClearOrEmptyIntent(message: string): boolean {
     /\b(clear|wipe|remove|delete)\b[\s\S]{0,40}\b(values?|contents?|data|remarks?|cells?|column)\b/i.test(
       text,
     ) ||
+    // "Clear all formatting in A1:I31" (guide T1.3) is as explicit a clear as
+    // any of the above, but matched none of them, so CLEAR_FORMAT went
+    // unconfirmed and the header-row guard silently ate it. TASKS.md #215.
+    /\b(clear|wipe|remove|strip|reset)\b[\s\S]{0,40}\b(formatting|formats?|styles?|styling|borders?|fills?|highlights?|colou?rs?)\b/i.test(
+      text,
+    ) ||
     /\b(clear|wipe|empty|blank)\b[\s\S]{0,20}\b(the\s+)?remarks?\b/i.test(text) ||
     /\bno\s+values\b/i.test(text)
   );

@@ -30,6 +30,38 @@ function isValidComplexity(value: unknown): value is 0 | 1 | 2 | 3 {
   return value === 0 || value === 1 || value === 2 || value === 3;
 }
 
+/** Verbs that can only be a request to change the workbook. */
+const WRITE_VERB =
+  /\b(add|insert|create|build|generate|delete|remove|drop|clear|wipe|highlight|bold|italic|underline|sort|fill|apply|rename|merge|unmerge|split|freeze|unfreeze|hide|unhide|write|convert|replace|protect|unlock|resize|autofit|wrap|align|define|validate|dedupe|deduplicate|trim)\b/i;
+
+/**
+ * Words that are verbs in an instruction and plain nouns in a question —
+ * "duplicate VALUES in column A", "what FILTER is active", "the COPY sheet".
+ * Only an imperative position makes them a write. Without this split,
+ * "Are there duplicate values in column A?" read as a write request.
+ */
+const AMBIGUOUS_WRITE_VERB =
+  /(?:^|\b(?:you|please|to|and|then|also|now)\s+)(duplicate|copy|filter|format|colou?r|mark|flag|name|move|set|make|change|update|show|clean|lock|round)\b/i;
+
+/**
+ * A question about the data ("are there duplicates?", "how many blanks?",
+ * "which supplier is highest?") with no verb asking for a change. The guide
+ * treats these as read-only (Q&A.4) — answer them, never write. TASKS.md #214.
+ */
+export function isReadOnlyQuestion(message: string): boolean {
+  const text = String(message ?? '').trim();
+  if (!text) return false;
+
+  const interrogative =
+    /^(are|is|do|does|did|can|could|how|what|which|who|whom|whose|where|when|why|any)\b/i.test(text) ||
+    /\?\s*$/.test(text);
+  if (!interrogative) return false;
+
+  // "Can you highlight the duplicates?" is a question in form and a write in
+  // substance — the verb decides, not the question mark.
+  return !WRITE_VERB.test(text) && !AMBIGUOUS_WRITE_VERB.test(text);
+}
+
 @Injectable()
 export class LlmRouterService {
   private readonly logger = new Logger(LlmRouterService.name);
@@ -113,7 +145,13 @@ export class LlmRouterService {
 
     // Write patterns before data: "dashboard" + "total amount" (column name) would otherwise
     // false-positive into SmartDataQuery and answer "no sheet data".
-    if (input.mode === 'action') {
+    // A question with no write verb is a data query however it matches below:
+    // "Are there duplicate values in column A?" hit the DUPLICATE_CHECK
+    // complexity regex here, short-circuiting to write with confidence 1.0
+    // before ensureWriteComplexity could downgrade it, and Tier 2 answered the
+    // yes/no question by painting a conditional-format rule onto the sheet.
+    // TASKS.md #214.
+    if (input.mode === 'action' && !isReadOnlyQuestion(input.message)) {
       const complexityEarly = classifyComplexity(input.message);
       if (complexityEarly.match) {
         const { tier, actionHint } = complexityEarly.match;
@@ -248,6 +286,18 @@ export class LlmRouterService {
   ): RouterDecision {
     if (decision.route !== 'write') {
       return decision;
+    }
+
+    // The guide's Q&A.4 data questions are read-only by definition, but the
+    // router sent "Are there duplicate values in column A?" to write, where
+    // Tier 2 answered a yes/no question by inserting a Duplicate? column into
+    // the user's sheet. A question with no write verb anywhere in it is a
+    // query, whatever the router said. TASKS.md #214.
+    if (isReadOnlyQuestion(message)) {
+      this.logger.log(
+        `Router said write for a question with no write verb — downgrading to data: "${message.slice(0, 100)}"`,
+      );
+      return { ...decision, route: 'data', complexity: undefined, actionHint: undefined };
     }
 
     const complexity = isValidComplexity(decision.complexity) ? decision.complexity : 3;
