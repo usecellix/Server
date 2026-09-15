@@ -1,0 +1,20 @@
+{
+  "clientGstin": "27XYZPQ9876A1Z3",
+  "period": "2026-Q1",
+  "booksSheet": "Sales Register",
+  "portalSheet": "GSTR-1",
+  "booksHeaders": ["Recipient GSTIN", "Invoice Number", "Invoice Date", "Taxable Value", "Supply Category", "CGST", "SGST", "IGST"],
+  "portalHeaders": ["GSTIN/UIN of Recipient", "Invoice Number", "Invoice Date", "Taxable Value", "IRN", "CGST", "SGST", "IGST"],
+  "booksGrid": [
+    ["Recipient GSTIN", "Invoice Number", "Invoice Date", "Taxable Value", "Supply Category", "CGST", "SGST", "IGST"],
+    ["29CCCCC0000C1Z5", "S-100", "2026-04-05", 20000, "B2B", 1800, 1800, 0],
+    ["", "S-200", "2026-04-06", 1500, "B2C", 135, 135, 0]
+  ],
+  "portalGrid": [
+    ["GSTIN of the Taxpayer", "27XYZPQ9876A1Z3", "", "", "", "", "", ""],
+    ["GSTIN/UIN of Recipient", "Invoice Number", "Invoice Date", "Taxable Value", "IRN", "CGST", "SGST", "IGST"],
+    ["29CCCCC0000C1Z5", "S-100", "2026-04-05", 20000, "", 1800, 1800, 0],
+    ["", "S-200", "2026-04-06", 1500, "", 135, 135, 0]
+  ],
+  "portalHeadersRow": 2
+}

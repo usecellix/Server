@@ -1,0 +1,41 @@
+{
+  "description": "9 blank-GSTIN Purchase Register rows whose real-world counterpart invoice exists in GSTR-2B under a distinct GSTIN — shaped after a real file where all 9 blank-GSTIN books rows turned out to be the same invoices as 9 of the portal-only rows (matched on vendor name + invoice date + taxable value). Plus one genuinely unresolvable blank-GSTIN row and one genuinely unrelated portal-only row, to prove the fix doesn't over-match.",
+  "booksSheet": "Purchase register",
+  "portalSheet": "B2B",
+  "booksHeaders": ["Date", "Particulars", "GSTIN/UIN", "Taxable Value", "CGST", "SGST"],
+  "booksGrid": [
+    ["Date", "Particulars", "GSTIN/UIN", "Taxable Value", "CGST", "SGST"],
+    ["01/11/2024", "Vendor One", "", 5001.04, 450.09, 450.09],
+    ["02/11/2024", "Vendor Two", "", 12000, 1080, 1080],
+    ["03/11/2024", "Vendor Three", "", 3450.5, 310.55, 310.55],
+    ["04/11/2024", "Vendor Four", "", 8899.99, 801, 801],
+    ["05/11/2024", "Vendor Five", "", 15250.75, 1372.57, 1372.57],
+    ["06/11/2024", "Vendor Six", "", 620, 55.8, 55.8],
+    ["07/11/2024", "Vendor Seven", "", 42000.1, 3780.01, 3780.01],
+    ["08/11/2024", "Vendor Eight", "", 999.99, 90, 90],
+    ["09/11/2024", "Vendor Nine", "", 27500, 2475, 2475],
+    ["10/11/2024", "Vendor Ten (unresolvable)", "", 11111.11, 1000, 1000]
+  ],
+  "portalHeaders": ["GSTIN of supplier", "Invoice number", "Invoice Date", "Taxable Value", "CGST", "SGST", "IGST"],
+  "portalGrid": [
+    ["GSTIN of supplier", "Invoice number", "Invoice Date", "Taxable Value", "CGST", "SGST", "IGST"],
+    ["32AAAAA0001A1Z1", "VO-1", "01/11/2024", 5001.04, 450.09, 450.09, 0],
+    ["32AAAAA0002A1Z2", "VO-2", "02/11/2024", 12000, 1080, 1080, 0],
+    ["32AAAAA0003A1Z3", "VO-3", "03/11/2024", 3450.5, 310.55, 310.55, 0],
+    ["32AAAAA0004A1Z4", "VO-4", "04/11/2024", 8899.99, 801, 801, 0],
+    ["32AAAAA0005A1Z5", "VO-5", "05/11/2024", 15250.75, 1372.57, 1372.57, 0],
+    ["32AAAAA0006A1Z6", "VO-6", "06/11/2024", 620, 55.8, 55.8, 0],
+    ["32AAAAA0007A1Z7", "VO-7", "07/11/2024", 42000.1, 3780.01, 3780.01, 0],
+    ["32AAAAA0008A1Z8", "VO-8", "08/11/2024", 999.99, 90, 90, 0],
+    ["32AAAAA0009A1Z9", "VO-9", "09/11/2024", 27500, 2475, 2475, 0],
+    ["32ZZZZZ0000Z1ZZ", "UNRELATED-1", "15/11/2024", 77777, 7000, 7000, 0]
+  ],
+  "portalHeadersRow": 1,
+  "expected": {
+    "totalBooksRows": 10,
+    "originalBlankGstinCount": 10,
+    "blank_gstin_likely_matched": 9,
+    "blank_counterparty_gstin_remaining": 1,
+    "portal_only_after_fix": 1
+  }
+}

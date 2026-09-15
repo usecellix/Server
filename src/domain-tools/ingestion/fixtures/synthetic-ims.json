@@ -1,0 +1,59 @@
+{
+  "documentId": "synth-ims-001",
+  "format": "synthetic-json",
+  "headers": [
+    "Supplier GSTIN",
+    "Invoice Number",
+    "Invoice Date",
+    "Taxable Value",
+    "Tax Amount",
+    "IMS Action"
+  ],
+  "rows": [
+    {
+      "gstin": "32AAAAA0000A1Z5",
+      "invoiceNumber": "INV-1001",
+      "invoiceDate": "2026-04-15",
+      "taxableValue": 10000,
+      "taxAmount": 1800,
+      "imsAction": "Accepted",
+      "sourceRow": 2
+    },
+    {
+      "gstin": "29BBBBB1111B1Z5",
+      "invoiceNumber": "INV/1002",
+      "invoiceDate": "2026-04-18",
+      "taxableValue": 25000,
+      "taxAmount": 4500,
+      "imsAction": "AutoAccepted",
+      "sourceRow": 3
+    },
+    {
+      "gstin": "33EEEEE4444E1Z5",
+      "invoiceNumber": "PR-ONLY-1",
+      "invoiceDate": "2026-04-25",
+      "taxableValue": 12000,
+      "taxAmount": 2160,
+      "imsAction": "Rejected",
+      "sourceRow": 4
+    },
+    {
+      "gstin": "24DDDDD3333D1Z5",
+      "invoiceNumber": "PORTAL-ONLY-1",
+      "invoiceDate": "2026-04-22",
+      "taxableValue": 8000,
+      "taxAmount": 1440,
+      "imsAction": "Pending",
+      "sourceRow": 5
+    },
+    {
+      "gstin": "09FFFFF5555F1Z5",
+      "invoiceNumber": "IMS-ONLY-1",
+      "invoiceDate": "2026-04-28",
+      "taxableValue": 6000,
+      "taxAmount": 1080,
+      "imsAction": "Accepted",
+      "sourceRow": 6
+    }
+  ]
+}

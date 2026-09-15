@@ -1,0 +1,1333 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CELLIX — Basic Excel Use Cases & Conversational Q&A Guide</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=Syne+Mono&family=Libre+Baskerville:ital,wght@0,400;0,700;1,400&display=swap');
+
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
+html{scroll-behavior:smooth;font-size:14px;}
+
+:root{
+  --bg:#f7f5f0;
+  --paper:#ffffff;
+  --ink:#18150e;
+  --ink2:#3a3528;
+  --muted:#8a8272;
+  --border:#e2ddd4;
+  --accent:#1a4f8a;
+  --warm:#c95c1a;
+  --green:#1a6e45;
+  --purple:#4338CA;
+  --amber:#b45309;
+  --red:#991b1b;
+  --t1:#1a6e45;   /* tier 1 green */
+  --t2:#1a4f8a;   /* tier 2 blue */
+  --t3:#5a1a8a;   /* tier 3 purple */
+  --qa:#c95c1a;   /* Q&A orange */
+  --hl1:#eaf4ee;
+  --hl2:#eef3fa;
+  --hl3:#f3eefa;
+  --hlqa:#fdf2ea;
+  --code-bg:#1c1a16;
+  --code-text:#d4cfc4;
+}
+
+body{background:var(--bg);color:var(--ink);font-family:'Space Grotesk',sans-serif;line-height:1.7;-webkit-font-smoothing:antialiased;}
+
+/* ═══ HEADER ═══ */
+.hdr{background:var(--ink);color:#fff;padding:2.5rem 3rem;}
+.hdr-inner{max-width:1200px;margin:0 auto;}
+.hdr-brand{font-family:'Syne Mono',monospace;font-size:0.65rem;letter-spacing:3px;text-transform:uppercase;color:rgba(255,255,255,0.35);margin-bottom:1rem;}
+.hdr h1{font-family:'Libre Baskerville',serif;font-size:clamp(1.8rem,4vw,2.8rem);font-weight:700;line-height:1.1;color:#fff;margin-bottom:0.75rem;}
+.hdr h1 span{color:#a78bfa;}
+.hdr-desc{color:rgba(255,255,255,0.5);font-size:0.9rem;max-width:620px;margin-bottom:2rem;line-height:1.8;}
+.hdr-badges{display:flex;gap:0.75rem;flex-wrap:wrap;}
+.hdr-badge{background:rgba(255,255,255,0.07);border:1px solid rgba(255,255,255,0.12);padding:5px 14px;border-radius:3px;font-family:'Syne Mono',monospace;font-size:0.62rem;letter-spacing:1.5px;text-transform:uppercase;color:rgba(255,255,255,0.5);}
+.hdr-badge strong{color:#fff;display:block;font-family:'Space Grotesk',sans-serif;font-size:0.85rem;letter-spacing:0;text-transform:none;font-weight:600;margin-top:1px;}
+
+/* ═══ LAYOUT ═══ */
+.layout{display:grid;grid-template-columns:230px 1fr;max-width:1200px;margin:0 auto;min-height:calc(100vh - 200px);}
+
+/* ═══ SIDEBAR NAV ═══ */
+.snav{border-right:1px solid var(--border);padding:1.5rem 0;position:sticky;top:0;height:100vh;overflow-y:auto;background:var(--paper);}
+.snav-section{margin-bottom:0.25rem;}
+.snav-title{padding:0.75rem 1.25rem 0.25rem;font-family:'Syne Mono',monospace;font-size:0.58rem;letter-spacing:2.5px;text-transform:uppercase;color:var(--muted);}
+.snav a{display:block;padding:0.28rem 1.25rem;font-size:0.8rem;color:var(--muted);text-decoration:none;transition:all 0.12s;border-left:2px solid transparent;}
+.snav a:hover{color:var(--ink);background:var(--bg);border-left-color:var(--muted);}
+.snav-t1 a:hover{border-left-color:var(--t1);color:var(--t1);}
+.snav-t2 a:hover{border-left-color:var(--t2);color:var(--t2);}
+.snav-t3 a:hover{border-left-color:var(--t3);color:var(--t3);}
+.snav-qa a:hover{border-left-color:var(--qa);color:var(--qa);}
+.tier-pill{display:inline-block;font-family:'Syne Mono',monospace;font-size:0.55rem;padding:1px 6px;border-radius:2px;margin-left:4px;vertical-align:middle;letter-spacing:0.5px;}
+.tp1{background:var(--hl1);color:var(--t1);}
+.tp2{background:var(--hl2);color:var(--t2);}
+.tp3{background:var(--hl3);color:var(--t3);}
+.tpqa{background:var(--hlqa);color:var(--qa);}
+
+/* ═══ MAIN ═══ */
+.main-content{padding:0;}
+
+/* ═══ TIER HEADER ═══ */
+.tier-header{padding:2rem 2.5rem 1.5rem;border-bottom:2px solid;position:sticky;top:0;z-index:10;background:var(--bg);}
+.tier-header.t1{border-bottom-color:var(--t1);background:#f0f8f3;}
+.tier-header.t2{border-bottom-color:var(--t2);background:#f0f4fb;}
+.tier-header.t3{border-bottom-color:var(--t3);background:#f5f0fb;}
+.tier-header.tqa{border-bottom-color:var(--qa);background:#fdf5f0;}
+.tier-tag{font-family:'Syne Mono',monospace;font-size:0.65rem;letter-spacing:2px;text-transform:uppercase;margin-bottom:0.4rem;}
+.t1 .tier-tag{color:var(--t1);}
+.t2 .tier-tag{color:var(--t2);}
+.t3 .tier-tag{color:var(--t3);}
+.tqa .tier-tag{color:var(--qa);}
+.tier-header h2{font-family:'Libre Baskerville',serif;font-size:1.6rem;font-weight:700;color:var(--ink);margin-bottom:0.4rem;}
+.tier-header p{font-size:0.85rem;color:var(--muted);max-width:700px;}
+
+/* ═══ SECTION ═══ */
+.use-section{padding:2rem 2.5rem;border-bottom:1px solid var(--border);}
+.use-section:last-child{border-bottom:none;}
+.use-header{display:flex;align-items:flex-start;justify-content:space-between;gap:1rem;margin-bottom:1.25rem;}
+.use-title-block{}
+.use-num{font-family:'Syne Mono',monospace;font-size:0.62rem;letter-spacing:2px;color:var(--muted);display:block;margin-bottom:3px;}
+.use-title{font-family:'Libre Baskerville',serif;font-size:1.15rem;font-weight:700;color:var(--ink);}
+.use-badge{font-family:'Syne Mono',monospace;font-size:0.6rem;letter-spacing:1.5px;text-transform:uppercase;padding:4px 10px;border-radius:3px;flex-shrink:0;white-space:nowrap;}
+.ub-t1{background:var(--hl1);color:var(--t1);border:1px solid #b3d9c0;}
+.ub-t2{background:var(--hl2);color:var(--t2);border:1px solid #b3c8e8;}
+.ub-t3{background:var(--hl3);color:var(--t3);border:1px solid #c8b3e8;}
+.ub-qa{background:var(--hlqa);color:var(--qa);border:1px solid #e8c8b3;}
+
+/* ═══ TWO COLUMN LAYOUT ═══ */
+.two-col{display:grid;grid-template-columns:1fr 1fr;gap:1.25rem;}
+.col-head{font-family:'Syne Mono',monospace;font-size:0.6rem;letter-spacing:2px;text-transform:uppercase;color:var(--muted);margin-bottom:0.75rem;padding-bottom:0.4rem;border-bottom:1px solid var(--border);}
+
+/* ═══ OPERATIONS LIST ═══ */
+.ops-list{list-style:none;}
+.ops-list li{padding:0.45rem 0;border-bottom:1px solid var(--border);font-size:0.84rem;color:var(--ink2);display:flex;gap:0.6rem;align-items:flex-start;line-height:1.5;}
+.ops-list li:last-child{border-bottom:none;}
+.op-icon{flex-shrink:0;width:18px;height:18px;border-radius:3px;display:flex;align-items:center;justify-content:center;font-size:0.65rem;font-weight:700;margin-top:1px;}
+.oi-1{background:var(--hl1);color:var(--t1);}
+.oi-2{background:var(--hl2);color:var(--t2);}
+.oi-3{background:var(--hl3);color:var(--t3);}
+.oi-q{background:var(--hlqa);color:var(--qa);}
+.op-sub{color:var(--muted);font-size:0.76rem;display:block;margin-top:1px;}
+
+/* ═══ CONVERSATION EXAMPLES ═══ */
+.conv-list{display:flex;flex-direction:column;gap:0.6rem;}
+.conv-item{border-radius:4px;overflow:hidden;border:1px solid var(--border);}
+.conv-user{background:var(--ink);color:#fff;padding:0.5rem 0.85rem;font-size:0.8rem;display:flex;gap:0.5rem;align-items:flex-start;}
+.conv-user-label{font-family:'Syne Mono',monospace;font-size:0.58rem;letter-spacing:1.5px;color:rgba(255,255,255,0.35);flex-shrink:0;margin-top:2px;}
+.conv-cellix{background:var(--paper);padding:0.5rem 0.85rem;font-size:0.78rem;color:var(--ink2);display:flex;gap:0.5rem;align-items:flex-start;border-top:1px solid var(--border);}
+.conv-cellix-label{font-family:'Syne Mono',monospace;font-size:0.58rem;letter-spacing:1.5px;color:var(--muted);flex-shrink:0;margin-top:2px;}
+.conv-cellix-body{line-height:1.55;color:var(--ink2);}
+.conv-cellix-body code{font-family:'Syne Mono',monospace;font-size:0.75rem;background:#f0ece4;padding:1px 5px;border-radius:2px;color:var(--ink);}
+.cellix-green .conv-cellix{background:var(--hl1);border-top-color:#c0ddc8;}
+.cellix-blue .conv-cellix{background:var(--hl2);border-top-color:#b8cde8;}
+.cellix-purple .conv-cellix{background:var(--hl3);border-top-color:#c8b8e8;}
+.cellix-amber .conv-cellix{background:var(--hlqa);border-top-color:#e8ceb8;}
+
+/* ═══ FORMULA TABLE ═══ */
+.formula-table{width:100%;border-collapse:collapse;font-size:0.82rem;margin-top:0.75rem;}
+.formula-table th{background:var(--ink);color:#fff;padding:8px 12px;text-align:left;font-weight:500;font-size:0.72rem;letter-spacing:0.3px;}
+.formula-table td{padding:8px 12px;border-bottom:1px solid var(--border);vertical-align:top;}
+.formula-table tr:nth-child(even) td{background:#faf8f4;}
+.formula-table tr:last-child td{border-bottom:none;}
+.formula-table td:first-child{font-family:'Syne Mono',monospace;font-size:0.75rem;color:var(--purple);font-weight:500;}
+.formula-table td:nth-child(2){color:var(--ink);font-weight:500;}
+.formula-table td:last-child{color:var(--muted);}
+.formula-ex{font-family:'Syne Mono',monospace;font-size:0.72rem;color:var(--t2);display:block;margin-top:3px;}
+
+/* ═══ IMPLEMENTATION BOX ═══ */
+.impl-box{background:var(--code-bg);border-radius:4px;padding:1rem 1.25rem;margin-top:1rem;font-family:'Syne Mono',monospace;font-size:0.75rem;color:var(--code-text);line-height:1.7;}
+.impl-label{font-size:0.58rem;letter-spacing:2px;text-transform:uppercase;color:rgba(255,255,255,0.25);margin-bottom:0.5rem;}
+.impl-key{color:#7cb4e8;}
+.impl-val{color:#a8d8a0;}
+.impl-com{color:#5a5248;}
+.impl-fn{color:#d8a0e0;}
+
+/* ═══ NOTE BOX ═══ */
+.note{border-radius:4px;padding:0.85rem 1.1rem;margin:1rem 0;font-size:0.83rem;line-height:1.65;}
+.note-info{background:var(--hl2);border-left:3px solid var(--t2);}
+.note-warn{background:var(--hlqa);border-left:3px solid var(--qa);}
+.note-success{background:var(--hl1);border-left:3px solid var(--t1);}
+.note strong{font-weight:600;display:block;margin-bottom:3px;}
+.note-info strong{color:var(--t2);}
+.note-warn strong{color:var(--qa);}
+.note-success strong{color:var(--t1);}
+
+/* ═══ PRIORITY MATRIX ═══ */
+.priority-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:1rem;margin:1.25rem 0;}
+.p-card{border-radius:4px;padding:1.25rem;border:1px solid var(--border);}
+.p-card.pc1{background:var(--hl1);border-color:#b3d9c0;}
+.p-card.pc2{background:var(--hl2);border-color:#b3c8e8;}
+.p-card.pc3{background:var(--hl3);border-color:#c8b3e8;}
+.p-card h4{font-weight:700;font-size:0.85rem;margin-bottom:0.5rem;}
+.pc1 h4{color:var(--t1);}
+.pc2 h4{color:var(--t2);}
+.pc3 h4{color:var(--t3);}
+.p-card p{font-size:0.8rem;color:var(--muted);margin:0;}
+
+/* ═══ TAG ROW ═══ */
+.tag-row{display:flex;gap:6px;flex-wrap:wrap;margin-top:0.6rem;}
+.tag{font-family:'Syne Mono',monospace;font-size:0.62rem;padding:2px 8px;border-radius:3px;letter-spacing:0.3px;}
+.tg1{background:var(--hl1);color:var(--t1);}
+.tg2{background:var(--hl2);color:var(--t2);}
+.tg3{background:var(--hl3);color:var(--t3);}
+.tgqa{background:var(--hlqa);color:var(--qa);}
+.tgr{background:#fef2f2;color:var(--red);border:1px solid #fecaca;}
+
+/* ═══ INTENT TABLE ═══ */
+.intent-table{width:100%;border-collapse:collapse;font-size:0.82rem;}
+.intent-table th{background:var(--ink);color:#fff;padding:8px 12px;text-align:left;font-size:0.72rem;}
+.intent-table td{padding:8px 12px;border-bottom:1px solid var(--border);vertical-align:top;line-height:1.55;}
+.intent-table tr:nth-child(even) td{background:#faf8f4;}
+.intent-table tr:last-child td{border-bottom:none;}
+.intent-label{font-family:'Syne Mono',monospace;font-size:0.72rem;font-weight:500;color:var(--purple);}
+.intent-examples{color:var(--muted);font-size:0.78rem;}
+
+/* ═══ SECTION DIVIDER ═══ */
+.tier-divider{background:var(--ink);color:#fff;padding:1.25rem 2.5rem;display:flex;align-items:center;gap:1.5rem;}
+.td-num{font-family:'Libre Baskerville',serif;font-size:3rem;font-weight:700;opacity:0.15;line-height:1;}
+.td-body{}
+.td-label{font-family:'Syne Mono',monospace;font-size:0.62rem;letter-spacing:2px;text-transform:uppercase;opacity:0.4;margin-bottom:2px;}
+.td-title{font-size:1.1rem;font-weight:600;color:#fff;}
+.td-desc{font-size:0.8rem;color:rgba(255,255,255,0.4);}
+.td-count{margin-left:auto;text-align:right;}
+.td-count-num{font-family:'Libre Baskerville',serif;font-size:1.8rem;font-weight:700;color:#a78bfa;line-height:1;}
+.td-count-label{font-family:'Syne Mono',monospace;font-size:0.58rem;letter-spacing:1.5px;color:rgba(255,255,255,0.3);}
+
+/* footer */
+footer{background:var(--ink);color:rgba(255,255,255,0.3);padding:1.5rem 2.5rem;font-size:0.75rem;display:flex;justify-content:space-between;flex-wrap:wrap;gap:0.5rem;}
+footer strong{color:rgba(255,255,255,0.6);}
+
+@media(max-width:900px){
+  .layout{grid-template-columns:1fr;}
+  .snav{display:none;}
+  .two-col{grid-template-columns:1fr;}
+  .priority-grid{grid-template-columns:1fr;}
+  .hdr,.use-section,.tier-header,.tier-divider,footer{padding-left:1.25rem;padding-right:1.25rem;}
+}
+</style>
+</head>
+<body>
+
+<!-- HEADER -->
+<div class="hdr">
+  <div class="hdr-inner">
+    <div class="hdr-brand">CELLIX · Basic Features & Conversational Q&A · Developer Guide</div>
+    <h1>Every Excel Operation<br><span>CELLIX Must Handle</span></h1>
+    <p class="hdr-desc">A complete reference of all basic Excel use cases, organized by development priority tier. For each operation: the sub-features, the natural language phrases users will say, and what CELLIX must do in response. Build Tier 1 completely before touching Tier 2.</p>
+    <div class="hdr-badges">
+      <div class="hdr-badge"><span>Tier 1</span><strong>7 feature groups · Build First</strong></div>
+      <div class="hdr-badge"><span>Tier 2</span><strong>8 feature groups · Build Second</strong></div>
+      <div class="hdr-badge"><span>Tier 3</span><strong>8 feature groups · Build Third</strong></div>
+      <div class="hdr-badge"><span>Q&A Layer</span><strong>5 intent categories · Throughout</strong></div>
+      <div class="hdr-badge"><span>Total</span><strong>180+ individual use cases</strong></div>
+    </div>
+  </div>
+</div>
+
+<div class="layout">
+
+<!-- SIDEBAR NAV -->
+<nav class="snav">
+  <div class="snav-section">
+    <div class="snav-title">Overview</div>
+    <a href="#overview">Build Strategy</a>
+    <a href="#priority">Priority Matrix</a>
+  </div>
+  <div class="snav-section snav-t1">
+    <div class="snav-title">Tier 1 — Build First</div>
+    <a href="#t1-sheets">Sheet Operations</a>
+    <a href="#t1-rowcol">Row & Column Ops</a>
+    <a href="#t1-cells">Cell Operations</a>
+    <a href="#t1-format">Basic Formatting</a>
+    <a href="#t1-copypaste">Copy, Paste & Fill</a>
+    <a href="#t1-math">Math Formulas</a>
+    <a href="#t1-logic">Logical Formulas</a>
+  </div>
+  <div class="snav-section snav-t2">
+    <div class="snav-title">Tier 2 — Build Second</div>
+    <a href="#t2-sort">Data Sorting</a>
+    <a href="#t2-filter">Data Filtering</a>
+    <a href="#t2-findreplace">Find & Replace</a>
+    <a href="#t2-lookup">Lookup Formulas</a>
+    <a href="#t2-text">Text Formulas</a>
+    <a href="#t2-date">Date & Time</a>
+    <a href="#t2-conditional">Conditional Formulas</a>
+    <a href="#t2-condformat">Conditional Formatting</a>
+  </div>
+  <div class="snav-section snav-t3">
+    <div class="snav-title">Tier 3 — Build Third</div>
+    <a href="#t3-errors">Error Fix</a>
+    <a href="#t3-validation">Data Validation</a>
+    <a href="#t3-named">Named Ranges</a>
+    <a href="#t3-array">Array Formulas</a>
+    <a href="#t3-dedupe">Dedup & Cleanup</a>
+    <a href="#t3-pivot">Pivot Tables</a>
+    <a href="#t3-charts">Charts</a>
+    <a href="#t3-advanced">Advanced Formulas</a>
+  </div>
+  <div class="snav-section snav-qa">
+    <div class="snav-title">Conversational Q&A</div>
+    <a href="#qa-action">Action Requests</a>
+    <a href="#qa-explain">Explain Requests</a>
+    <a href="#qa-fix">Fix Requests</a>
+    <a href="#qa-data">Data Questions</a>
+    <a href="#qa-formula">Formula Help</a>
+  </div>
+</nav>
+
+<div class="main-content">
+
+<!-- OVERVIEW -->
+<div class="use-section" id="overview">
+  <div class="use-header">
+    <div class="use-title-block">
+      <span class="use-num">00 — STRATEGY</span>
+      <div class="use-title">Build Strategy — Why This Order</div>
+    </div>
+  </div>
+  <p style="font-size:0.88rem;color:var(--ink2);margin-bottom:1rem;line-height:1.8">Every Excel user — from a first-day student to a veteran CA — uses the same 40–50 operations 90% of the time. Master these basics first. Domain-specific features (GST reconciliation, Tally cleanup) are built on top of this foundation. If CELLIX cannot reliably create a formula, sort a column, or explain a cell, no CA will trust it with their compliance work.</p>
+  <div class="priority-grid" id="priority">
+    <div class="p-card pc1">
+      <h4>Tier 1 — Core Basics</h4>
+      <p>Sheet/row/column operations, cell formatting, copy-paste, SUM/IF/VLOOKUP equivalents. Every single Excel user does these daily. Build these first — without them the product doesn't work at all.</p>
+      <div class="tag-row"><span class="tag tg1">7 feature groups</span><span class="tag tg1">~60 operations</span><span class="tag tg1">Weeks 1–4</span></div>
+    </div>
+    <div class="p-card pc2">
+      <h4>Tier 2 — Common Operations</h4>
+      <p>Sorting, filtering, lookup formulas, text functions, date functions, conditional formatting. Used by 80% of users regularly. After Tier 1 is stable, build these before any domain features.</p>
+      <div class="tag-row"><span class="tag tg2">8 feature groups</span><span class="tag tg2">~70 operations</span><span class="tag tg2">Weeks 5–8</span></div>
+    </div>
+    <div class="p-card pc3">
+      <h4>Tier 3 — Intermediate</h4>
+      <p>Error fixing, data validation, array formulas, pivot tables, charts. Used by power users and professional CA workflows. Build after Tier 2 — these are the bridge to domain-specific features.</p>
+      <div class="tag-row"><span class="tag tg3">8 feature groups</span><span class="tag tg3">~50 operations</span><span class="tag tg3">Weeks 9–12</span></div>
+    </div>
+  </div>
+  <div class="note note-success">
+    <strong>The Conversational Q&A layer runs across all tiers from Day 1</strong>
+    Every feature must have both a "do it for me" (action) and a "tell me about it" (explain) conversational interface. The Q&A layer is not a separate feature — it is the interface layer for every operation in every tier.
+  </div>
+</div>
+
+<!-- ════════════ TIER 1 DIVIDER ════════════ -->
+<div class="tier-divider" id="tier1">
+  <div class="td-num">1</div>
+  <div class="td-body">
+    <div class="td-label">First Priority</div>
+    <div class="td-title">Tier 1 — Core Basic Operations</div>
+    <div class="td-desc">Every Excel user, every day. Build these before anything else.</div>
+  </div>
+  <div class="td-count"><div class="td-count-num">7</div><div class="td-count-label">Feature Groups</div></div>
+</div>
+
+<!-- T1.1 SHEET OPERATIONS -->
+<div class="use-section" id="t1-sheets">
+  <div class="use-header">
+    <div class="use-title-block">
+      <span class="use-num">T1.1</span>
+      <div class="use-title">Sheet Operations</div>
+    </div>
+    <span class="use-badge ub-t1">Tier 1 · Day 1</span>
+  </div>
+  <div class="two-col">
+    <div>
+      <div class="col-head">All Operations to Support</div>
+      <ul class="ops-list">
+        <li><div class="op-icon oi-1">+</div><div><span>Create new sheet</span><span class="op-sub">At end, before/after specific tab, with given name</span></div></li>
+        <li><div class="op-icon oi-1">×</div><div><span>Delete sheet</span><span class="op-sub">By name or active sheet, with confirmation warning</span></div></li>
+        <li><div class="op-icon oi-1">✎</div><div><span>Rename sheet</span><span class="op-sub">Current tab renamed to specified name</span></div></li>
+        <li><div class="op-icon oi-1">⧉</div><div><span>Copy sheet</span><span class="op-sub">Duplicate with new name, same or different workbook</span></div></li>
+        <li><div class="op-icon oi-1">↔</div><div><span>Move sheet</span><span class="op-sub">Before/after another sheet, or to specific position</span></div></li>
+        <li><div class="op-icon oi-1">👁</div><div><span>Hide / unhide sheet</span><span class="op-sub">Hide active or named sheet; list and unhide hidden sheets</span></div></li>
+        <li><div class="op-icon oi-1">🎨</div><div><span>Sheet tab colour</span><span class="op-sub">Change tab background colour to specified colour</span></div></li>
+        <li><div class="op-icon oi-1">📋</div><div><span>List all sheets</span><span class="op-sub">Return names and order of all visible and hidden sheets</span></div></li>
+      </ul>
+    </div>
+    <div>
+      <div class="col-head">Conversational Examples</div>
+      <div class="conv-list">
+        <div class="conv-item cellix-green">
+          <div class="conv-user"><span class="conv-user-label">USER</span>"Create a new sheet called Summary"</div>
+          <div class="conv-cellix"><span class="conv-cellix-label">CELLIX</span><div class="conv-cellix-body">Created sheet <code>Summary</code> at the end. Should I move it to a specific position?</div></div>
+        </div>
+        <div class="conv-item cellix-green">
+          <div class="conv-user"><span class="conv-user-label">USER</span>"Rename this sheet to Apr 2024 Data"</div>
+          <div class="conv-cellix"><span class="conv-cellix-label">CELLIX</span><div class="conv-cellix-body">Renamed active sheet from <code>Sheet1</code> to <code>Apr 2024 Data</code>.</div></div>
+        </div>
+        <div class="conv-item cellix-green">
+          <div class="conv-user"><span class="conv-user-label">USER</span>"How many sheets are in this workbook?"</div>
+          <div class="conv-cellix"><span class="conv-cellix-label">CELLIX</span><div class="conv-cellix-body">This workbook has 4 sheets: <code>Purchase Register</code>, <code>GSTR-2A</code>, <code>Summary</code>, <code>Working</code>. No hidden sheets.</div></div>
+        </div>
+        <div class="conv-item cellix-green">
+          <div class="conv-user"><span class="conv-user-label">USER</span>"Copy the Purchase Register sheet and name it March Copy"</div>
+          <div class="conv-cellix"><span class="conv-cellix-label">CELLIX</span><div class="conv-cellix-body">Copied <code>Purchase Register</code> to a new sheet named <code>March Copy</code>. Placed after the original.</div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- T1.2 ROW & COLUMN -->
+<div class="use-section" id="t1-rowcol">
+  <div class="use-header">
+    <div class="use-title-block">
+      <span class="use-num">T1.2</span>
+      <div class="use-title">Row & Column Operations</div>
+    </div>
+    <span class="use-badge ub-t1">Tier 1 · Day 1</span>
+  </div>
+  <div class="two-col">
+    <div>
+      <div class="col-head">All Operations to Support</div>
+      <ul class="ops-list">
+        <li><div class="op-icon oi-1">+</div><div><span>Insert row above / below</span><span class="op-sub">Single or multiple rows; at specific row number or relative to selection</span></div></li>
+        <li><div class="op-icon oi-1">+</div><div><span>Insert column left / right</span><span class="op-sub">Single or multiple columns; at specific column letter or relative position</span></div></li>
+        <li><div class="op-icon oi-1">×</div><div><span>Delete row(s)</span><span class="op-sub">Active row, selected rows, rows matching a condition (e.g., where column A is blank)</span></div></li>
+        <li><div class="op-icon oi-1">×</div><div><span>Delete column(s)</span><span class="op-sub">By column letter or header name</span></div></li>
+        <li><div class="op-icon oi-1">👁</div><div><span>Hide / unhide rows</span><span class="op-sub">Specific row numbers or selection</span></div></li>
+        <li><div class="op-icon oi-1">👁</div><div><span>Hide / unhide columns</span><span class="op-sub">By column letter or header name</span></div></li>
+        <li><div class="op-icon oi-1">↕</div><div><span>Resize row height</span><span class="op-sub">To specific px, auto-fit, or uniform across selection</span></div></li>
+        <li><div class="op-icon oi-1">↔</div><div><span>Resize column width</span><span class="op-sub">To specific px, auto-fit, or uniform across selection</span></div></li>
+        <li><div class="op-icon oi-1">❄</div><div><span>Freeze top row</span><span class="op-sub">Standard freeze; freeze first N rows; freeze at selection</span></div></li>
+        <li><div class="op-icon oi-1">❄</div><div><span>Freeze first column</span><span class="op-sub">Freeze first column; freeze first N columns</span></div></li>
+        <li><div class="op-icon oi-1">✗</div><div><span>Unfreeze panes</span><span class="op-sub">Remove all freeze settings</span></div></li>
+        <li><div class="op-icon oi-1">#</div><div><span>Count rows / columns</span><span class="op-sub">"How many rows?" or "how many columns?" — read-only Q&A</span></div></li>
+      </ul>
+    </div>
+    <div>
+      <div class="col-head">Conversational Examples</div>
+      <div class="conv-list">
+        <div class="conv-item cellix-green">
+          <div class="conv-user"><span class="conv-user-label">USER</span>"Insert 3 blank rows after row 5"</div>
+          <div class="conv-cellix"><span class="conv-cellix-label">CELLIX</span><div class="conv-cellix-body">Inserted 3 blank rows after row 5. Existing rows 6 onwards shifted down.</div></div>
+        </div>
+        <div class="conv-item cellix-green">
+          <div class="conv-user"><span class="conv-user-label">USER</span>"Delete all rows where column A is blank"</div>
+          <div class="conv-cellix"><span class="conv-cellix-label">CELLIX</span><div class="conv-cellix-body">Found 14 rows with blank Column A. Preview: rows 7, 12, 18, 23... Approve to delete all 14?</div></div>
+        </div>
+        <div class="conv-item cellix-green">
+          <div class="conv-user"><span class="conv-user-label">USER</span>"Freeze the top row"</div>
+          <div class="conv-cellix"><span class="conv-cellix-label">CELLIX</span><div class="conv-cellix-body">Frozen row 1 (header row). It will stay visible when you scroll down.</div></div>
+        </div>
+        <div class="conv-item cellix-green">
+          <div class="conv-user"><span class="conv-user-label">USER</span>"Auto-fit all column widths"</div>
+          <div class="conv-cellix"><span class="conv-cellix-label">CELLIX</span><div class="conv-cellix-body">Auto-fitted all 9 columns to match their content width.</div></div>
+        </div>
+        <div class="conv-item cellix-green">
+          <div class="conv-user"><span class="conv-user-label">USER</span>"How many rows of data do I have?"</div>
+          <div class="conv-cellix"><span class="conv-cellix-label">CELLIX</span><div class="conv-cellix-body">Your sheet has 847 data rows (rows 2–848). Row 1 is the header. 9 columns detected.</div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- T1.3 CELL OPERATIONS -->
+<div class="use-section" id="t1-cells">
+  <div class="use-header">
+    <div class="use-title-block">
+      <span class="use-num">T1.3</span>
+      <div class="use-title">Cell Operations</div>
+    </div>
+    <span class="use-badge ub-t1">Tier 1 · Day 1</span>
+  </div>
+  <div class="two-col">
+    <div>
+      <div class="col-head">All Operations to Support</div>
+      <ul class="ops-list">
+        <li><div class="op-icon oi-1">⊞</div><div><span>Merge cells</span><span class="op-sub">Merge and centre, merge across, merge only</span></div></li>
+        <li><div class="op-icon oi-1">⊟</div><div><span>Unmerge cells</span><span class="op-sub">Active cell, selected range, or all merged cells in sheet</span></div></li>
+        <li><div class="op-icon oi-1">🗑</div><div><span>Clear cell content</span><span class="op-sub">Values only, keeping formatting</span></div></li>
+        <li><div class="op-icon oi-1">🗑</div><div><span>Clear cell formatting</span><span class="op-sub">Formatting only, keeping values</span></div></li>
+        <li><div class="op-icon oi-1">🗑</div><div><span>Clear all (content + format)</span><span class="op-sub">Completely reset cells to blank</span></div></li>
+        <li><div class="op-icon oi-1">✎</div><div><span>Set cell value</span><span class="op-sub">Write specific text or number to a named cell</span></div></li>
+        <li><div class="op-icon oi-1">?</div><div><span>Read cell value</span><span class="op-sub">"What is in cell C5?" — return value and formula</span></div></li>
+        <li><div class="op-icon oi-1">🔒</div><div><span>Lock / unlock cells</span><span class="op-sub">Protect specific cells from editing</span></div></li>
+        <li><div class="op-icon oi-1">💬</div><div><span>Add / remove comment</span><span class="op-sub">Insert note or comment to a cell</span></div></li>
+      </ul>
+    </div>
+    <div>
+      <div class="col-head">Conversational Examples</div>
+      <div class="conv-list">
+        <div class="conv-item cellix-green">
+          <div class="conv-user"><span class="conv-user-label">USER</span>"What is in cell C14?"</div>
+          <div class="conv-cellix"><span class="conv-cellix-label">CELLIX</span><div class="conv-cellix-body">Cell <code>C14</code> contains the formula <code>=SUMIF(A:A,E14,B:B)</code>. It returns the value <code>₹1,18,500</code>. This sums all values in column B where column A matches the value in E14.</div></div>
+        </div>
+        <div class="conv-item cellix-green">
+          <div class="conv-user"><span class="conv-user-label">USER</span>"Unmerge all merged cells in this sheet"</div>
+          <div class="conv-cellix"><span class="conv-cellix-label">CELLIX</span><div class="conv-cellix-body">Found 12 merged cell groups in this sheet. Unmerging will split them — the value stays in the top-left cell, other cells become blank. Approve to unmerge all 12?</div></div>
+        </div>
+        <div class="conv-item cellix-green">
+          <div class="conv-user"><span class="conv-user-label">USER</span>"Clear all formatting in the range A1:H50"</div>
+          <div class="conv-cellix"><span class="conv-cellix-label">CELLIX</span><div class="conv-cellix-body">Cleared formatting from <code>A1:H50</code> (400 cells). Values and formulas are preserved. Only fonts, colours, borders, and number formats were removed.</div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- T1.4 FORMATTING -->
+<div class="use-section" id="t1-format">
+  <div class="use-header">
+    <div class="use-title-block">
+      <span class="use-num">T1.4</span>
+      <div class="use-title">Basic Cell Formatting</div>
+    </div>
+    <span class="use-badge ub-t1">Tier 1 · Week 1</span>
+  </div>
+  <div class="two-col">
+    <div>
+      <div class="col-head">All Formatting Operations</div>
+      <ul class="ops-list">
+        <li><div class="op-icon oi-1">B</div><div><span>Bold / Italic / Underline</span><span class="op-sub">Apply or remove from selection or specific range</span></div></li>
+        <li><div class="op-icon oi-1">A</div><div><span>Font size</span><span class="op-sub">Set to specific size; increase/decrease by 2pt</span></div></li>
+        <li><div class="op-icon oi-1">🎨</div><div><span>Text colour</span><span class="op-sub">Named colours (red, green, blue, black, white) and hex codes</span></div></li>
+        <li><div class="op-icon oi-1">🎨</div><div><span>Cell background colour</span><span class="op-sub">Fill colour for cell or range</span></div></li>
+        <li><div class="op-icon oi-1">☰</div><div><span>Text alignment</span><span class="op-sub">Left, centre, right, top, middle, bottom within cell</span></div></li>
+        <li><div class="op-icon oi-1">↩</div><div><span>Wrap text</span><span class="op-sub">Enable/disable word wrap in cell</span></div></li>
+        <li><div class="op-icon oi-1">☐</div><div><span>Borders</span><span class="op-sub">All borders, outer border only, thick box, bottom border, none</span></div></li>
+        <li><div class="op-icon oi-1">₹</div><div><span>Number format — Currency ₹</span><span class="op-sub">Indian Rupee format with comma separators (₹1,18,500)</span></div></li>
+        <li><div class="op-icon oi-1">%</div><div><span>Number format — Percentage</span><span class="op-sub">With 0, 1, or 2 decimal places</span></div></li>
+        <li><div class="op-icon oi-1">📅</div><div><span>Number format — Date</span><span class="op-sub">dd-mm-yyyy, dd/mm/yyyy, dd-Mon-yyyy, and other Indian formats</span></div></li>
+        <li><div class="op-icon oi-1">,</div><div><span>Number format — Comma</span><span class="op-sub">Indian number system: 1,00,000 vs Western 100,000</span></div></li>
+        <li><div class="op-icon oi-1">.0</div><div><span>Number format — Decimal</span><span class="op-sub">0, 1, 2 decimal places; increase/decrease decimal</span></div></li>
+        <li><div class="op-icon oi-1">📋</div><div><span>Format as table</span><span class="op-sub">Apply Excel table with header row, alternating rows, filter dropdowns</span></div></li>
+      </ul>
+    </div>
+    <div>
+      <div class="col-head">Conversational Examples</div>
+      <div class="conv-list">
+        <div class="conv-item cellix-green">
+          <div class="conv-user"><span class="conv-user-label">USER</span>"Format column C as Indian rupee currency"</div>
+          <div class="conv-cellix"><span class="conv-cellix-label">CELLIX</span><div class="conv-cellix-body">Formatted <code>C2:C848</code> as Indian Rupee with comma separators. Numbers will display as ₹1,18,500.</div></div>
+        </div>
+        <div class="conv-item cellix-green">
+          <div class="conv-user"><span class="conv-user-label">USER</span>"Make the header row bold with a grey background"</div>
+          <div class="conv-cellix"><span class="conv-cellix-label">CELLIX</span><div class="conv-cellix-body">Applied bold formatting and light grey background (<code>#F2F2F2</code>) to row 1 (<code>A1:I1</code>). 9 header cells formatted.</div></div>
+        </div>
+        <div class="conv-item cellix-green">
+          <div class="conv-user"><span class="conv-user-label">USER</span>"Format all dates in column B as dd-mm-yyyy"</div>
+          <div class="conv-cellix"><span class="conv-cellix-label">CELLIX</span><div class="conv-cellix-body">Applied date format <code>dd-mm-yyyy</code> to <code>B2:B848</code>. Dates will now display as 01-04-2024.</div></div>
+        </div>
+        <div class="conv-item cellix-green">
+          <div class="conv-user"><span class="conv-user-label">USER</span>"Add a thick box border around A1:H848"</div>
+          <div class="conv-cellix"><span class="conv-cellix-label">CELLIX</span><div class="conv-cellix-body">Applied thick outer border to range <code>A1:H848</code>.</div></div>
+        </div>
+      </div>
+      <div class="note note-info" style="margin-top:0.75rem;">
+        <strong>Indian Number System</strong>
+        Always default to Indian comma format (₹1,00,000 not ₹100,000) when formatting currency. This is a non-negotiable detail for Indian CA users.
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- T1.5 COPY PASTE FILL -->
+<div class="use-section" id="t1-copypaste">
+  <div class="use-header">
+    <div class="use-title-block">
+      <span class="use-num">T1.5</span>
+      <div class="use-title">Copy, Paste & Fill Operations</div>
+    </div>
+    <span class="use-badge ub-t1">Tier 1 · Week 1</span>
+  </div>
+  <div class="two-col">
+    <div>
+      <div class="col-head">All Operations to Support</div>
+      <ul class="ops-list">
+        <li><div class="op-icon oi-1">⧉</div><div><span>Copy → Paste values only</span><span class="op-sub">Strip formulas, paste the numeric/text result</span></div></li>
+        <li><div class="op-icon oi-1">⧉</div><div><span>Copy → Paste formatting only</span><span class="op-sub">Copy the look without the data</span></div></li>
+        <li><div class="op-icon oi-1">⧉</div><div><span>Copy → Paste formulas only</span><span class="op-sub">Copy formulas without formatting</span></div></li>
+        <li><div class="op-icon oi-1">⇅</div><div><span>Paste transposed</span><span class="op-sub">Rows become columns and vice versa</span></div></li>
+        <li><div class="op-icon oi-1">↓</div><div><span>Fill down</span><span class="op-sub">Repeat top cell's value/formula down a selected column range</span></div></li>
+        <li><div class="op-icon oi-1">→</div><div><span>Fill right</span><span class="op-sub">Repeat leftmost cell across a selected row range</span></div></li>
+        <li><div class="op-icon oi-1">📈</div><div><span>Fill series</span><span class="op-sub">Auto-fill a number sequence, date sequence, or pattern</span></div></li>
+        <li><div class="op-icon oi-1">⚡</div><div><span>Flash fill</span><span class="op-sub">Detect pattern from examples and fill the rest of the column</span></div></li>
+      </ul>
+    </div>
+    <div>
+      <div class="col-head">Conversational Examples</div>
+      <div class="conv-list">
+        <div class="conv-item cellix-green">
+          <div class="conv-user"><span class="conv-user-label">USER</span>"Copy the formula in D2 down to D848"</div>
+          <div class="conv-cellix"><span class="conv-cellix-label">CELLIX</span><div class="conv-cellix-body">Copied formula <code>=VLOOKUP(A2,Sheet2!A:C,3,0)</code> from <code>D2</code> down to <code>D848</code>. 847 cells filled.</div></div>
+        </div>
+        <div class="conv-item cellix-green">
+          <div class="conv-user"><span class="conv-user-label">USER</span>"Replace all formulas in column E with their values"</div>
+          <div class="conv-cellix"><span class="conv-cellix-label">CELLIX</span><div class="conv-cellix-body">Column <code>E</code> has 847 formula cells. Replacing with static values will remove all formulas permanently. Approve to convert to values?</div></div>
+        </div>
+        <div class="conv-item cellix-green">
+          <div class="conv-user"><span class="conv-user-label">USER</span>"Fill serial numbers 1 to 847 in column A"</div>
+          <div class="conv-cellix"><span class="conv-cellix-label">CELLIX</span><div class="conv-cellix-body">Filled <code>A2:A848</code> with serial numbers 1 through 847.</div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- T1.6 MATH FORMULAS -->
+<div class="use-section" id="t1-math">
+  <div class="use-header">
+    <div class="use-title-block">
+      <span class="use-num">T1.6</span>
+      <div class="use-title">Basic Math Formulas</div>
+    </div>
+    <span class="use-badge ub-t1">Tier 1 · Week 2</span>
+  </div>
+  <div class="col-head">All Formulas to Support</div>
+  <table class="formula-table">
+    <thead><tr><th>Formula</th><th>What It Does</th><th>Example User Phrase</th></tr></thead>
+    <tbody>
+      <tr><td>SUM</td><td>Add a range of numbers</td><td>"Sum all values in column C" / "What's the total of column B?"<span class="formula-ex">=SUM(C2:C848)</span></td></tr>
+      <tr><td>AVERAGE</td><td>Calculate mean of a range</td><td>"What is the average invoice value?" / "Average of column D"<span class="formula-ex">=AVERAGE(D2:D848)</span></td></tr>
+      <tr><td>COUNT</td><td>Count numeric cells</td><td>"How many entries have a value in column C?"<span class="formula-ex">=COUNT(C2:C848)</span></td></tr>
+      <tr><td>COUNTA</td><td>Count non-empty cells</td><td>"How many rows have data in column A?"<span class="formula-ex">=COUNTA(A2:A1000)</span></td></tr>
+      <tr><td>COUNTBLANK</td><td>Count empty cells</td><td>"How many blank cells are in column B?"<span class="formula-ex">=COUNTBLANK(B2:B848)</span></td></tr>
+      <tr><td>MIN</td><td>Smallest value in range</td><td>"What is the minimum amount?" / "Lowest value in column D"<span class="formula-ex">=MIN(D2:D848)</span></td></tr>
+      <tr><td>MAX</td><td>Largest value in range</td><td>"What is the maximum invoice value?" / "Highest in column C"<span class="formula-ex">=MAX(C2:C848)</span></td></tr>
+      <tr><td>ROUND</td><td>Round to N decimal places</td><td>"Round the value in C5 to 2 decimal places"<span class="formula-ex">=ROUND(C5,2)</span></td></tr>
+      <tr><td>ROUNDUP/DOWN</td><td>Round always up or always down</td><td>"Round up column D to nearest rupee"<span class="formula-ex">=ROUNDUP(D2,0)</span></td></tr>
+      <tr><td>ABS</td><td>Absolute value (remove negative sign)</td><td>"Make all values in column E positive"<span class="formula-ex">=ABS(E2)</span></td></tr>
+      <tr><td>MOD</td><td>Remainder after division</td><td>"Is this row number odd or even?"<span class="formula-ex">=MOD(ROW(),2)</span></td></tr>
+      <tr><td>POWER</td><td>Raise to a power</td><td>"Calculate 1.05 to the power of 12"<span class="formula-ex">=POWER(1.05,12)</span></td></tr>
+      <tr><td>SUMPRODUCT</td><td>Multiply ranges then sum</td><td>"Multiply quantity by price and give me the total"<span class="formula-ex">=SUMPRODUCT(B2:B848,C2:C848)</span></td></tr>
+      <tr><td>Basic arithmetic</td><td>+, -, *, / operations</td><td>"Multiply column C by 1.18 for GST inclusive amount"<span class="formula-ex">=C2*1.18</span></td></tr>
+    </tbody>
+  </table>
+  <div class="two-col" style="margin-top:1.25rem;">
+    <div>
+      <div class="col-head">Conversational Examples</div>
+      <div class="conv-list">
+        <div class="conv-item cellix-green">
+          <div class="conv-user"><span class="conv-user-label">USER</span>"Calculate the total IGST in column F and put it in F850"</div>
+          <div class="conv-cellix"><span class="conv-cellix-label">CELLIX</span><div class="conv-cellix-body">Proposed formula for <code>F850</code>: <code>=SUM(F2:F848)</code>. This totals all IGST values (847 rows). Current total: <strong>₹14,38,200</strong>. Approve?</div></div>
+        </div>
+        <div class="conv-item cellix-green">
+          <div class="conv-user"><span class="conv-user-label">USER</span>"What is the highest invoice amount in this sheet?"</div>
+          <div class="conv-cellix"><span class="conv-cellix-label">CELLIX</span><div class="conv-cellix-body">The highest invoice amount in column D is <strong>₹5,20,000</strong> (row 234, supplier: Kerala Electricals Pvt Ltd). Formula used: <code>=MAX(D2:D848)</code>.</div></div>
+        </div>
+      </div>
+    </div>
+    <div>
+      <div class="col-head">Implementation Notes</div>
+      <div class="impl-box">
+        <div class="impl-label">LLM Prompt Context for Math Formulas</div>
+        <span class="impl-key">RULE:</span> <span class="impl-val">Always use actual column range from WorkbookContext</span><br>
+        <span class="impl-key">RULE:</span> <span class="impl-val">Never hardcode row numbers — use detected last data row</span><br>
+        <span class="impl-key">RULE:</span> <span class="impl-val">For SUM, check if a total row already exists before adding</span><br>
+        <span class="impl-key">RULE:</span> <span class="impl-val">Include the calculated result in the preview card</span><br>
+        <span class="impl-key">RULE:</span> <span class="impl-val">Indian number format: 1,00,000 not 100,000</span><br>
+        <span class="impl-com">// Always test formula on sample rows via formulajs before proposing</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- T1.7 LOGICAL FORMULAS -->
+<div class="use-section" id="t1-logic">
+  <div class="use-header">
+    <div class="use-title-block">
+      <span class="use-num">T1.7</span>
+      <div class="use-title">Basic Logical Formulas</div>
+    </div>
+    <span class="use-badge ub-t1">Tier 1 · Week 2</span>
+  </div>
+  <table class="formula-table">
+    <thead><tr><th>Formula</th><th>What It Does</th><th>Example User Phrase</th></tr></thead>
+    <tbody>
+      <tr><td>IF</td><td>Return one value if condition is true, another if false</td><td>"If amount is above 1 lakh, mark as 'High Value', else 'Standard'"<span class="formula-ex">=IF(C2>100000,"High Value","Standard")</span></td></tr>
+      <tr><td>IFS</td><td>Multiple IF conditions in sequence</td><td>"If amount is 0 mark 'Zero', if below 50k mark 'Low', else 'High'"<span class="formula-ex">=IFS(C2=0,"Zero",C2<50000,"Low",TRUE,"High")</span></td></tr>
+      <tr><td>AND</td><td>True only if all conditions are true</td><td>"Flag rows where IGST is above zero AND supplier GSTIN starts with 29"<span class="formula-ex">=AND(F2>0,LEFT(C2,2)="29")</span></td></tr>
+      <tr><td>OR</td><td>True if any condition is true</td><td>"Mark if IGST or CGST has a value"<span class="formula-ex">=OR(F2>0,G2>0)</span></td></tr>
+      <tr><td>NOT</td><td>Invert a logical result</td><td>"Flag rows where the amount is NOT zero"<span class="formula-ex">=NOT(C2=0)</span></td></tr>
+      <tr><td>IFERROR</td><td>Show alternate value if formula errors</td><td>"If the VLOOKUP fails, show 'Not Found' instead of #N/A"<span class="formula-ex">=IFERROR(VLOOKUP(A2,Sheet2!A:C,3,0),"Not Found")</span></td></tr>
+      <tr><td>IFNA</td><td>Handle only #N/A errors specifically</td><td>"Replace #N/A with blank in column D"<span class="formula-ex">=IFNA(D2,"")</span></td></tr>
+      <tr><td>ISBLANK</td><td>Check if a cell is empty</td><td>"Which rows have a blank GSTIN?"<span class="formula-ex">=ISBLANK(C2)</span></td></tr>
+      <tr><td>ISNUMBER/ISTEXT</td><td>Check cell data type</td><td>"Flag rows where the amount column has text instead of numbers"<span class="formula-ex">=ISTEXT(D2)</span></td></tr>
+    </tbody>
+  </table>
+  <div class="two-col" style="margin-top:1.25rem;">
+    <div>
+      <div class="col-head">Conversational Examples</div>
+      <div class="conv-list">
+        <div class="conv-item cellix-green">
+          <div class="conv-user"><span class="conv-user-label">USER</span>"If the GSTIN in column C is blank, mark column H as 'Missing GSTIN'"</div>
+          <div class="conv-cellix"><span class="conv-cellix-label">CELLIX</span><div class="conv-cellix-body">Proposed formula for <code>H2:H848</code>: <code>=IF(ISBLANK(C2),"Missing GSTIN","")</code>. This will flag all rows with blank GSTIN. Preview shows 23 rows will be flagged. Approve?</div></div>
+        </div>
+        <div class="conv-item cellix-green">
+          <div class="conv-user"><span class="conv-user-label">USER</span>"The VLOOKUP in column D is showing #N/A — replace errors with 'Check Manually'"</div>
+          <div class="conv-cellix"><span class="conv-cellix-label">CELLIX</span><div class="conv-cellix-body">Wrapping existing formula in <code>D2:D848</code> with IFERROR: <code>=IFERROR([existing formula],"Check Manually")</code>. 89 cells currently show #N/A. Approve?</div></div>
+        </div>
+      </div>
+    </div>
+    <div>
+      <div class="col-head">Note for Indian CA Context</div>
+      <div class="note note-warn">
+        <strong>CA-Specific IF Pattern</strong>
+        The most common IF formula Indian CAs need: categorising suppliers by state (intra vs inter), marking ITC eligible vs blocked items, and flagging amounts above ₹50,000 for TDS. Always include these as template suggestions when an IF is requested.
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ════════════ TIER 2 DIVIDER ════════════ -->
+<div class="tier-divider" id="tier2">
+  <div class="td-num">2</div>
+  <div class="td-body">
+    <div class="td-label">Second Priority</div>
+    <div class="td-title">Tier 2 — Common Operations</div>
+    <div class="td-desc">Used by 80% of users regularly. Build after Tier 1 is stable and tested.</div>
+  </div>
+  <div class="td-count"><div class="td-count-num">8</div><div class="td-count-label">Feature Groups</div></div>
+</div>
+
+<!-- T2.1 SORT -->
+<div class="use-section" id="t2-sort">
+  <div class="use-header">
+    <div class="use-title-block"><span class="use-num">T2.1</span><div class="use-title">Data Sorting</div></div>
+    <span class="use-badge ub-t2">Tier 2 · Week 5</span>
+  </div>
+  <div class="two-col">
+    <div>
+      <div class="col-head">All Sort Operations</div>
+      <ul class="ops-list">
+        <li><div class="op-icon oi-2">↑</div><div><span>Sort A-Z (ascending)</span><span class="op-sub">Text alphabetical, numbers smallest to largest, dates earliest first</span></div></li>
+        <li><div class="op-icon oi-2">↓</div><div><span>Sort Z-A (descending)</span><span class="op-sub">Text reverse alphabetical, numbers largest to smallest, dates latest first</span></div></li>
+        <li><div class="op-icon oi-2">≡</div><div><span>Multi-column sort</span><span class="op-sub">Sort by primary column, then secondary, then tertiary</span></div></li>
+        <li><div class="op-icon oi-2">🔵</div><div><span>Sort by cell colour</span><span class="op-sub">Group coloured cells at top or bottom</span></div></li>
+        <li><div class="op-icon oi-2">📋</div><div><span>Sort by custom list</span><span class="op-sub">e.g., sort by month name in order Jan, Feb, Mar...</span></div></li>
+      </ul>
+    </div>
+    <div>
+      <div class="col-head">Conversational Examples</div>
+      <div class="conv-list">
+        <div class="conv-item cellix-blue">
+          <div class="conv-user"><span class="conv-user-label">USER</span>"Sort this table by date, oldest first"</div>
+          <div class="conv-cellix"><span class="conv-cellix-label">CELLIX</span><div class="conv-cellix-body">Sorted <code>A1:I848</code> by column <code>B (Invoice Date)</code>, ascending (oldest first). 847 rows reordered.</div></div>
+        </div>
+        <div class="conv-item cellix-blue">
+          <div class="conv-user"><span class="conv-user-label">USER</span>"Sort by supplier name A-Z, then by amount highest to lowest"</div>
+          <div class="conv-cellix"><span class="conv-cellix-label">CELLIX</span><div class="conv-cellix-body">Applying 2-level sort: Primary — <code>Supplier Name</code> (A→Z), Secondary — <code>Amount</code> (largest first). Approve?</div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- T2.2 FILTER -->
+<div class="use-section" id="t2-filter">
+  <div class="use-header">
+    <div class="use-title-block"><span class="use-num">T2.2</span><div class="use-title">Data Filtering</div></div>
+    <span class="use-badge ub-t2">Tier 2 · Week 5</span>
+  </div>
+  <div class="two-col">
+    <div>
+      <div class="col-head">All Filter Operations</div>
+      <ul class="ops-list">
+        <li><div class="op-icon oi-2">▼</div><div><span>Add AutoFilter to table</span><span class="op-sub">Add dropdown filter arrows to header row</span></div></li>
+        <li><div class="op-icon oi-2">▼</div><div><span>Filter by specific value(s)</span><span class="op-sub">"Show only rows where Supplier is ABC Traders"</span></div></li>
+        <li><div class="op-icon oi-2">▼</div><div><span>Filter by condition</span><span class="op-sub">Greater than, less than, between, contains, begins with, is blank</span></div></li>
+        <li><div class="op-icon oi-2">▼</div><div><span>Filter by date range</span><span class="op-sub">"Show only April 2024 entries"</span></div></li>
+        <li><div class="op-icon oi-2">▼</div><div><span>Filter by top N values</span><span class="op-sub">"Show the top 10 highest amounts"</span></div></li>
+        <li><div class="op-icon oi-2">✕</div><div><span>Clear filter on one column</span><span class="op-sub">Remove filter from specific column only</span></div></li>
+        <li><div class="op-icon oi-2">✕</div><div><span>Clear all filters</span><span class="op-sub">Show all rows again</span></div></li>
+        <li><div class="op-icon oi-2">?</div><div><span>Report current filter state</span><span class="op-sub">"What filter is currently active on this sheet?"</span></div></li>
+      </ul>
+    </div>
+    <div>
+      <div class="col-head">Conversational Examples</div>
+      <div class="conv-list">
+        <div class="conv-item cellix-blue">
+          <div class="conv-user"><span class="conv-user-label">USER</span>"Show only rows where the amount is above 1 lakh"</div>
+          <div class="conv-cellix"><span class="conv-cellix-label">CELLIX</span><div class="conv-cellix-body">Applied filter on column <code>D (Amount)</code>: greater than ₹1,00,000. Showing 127 of 847 rows that match. Use "clear filter" to see all rows again.</div></div>
+        </div>
+        <div class="conv-item cellix-blue">
+          <div class="conv-user"><span class="conv-user-label">USER</span>"Filter to show only April 2024 transactions"</div>
+          <div class="conv-cellix"><span class="conv-cellix-label">CELLIX</span><div class="conv-cellix-body">Applied date filter on column <code>B</code>: between 01-04-2024 and 30-04-2024. Showing 312 matching rows.</div></div>
+        </div>
+        <div class="conv-item cellix-blue">
+          <div class="conv-user"><span class="conv-user-label">USER</span>"What filter is active right now?"</div>
+          <div class="conv-cellix"><span class="conv-cellix-label">CELLIX</span><div class="conv-cellix-body">Column D has an active filter: showing values greater than ₹1,00,000. 127 of 847 rows are visible. All other columns are unfiltered.</div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- T2.3 FIND REPLACE -->
+<div class="use-section" id="t2-findreplace">
+  <div class="use-header">
+    <div class="use-title-block"><span class="use-num">T2.3</span><div class="use-title">Find & Replace</div></div>
+    <span class="use-badge ub-t2">Tier 2 · Week 5</span>
+  </div>
+  <div class="two-col">
+    <div>
+      <div class="col-head">All Find & Replace Operations</div>
+      <ul class="ops-list">
+        <li><div class="op-icon oi-2">🔍</div><div><span>Find text or number in sheet</span><span class="op-sub">Return all cells containing a value; go to first match</span></div></li>
+        <li><div class="op-icon oi-2">↔</div><div><span>Replace all occurrences</span><span class="op-sub">Replace exact text with new text across entire sheet</span></div></li>
+        <li><div class="op-icon oi-2">↔</div><div><span>Replace in specific column</span><span class="op-sub">Replace only within a named column or range</span></div></li>
+        <li><div class="op-icon oi-2">🔍</div><div><span>Find cells with errors</span><span class="op-sub">List all cells containing formula errors</span></div></li>
+        <li><div class="op-icon oi-2">🔍</div><div><span>Find blank cells</span><span class="op-sub">List all empty cells in a column or range</span></div></li>
+        <li><div class="op-icon oi-2">🔍</div><div><span>Wildcard search</span><span class="op-sub">Find text that starts with, ends with, or contains a pattern</span></div></li>
+      </ul>
+    </div>
+    <div>
+      <div class="col-head">Conversational Examples</div>
+      <div class="conv-list">
+        <div class="conv-item cellix-blue">
+          <div class="conv-user"><span class="conv-user-label">USER</span>"Replace all occurrences of 'ABC Traders' with 'ABC Traders Pvt Ltd'"</div>
+          <div class="conv-cellix"><span class="conv-cellix-label">CELLIX</span><div class="conv-cellix-body">Found 34 cells containing "ABC Traders". Replace all with "ABC Traders Pvt Ltd"? This will affect column B (Supplier Name). Approve?</div></div>
+        </div>
+        <div class="conv-item cellix-blue">
+          <div class="conv-user"><span class="conv-user-label">USER</span>"Find all rows with the supplier name starting with 'Kerala'"</div>
+          <div class="conv-cellix"><span class="conv-cellix-label">CELLIX</span><div class="conv-cellix-body">Found 18 rows where Supplier Name starts with "Kerala": rows 4, 12, 28, 35... Would you like to filter to these rows or highlight them?</div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- T2.4 LOOKUP -->
+<div class="use-section" id="t2-lookup">
+  <div class="use-header">
+    <div class="use-title-block"><span class="use-num">T2.4</span><div class="use-title">Lookup Formulas</div></div>
+    <span class="use-badge ub-t2">Tier 2 · Week 6</span>
+  </div>
+  <table class="formula-table">
+    <thead><tr><th>Formula</th><th>What It Does</th><th>Example User Phrase</th></tr></thead>
+    <tbody>
+      <tr><td>VLOOKUP</td><td>Look up value in first column, return value from same row in another column</td><td>"Look up the supplier name from the master list using GSTIN as the key"<span class="formula-ex">=VLOOKUP(C2,MasterList!A:B,2,FALSE)</span></td></tr>
+      <tr><td>HLOOKUP</td><td>Lookup across rows instead of columns</td><td>"Look up the GST rate from the rate table where header is HSN code"<span class="formula-ex">=HLOOKUP(D2,RateTable!A1:Z2,2,FALSE)</span></td></tr>
+      <tr><td>INDEX + MATCH</td><td>More flexible than VLOOKUP — lookup by any column, return any column</td><td>"Find the invoice amount where invoice number matches column A"<span class="formula-ex">=INDEX(D:D,MATCH(A2,B:B,0))</span></td></tr>
+      <tr><td>XLOOKUP</td><td>Modern replacement for VLOOKUP — can search left or right, multiple results</td><td>"Look up from right to left — find supplier from GSTIN"<span class="formula-ex">=XLOOKUP(C2,Sheet2!B:B,Sheet2!A:A,"Not Found")</span></td></tr>
+      <tr><td>CHOOSE</td><td>Return a value based on index number</td><td>"If quarter is 1, return Q1; 2, return Q2 etc."<span class="formula-ex">=CHOOSE(A2,"Q1","Q2","Q3","Q4")</span></td></tr>
+    </tbody>
+  </table>
+  <div class="two-col" style="margin-top:1.25rem;">
+    <div>
+      <div class="conv-list">
+        <div class="conv-item cellix-blue">
+          <div class="conv-user"><span class="conv-user-label">USER</span>"Look up the state name from the GSTIN — the first 2 digits are the state code"</div>
+          <div class="conv-cellix"><span class="conv-cellix-label">CELLIX</span><div class="conv-cellix-body">Proposed formula for column J: <code>=INDEX(StateCodes!B:B,MATCH(VALUE(LEFT(C2,2)),StateCodes!A:A,0))</code>. This extracts the state code from your GSTIN and looks up the state name. You'll need a StateCodes reference sheet — want me to create one?</div></div>
+        </div>
+        <div class="conv-item cellix-blue">
+          <div class="conv-user"><span class="conv-user-label">USER</span>"Why is my VLOOKUP in column D returning #N/A?"</div>
+          <div class="conv-cellix"><span class="conv-cellix-label">CELLIX</span><div class="conv-cellix-body">The VLOOKUP in <code>D2</code> is searching for value <code>MT/2024/001</code> in column A of Sheet2. The issue is likely a trailing space or format difference. Try wrapping with TRIM: <code>=VLOOKUP(TRIM(A2),Sheet2!A:C,3,FALSE)</code>. Approve to apply this fix?</div></div>
+        </div>
+      </div>
+    </div>
+    <div>
+      <div class="note note-warn" style="margin-top:0">
+        <strong>CA Context: VLOOKUP is the #1 requested formula</strong>
+        Indian CAs use VLOOKUP constantly for supplier master lookups, HSN code matching, and ledger cross-referencing. The most common failure is partial text matches (trailing spaces from Tally exports). Always suggest TRIM wrapping when VLOOKUP returns #N/A.
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- T2.5 TEXT FORMULAS -->
+<div class="use-section" id="t2-text">
+  <div class="use-header">
+    <div class="use-title-block"><span class="use-num">T2.5</span><div class="use-title">Text Formulas</div></div>
+    <span class="use-badge ub-t2">Tier 2 · Week 6</span>
+  </div>
+  <table class="formula-table">
+    <thead><tr><th>Formula</th><th>What It Does</th><th>CA Use Case</th></tr></thead>
+    <tbody>
+      <tr><td>CONCATENATE / &</td><td>Join text from multiple cells</td><td>Combine supplier name + GSTIN into one reference key<span class="formula-ex">=A2&" — "&C2</span></td></tr>
+      <tr><td>LEFT</td><td>Extract characters from the left</td><td>Extract state code from GSTIN (first 2 characters)<span class="formula-ex">=LEFT(C2,2)</span></td></tr>
+      <tr><td>RIGHT</td><td>Extract characters from the right</td><td>Extract check digit or last part of invoice number<span class="formula-ex">=RIGHT(A2,3)</span></td></tr>
+      <tr><td>MID</td><td>Extract characters from the middle</td><td>Extract PAN from GSTIN (characters 3–12)<span class="formula-ex">=MID(C2,3,10)</span></td></tr>
+      <tr><td>LEN</td><td>Count characters in a cell</td><td>Validate GSTIN is exactly 15 characters<span class="formula-ex">=LEN(C2)=15</span></td></tr>
+      <tr><td>TRIM</td><td>Remove leading and trailing spaces</td><td>Fix Tally export supplier names with extra spaces<span class="formula-ex">=TRIM(B2)</span></td></tr>
+      <tr><td>UPPER / LOWER / PROPER</td><td>Change text case</td><td>Standardise GSTIN to uppercase, supplier names to Proper case<span class="formula-ex">=UPPER(C2)</span></td></tr>
+      <tr><td>SUBSTITUTE</td><td>Replace specific text within a cell</td><td>Replace "/" with "-" in invoice numbers for matching<span class="formula-ex">=SUBSTITUTE(A2,"/","-")</span></td></tr>
+      <tr><td>TEXT</td><td>Format numbers and dates as text with format string</td><td>Convert date to "Apr-2024" text for report headings<span class="formula-ex">=TEXT(B2,"MMM-YYYY")</span></td></tr>
+      <tr><td>FIND / SEARCH</td><td>Find position of text within another text</td><td>Check if "Credit Note" appears in narration column<span class="formula-ex">=ISNUMBER(FIND("Credit",D2))</span></td></tr>
+      <tr><td>TEXTJOIN</td><td>Join a range of cells with a delimiter</td><td>Create a comma-separated list of all supplier names<span class="formula-ex">=TEXTJOIN(", ",TRUE,B2:B848)</span></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- T2.6 DATE FORMULAS -->
+<div class="use-section" id="t2-date">
+  <div class="use-header">
+    <div class="use-title-block"><span class="use-num">T2.6</span><div class="use-title">Date & Time Formulas</div></div>
+    <span class="use-badge ub-t2">Tier 2 · Week 6</span>
+  </div>
+  <table class="formula-table">
+    <thead><tr><th>Formula</th><th>What It Does</th><th>CA Use Case</th></tr></thead>
+    <tbody>
+      <tr><td>TODAY()</td><td>Returns today's date (dynamic)</td><td>Calculate days overdue from invoice date<span class="formula-ex">=TODAY()-B2</span></td></tr>
+      <tr><td>NOW()</td><td>Returns current date and time</td><td>Timestamp when a report was last updated<span class="formula-ex">=NOW()</span></td></tr>
+      <tr><td>DATE(y,m,d)</td><td>Create a date from year, month, day</td><td>Generate the first/last day of the financial year<span class="formula-ex">=DATE(2024,4,1)</span></td></tr>
+      <tr><td>YEAR / MONTH / DAY</td><td>Extract year, month, or day from a date</td><td>Group transactions by month for GST reporting<span class="formula-ex">=MONTH(B2)</span></td></tr>
+      <tr><td>DATEDIF</td><td>Calculate difference between two dates</td><td>Age of overdue invoice in days/months<span class="formula-ex">=DATEDIF(B2,TODAY(),"D")</span></td></tr>
+      <tr><td>EDATE</td><td>Add N months to a date</td><td>Calculate TDS deposit due date (7th of next month)<span class="formula-ex">=EDATE(B2,1)</span></td></tr>
+      <tr><td>EOMONTH</td><td>Last day of month N months from date</td><td>Get last day of the current quarter<span class="formula-ex">=EOMONTH(TODAY(),0)</span></td></tr>
+      <tr><td>NETWORKDAYS</td><td>Count working days between two dates</td><td>Count working days left to GST filing deadline<span class="formula-ex">=NETWORKDAYS(TODAY(),DATE(2024,5,11))</span></td></tr>
+      <tr><td>WEEKDAY</td><td>Return day of week (1=Sunday)</td><td>Flag weekend transactions that may be data entry errors<span class="formula-ex">=WEEKDAY(B2,2)>5</span></td></tr>
+    </tbody>
+  </table>
+  <div class="note note-info" style="margin-top:1rem;">
+    <strong>India Financial Year context</strong>
+    Indian CAs work on April–March financial years. When users say "this year" or "financial year", interpret as Apr 1 – Mar 31. Always clarify if the user means calendar year (Jan–Dec) or financial year (Apr–Mar).
+  </div>
+</div>
+
+<!-- T2.7 CONDITIONAL FORMULAS -->
+<div class="use-section" id="t2-conditional">
+  <div class="use-header">
+    <div class="use-title-block"><span class="use-num">T2.7</span><div class="use-title">Conditional Formulas (SUMIF, COUNTIF, AVERAGEIF)</div></div>
+    <span class="use-badge ub-t2">Tier 2 · Week 7</span>
+  </div>
+  <table class="formula-table">
+    <thead><tr><th>Formula</th><th>What It Does</th><th>CA Use Case</th></tr></thead>
+    <tbody>
+      <tr><td>SUMIF</td><td>Sum values where one condition is met</td><td>Total IGST for all inter-state suppliers<span class="formula-ex">=SUMIF(StateCode,"!="&"29",F:F)</span></td></tr>
+      <tr><td>SUMIFS</td><td>Sum values where multiple conditions are met</td><td>Total amount for supplier ABC in April 2024<span class="formula-ex">=SUMIFS(D:D,B:B,"ABC Traders",MONTH(C:C),4)</span></td></tr>
+      <tr><td>COUNTIF</td><td>Count rows where one condition is met</td><td>Count invoices from a specific supplier<span class="formula-ex">=COUNTIF(B:B,"ABC Traders")</span></td></tr>
+      <tr><td>COUNTIFS</td><td>Count rows where multiple conditions are met</td><td>Count unmatched invoices above ₹50,000<span class="formula-ex">=COUNTIFS(H:H,"Unmatched",D:D,">"&50000)</span></td></tr>
+      <tr><td>AVERAGEIF</td><td>Average values where one condition is met</td><td>Average invoice value for a specific supplier<span class="formula-ex">=AVERAGEIF(B:B,"ABC Traders",D:D)</span></td></tr>
+      <tr><td>AVERAGEIFS</td><td>Average where multiple conditions are met</td><td>Average IGST amount for inter-state invoices above ₹1 lakh<span class="formula-ex">=AVERAGEIFS(F:F,D:D,">"&100000,E:E,"Inter-State")</span></td></tr>
+    </tbody>
+  </table>
+  <div class="two-col" style="margin-top:1.25rem;">
+    <div>
+      <div class="conv-list">
+        <div class="conv-item cellix-blue">
+          <div class="conv-user"><span class="conv-user-label">USER</span>"What is the total purchase amount from Kerala suppliers?"</div>
+          <div class="conv-cellix"><span class="conv-cellix-label">CELLIX</span><div class="conv-cellix-body">Formula used: <code>=SUMIF(LEFT(C2:C848,2),"32",D2:D848)</code> (State code 32 = Kerala). Total: <strong>₹34,28,500</strong> from 89 Kerala supplier invoices.</div></div>
+        </div>
+        <div class="conv-item cellix-blue">
+          <div class="conv-user"><span class="conv-user-label">USER</span>"Create a summary showing total amount per supplier"</div>
+          <div class="conv-cellix"><span class="conv-cellix-label">CELLIX</span><div class="conv-cellix-body">I'll create a summary in a new sheet with unique supplier names and SUMIF totals for each. This will give you 47 unique suppliers with their totals. Approve to create the Summary sheet?</div></div>
+        </div>
+      </div>
+    </div>
+    <div>
+      <div class="note note-success">
+        <strong>High-priority for CA workflows</strong>
+        SUMIF and COUNTIF are the backbone of every CA's summary reporting — GST summary by state, supplier-wise totals, category-wise reconciliation. These must be 100% accurate before any domain-specific feature is built.
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- T2.8 CONDITIONAL FORMATTING -->
+<div class="use-section" id="t2-condformat">
+  <div class="use-header">
+    <div class="use-title-block"><span class="use-num">T2.8</span><div class="use-title">Conditional Formatting</div></div>
+    <span class="use-badge ub-t2">Tier 2 · Week 7</span>
+  </div>
+  <div class="two-col">
+    <div>
+      <div class="col-head">All Conditional Formatting Operations</div>
+      <ul class="ops-list">
+        <li><div class="op-icon oi-2">🎨</div><div><span>Highlight cells greater/less than value</span><span class="op-sub">e.g., flag all amounts above ₹1 lakh in red</span></div></li>
+        <li><div class="op-icon oi-2">🎨</div><div><span>Highlight cells between two values</span><span class="op-sub">e.g., highlight amounts between ₹50K and ₹1L in yellow</span></div></li>
+        <li><div class="op-icon oi-2">🎨</div><div><span>Highlight cells containing text</span><span class="op-sub">e.g., highlight all "Credit Note" entries in orange</span></div></li>
+        <li><div class="op-icon oi-2">🎨</div><div><span>Highlight duplicate values</span><span class="op-sub">Flag duplicate invoice numbers across the column</span></div></li>
+        <li><div class="op-icon oi-2">🎨</div><div><span>Highlight blank cells</span><span class="op-sub">Show all empty cells in a key column</span></div></li>
+        <li><div class="op-icon oi-2">🎨</div><div><span>Colour scale</span><span class="op-sub">Green-yellow-red gradient based on cell value</span></div></li>
+        <li><div class="op-icon oi-2">📊</div><div><span>Data bars</span><span class="op-sub">In-cell bar chart based on relative values</span></div></li>
+        <li><div class="op-icon oi-2">🚦</div><div><span>Icon sets</span><span class="op-sub">Traffic lights, arrows, checkmarks based on value thresholds</span></div></li>
+        <li><div class="op-icon oi-2">🔧</div><div><span>Custom formula rule</span><span class="op-sub">Highlight entire row based on formula condition</span></div></li>
+        <li><div class="op-icon oi-2">✕</div><div><span>Clear conditional formatting</span><span class="op-sub">Remove all rules from selection or entire sheet</span></div></li>
+      </ul>
+    </div>
+    <div>
+      <div class="col-head">Conversational Examples</div>
+      <div class="conv-list">
+        <div class="conv-item cellix-blue">
+          <div class="conv-user"><span class="conv-user-label">USER</span>"Highlight all rows in red where the amount is above 5 lakhs"</div>
+          <div class="conv-cellix"><span class="conv-cellix-label">CELLIX</span><div class="conv-cellix-body">Applied conditional formatting: entire row highlighted red where column D > ₹5,00,000. 23 rows match this condition. Rule applied to range <code>A2:I848</code>.</div></div>
+        </div>
+        <div class="conv-item cellix-blue">
+          <div class="conv-user"><span class="conv-user-label">USER</span>"Highlight duplicate invoice numbers in column A"</div>
+          <div class="conv-cellix"><span class="conv-cellix-label">CELLIX</span><div class="conv-cellix-body">Applied duplicate highlighting to column A. Found 14 duplicate invoice numbers (7 pairs). They are now shown in orange. Would you like to see a list of the duplicates?</div></div>
+        </div>
+        <div class="conv-item cellix-blue">
+          <div class="conv-user"><span class="conv-user-label">USER</span>"Add a colour scale to the amount column — green for low, red for high"</div>
+          <div class="conv-cellix"><span class="conv-cellix-label">CELLIX</span><div class="conv-cellix-body">Applied 3-colour scale to <code>D2:D848</code>: Green (minimum ₹0), Yellow (midpoint), Red (maximum ₹5,20,000).</div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ════════════ TIER 3 DIVIDER ════════════ -->
+<div class="tier-divider" id="tier3">
+  <div class="td-num">3</div>
+  <div class="td-body">
+    <div class="td-label">Third Priority</div>
+    <div class="td-title">Tier 3 — Intermediate Operations</div>
+    <div class="td-desc">Power user features and the bridge to domain-specific CA workflows.</div>
+  </div>
+  <div class="td-count"><div class="td-count-num">8</div><div class="td-count-label">Feature Groups</div></div>
+</div>
+
+<!-- T3.1 ERROR FIX -->
+<div class="use-section" id="t3-errors">
+  <div class="use-header">
+    <div class="use-title-block"><span class="use-num">T3.1</span><div class="use-title">Error Detection & Fix</div></div>
+    <span class="use-badge ub-t3">Tier 3 · Week 9</span>
+  </div>
+  <div class="two-col">
+    <div>
+      <div class="col-head">All Error Types to Handle</div>
+      <ul class="ops-list">
+        <li><div class="op-icon oi-3 tgr" style="background:#fef2f2;color:#991b1b;font-size:0.6rem">#REF</div><div><span>#REF! — Invalid cell reference</span><span class="op-sub">Trace which cell was deleted that broke the reference. Suggest fix.</span></div></li>
+        <li><div class="op-icon oi-3 tgr" style="background:#fef2f2;color:#991b1b;font-size:0.6rem">#VAL</div><div><span>#VALUE! — Wrong data type in formula</span><span class="op-sub">Text where a number is expected. Common in Tally exports with ₹ symbols.</span></div></li>
+        <li><div class="op-icon oi-3 tgr" style="background:#fef2f2;color:#991b1b;font-size:0.6rem">#N/A</div><div><span>#N/A — Lookup value not found</span><span class="op-sub">VLOOKUP/INDEX-MATCH failed. Suggest IFERROR wrapper or data fix.</span></div></li>
+        <li><div class="op-icon oi-3 tgr" style="background:#fef2f2;color:#991b1b;font-size:0.6rem">#DIV</div><div><span>#DIV/0! — Division by zero</span><span class="op-sub">Denominator is zero or blank. Suggest IF(denominator=0,0,...) wrapper.</span></div></li>
+        <li><div class="op-icon oi-3 tgr" style="background:#fef2f2;color:#991b1b;font-size:0.6rem">#NM</div><div><span>#NAME? — Unrecognised formula name</span><span class="op-sub">Typo in formula name or function not available in Excel version.</span></div></li>
+        <li><div class="op-icon oi-3 tgr" style="background:#fef2f2;color:#991b1b;font-size:0.6rem">#NUM</div><div><span>#NUM! — Invalid numeric value</span><span class="op-sub">Formula produced a number Excel can't handle (too large, SQRT of negative).</span></div></li>
+        <li><div class="op-icon oi-3 tgr" style="background:#fef2f2;color:#991b1b;font-size:0.6rem">⟳</div><div><span>Circular reference</span><span class="op-sub">Formula refers to itself directly or indirectly. Find and break the cycle.</span></div></li>
+        <li><div class="op-icon oi-3">🔍</div><div><span>Scan entire sheet for errors</span><span class="op-sub">Return count and location of all error cells in one report</span></div></li>
+      </ul>
+    </div>
+    <div>
+      <div class="col-head">Conversational Examples</div>
+      <div class="conv-list">
+        <div class="conv-item cellix-purple">
+          <div class="conv-user"><span class="conv-user-label">USER</span>"Fix all #VALUE errors in column E"</div>
+          <div class="conv-cellix"><span class="conv-cellix-label">CELLIX</span><div class="conv-cellix-body">Found 14 #VALUE errors in <code>E2:E848</code>. Root cause: cells in column D contain "₹" as text prefix (e.g., "₹1,18,500" instead of 1,18,500). Fix: strip the ₹ symbol and convert to number using <code>=VALUE(SUBSTITUTE(D2,"₹",""))</code>. Approve to fix all 14 cells?</div></div>
+        </div>
+        <div class="conv-item cellix-purple">
+          <div class="conv-user"><span class="conv-user-label">USER</span>"Why is #REF showing in column H?"</div>
+          <div class="conv-cellix"><span class="conv-cellix-label">CELLIX</span><div class="conv-cellix-body">Column H formula references column I which was deleted. The original formula was <code>=I2*0.18</code>. Column I no longer exists. You need to either restore the column or update the formula to use the correct source column. What column has your taxable amount?</div></div>
+        </div>
+        <div class="conv-item cellix-purple">
+          <div class="conv-user"><span class="conv-user-label">USER</span>"Scan this sheet and tell me all the errors"</div>
+          <div class="conv-cellix"><span class="conv-cellix-label">CELLIX</span><div class="conv-cellix-body">Found 31 errors in this sheet: 14 × #VALUE in E2:E848, 12 × #N/A in D5:D848, 5 × #REF in H12:H16. No circular references found. Want me to fix any of these?</div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- T3.2 DATA VALIDATION -->
+<div class="use-section" id="t3-validation">
+  <div class="use-header">
+    <div class="use-title-block"><span class="use-num">T3.2</span><div class="use-title">Data Validation</div></div>
+    <span class="use-badge ub-t3">Tier 3 · Week 9</span>
+  </div>
+  <div class="two-col">
+    <div>
+      <div class="col-head">All Validation Operations</div>
+      <ul class="ops-list">
+        <li><div class="op-icon oi-3">▼</div><div><span>Dropdown list in a cell</span><span class="op-sub">e.g., "IGST/CGST/SGST" dropdown in type column</span></div></li>
+        <li><div class="op-icon oi-3">🔢</div><div><span>Only numbers allowed</span><span class="op-sub">Between a min and max value</span></div></li>
+        <li><div class="op-icon oi-3">📅</div><div><span>Only dates allowed</span><span class="op-sub">Within a specified date range</span></div></li>
+        <li><div class="op-icon oi-3">📝</div><div><span>Text length restriction</span><span class="op-sub">e.g., GSTIN must be exactly 15 characters</span></div></li>
+        <li><div class="op-icon oi-3">🔧</div><div><span>Custom formula validation</span><span class="op-sub">e.g., only allow if GSTIN passes format check</span></div></li>
+        <li><div class="op-icon oi-3">✕</div><div><span>Remove data validation</span><span class="op-sub">Clear all rules from a range</span></div></li>
+        <li><div class="op-icon oi-3">?</div><div><span>Find invalid data</span><span class="op-sub">Circle or list cells that violate existing validation rules</span></div></li>
+      </ul>
+    </div>
+    <div>
+      <div class="col-head">Conversational Examples</div>
+      <div class="conv-list">
+        <div class="conv-item cellix-purple">
+          <div class="conv-user"><span class="conv-user-label">USER</span>"Add a dropdown in column F with options: IGST, CGST+SGST, Exempt"</div>
+          <div class="conv-cellix"><span class="conv-cellix-label">CELLIX</span><div class="conv-cellix-body">Added dropdown validation to <code>F2:F848</code> with options: IGST, CGST+SGST, Exempt. Users can only select from these 3 values.</div></div>
+        </div>
+        <div class="conv-item cellix-purple">
+          <div class="conv-user"><span class="conv-user-label">USER</span>"Validate that all GSTINs in column C are exactly 15 characters"</div>
+          <div class="conv-cellix"><span class="conv-cellix-label">CELLIX</span><div class="conv-cellix-body">Added validation rule to <code>C2:C848</code>: must be exactly 15 characters. Found 7 existing cells that already violate this rule (rows 23, 45, 89, 134, 234, 456, 678). Want me to highlight the violations?</div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- T3.3 NAMED RANGES -->
+<div class="use-section" id="t3-named">
+  <div class="use-header">
+    <div class="use-title-block"><span class="use-num">T3.3</span><div class="use-title">Named Ranges</div></div>
+    <span class="use-badge ub-t3">Tier 3 · Week 10</span>
+  </div>
+  <div class="two-col">
+    <div>
+      <div class="col-head">All Named Range Operations</div>
+      <ul class="ops-list">
+        <li><div class="op-icon oi-3">📌</div><div><span>Create named range</span><span class="op-sub">e.g., name C2:C848 as "GSTINColumn"</span></div></li>
+        <li><div class="op-icon oi-3">📋</div><div><span>List all named ranges</span><span class="op-sub">Show all names and their cell references</span></div></li>
+        <li><div class="op-icon oi-3">🔧</div><div><span>Edit named range</span><span class="op-sub">Change the range a name refers to</span></div></li>
+        <li><div class="op-icon oi-3">×</div><div><span>Delete named range</span><span class="op-sub">Remove a name from the Name Manager</span></div></li>
+        <li><div class="op-icon oi-3">🔍</div><div><span>Navigate to named range</span><span class="op-sub">"Go to TaxableAmount" — jump to that range</span></div></li>
+      </ul>
+    </div>
+    <div>
+      <div class="col-head">Conversational Examples</div>
+      <div class="conv-list">
+        <div class="conv-item cellix-purple">
+          <div class="conv-user"><span class="conv-user-label">USER</span>"What named ranges exist in this workbook?"</div>
+          <div class="conv-cellix"><span class="conv-cellix-label">CELLIX</span><div class="conv-cellix-body">This workbook has 3 named ranges: <code>TaxableAmount</code> → D2:D848, <code>GSTTotal</code> → H2:H848, <code>SupplierList</code> → MasterSheet!A:B.</div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- T3.4 ARRAY FORMULAS -->
+<div class="use-section" id="t3-array">
+  <div class="use-header">
+    <div class="use-title-block"><span class="use-num">T3.4</span><div class="use-title">Array & Dynamic Formulas</div></div>
+    <span class="use-badge ub-t3">Tier 3 · Week 10</span>
+  </div>
+  <table class="formula-table">
+    <thead><tr><th>Formula</th><th>What It Does</th><th>CA Use Case</th></tr></thead>
+    <tbody>
+      <tr><td>FILTER</td><td>Return only rows that match a condition (dynamic spill)</td><td>Extract all transactions for a specific supplier to a new area<span class="formula-ex">=FILTER(A2:H848,B2:B848="ABC Traders")</span></td></tr>
+      <tr><td>UNIQUE</td><td>Return unique values from a range</td><td>Get list of unique supplier names from column B<span class="formula-ex">=UNIQUE(B2:B848)</span></td></tr>
+      <tr><td>SORT / SORTBY</td><td>Sort a range dynamically without modifying original data</td><td>Show top suppliers sorted by total purchase value<span class="formula-ex">=SORT(UNIQUE(B2:B848))</span></td></tr>
+      <tr><td>ARRAYFORMULA (Sheets)</td><td>Apply formula to entire column at once (Google Sheets)</td><span class="formula-ex">=ARRAYFORMULA(C2:C848*0.18)</span></td></tr>
+      <tr><td>LARGE / SMALL</td><td>Return Nth largest or smallest value</td><td>Find the 5 largest invoice amounts<span class="formula-ex">=LARGE(D2:D848,1)</span></td></tr>
+      <tr><td>RANK</td><td>Rank a value within a range</td><td>Rank suppliers by total purchase amount<span class="formula-ex">=RANK(D2,D:D,0)</span></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- T3.5 REMOVE DUPLICATES -->
+<div class="use-section" id="t3-dedupe">
+  <div class="use-header">
+    <div class="use-title-block"><span class="use-num">T3.5</span><div class="use-title">Duplicate Detection & Data Cleanup</div></div>
+    <span class="use-badge ub-t3">Tier 3 · Week 10</span>
+  </div>
+  <div class="two-col">
+    <div>
+      <div class="col-head">All Operations</div>
+      <ul class="ops-list">
+        <li><div class="op-icon oi-3">🔍</div><div><span>Find duplicate rows</span><span class="op-sub">Based on one or more key columns. Show list before deleting.</span></div></li>
+        <li><div class="op-icon oi-3">×</div><div><span>Remove duplicate rows</span><span class="op-sub">Keep first occurrence, delete subsequent. Show count before deleting.</span></div></li>
+        <li><div class="op-icon oi-3">🔍</div><div><span>Find duplicate values in column</span><span class="op-sub">Highlight or list duplicate invoice numbers, GSTINs etc.</span></div></li>
+        <li><div class="op-icon oi-3">📏</div><div><span>Trim all text in a column</span><span class="op-sub">Remove leading/trailing spaces (critical for Tally exports)</span></div></li>
+        <li><div class="op-icon oi-3">📏</div><div><span>Clean non-printing characters</span><span class="op-sub">Remove invisible characters that break formulas</span></div></li>
+        <li><div class="op-icon oi-3">↕</div><div><span>Convert text numbers to real numbers</span><span class="op-sub">Fix cells that look like numbers but are stored as text</span></div></li>
+        <li><div class="op-icon oi-3">📅</div><div><span>Standardise date formats</span><span class="op-sub">Convert all dates in a column to a consistent format</span></div></li>
+      </ul>
+    </div>
+    <div>
+      <div class="conv-list">
+        <div class="conv-item cellix-purple">
+          <div class="conv-user"><span class="conv-user-label">USER</span>"Find and remove duplicate invoice numbers in column A"</div>
+          <div class="conv-cellix"><span class="conv-cellix-label">CELLIX</span><div class="conv-cellix-body">Found 14 duplicate invoice numbers (7 pairs). Rows to be deleted: 45, 112, 234, 310, 445, 521, 678. Keeping the first occurrence of each. Approve to delete 7 duplicate rows?</div></div>
+        </div>
+        <div class="conv-item cellix-purple">
+          <div class="conv-user"><span class="conv-user-label">USER</span>"Column D has amounts stored as text — convert them to numbers"</div>
+          <div class="conv-cellix"><span class="conv-cellix-label">CELLIX</span><div class="conv-cellix-body">Column D has 847 cells stored as text (green triangle error). Converting using VALUE() and stripping any currency symbols. Approve to overwrite all 847 cells with numeric values?</div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- T3.6-8 Compact -->
+<div class="use-section" id="t3-pivot">
+  <div class="use-header">
+    <div class="use-title-block"><span class="use-num">T3.6</span><div class="use-title">Pivot Tables (Basic)</div></div>
+    <span class="use-badge ub-t3">Tier 3 · Week 11</span>
+  </div>
+  <div class="two-col">
+    <div>
+      <div class="col-head">Operations to Support</div>
+      <ul class="ops-list">
+        <li><div class="op-icon oi-3">📊</div><div><span>Create pivot table from range</span><span class="op-sub">In new sheet, with specified row/column/value fields</span></div></li>
+        <li><div class="op-icon oi-3">+</div><div><span>Add fields to pivot</span><span class="op-sub">Drag equivalent for rows, columns, values, filters</span></div></li>
+        <li><div class="op-icon oi-3">↺</div><div><span>Refresh pivot table</span><span class="op-sub">Update after source data changes</span></div></li>
+        <li><div class="op-icon oi-3">🔢</div><div><span>Change value aggregation</span><span class="op-sub">Sum, Count, Average, Min, Max</span></div></li>
+      </ul>
+    </div>
+    <div>
+      <div class="conv-list">
+        <div class="conv-item cellix-purple">
+          <div class="conv-user"><span class="conv-user-label">USER</span>"Create a pivot table showing total amount by supplier"</div>
+          <div class="conv-cellix"><span class="conv-cellix-label">CELLIX</span><div class="conv-cellix-body">Created pivot table in new sheet <code>Pivot_BySupplier</code>. Rows: Supplier Name (47 unique), Values: Sum of Amount. Sorted by total descending. Top supplier: Kerala Electricals — ₹34,28,500.</div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="use-section" id="t3-charts">
+  <div class="use-header">
+    <div class="use-title-block"><span class="use-num">T3.7</span><div class="use-title">Basic Charts</div></div>
+    <span class="use-badge ub-t3">Tier 3 · Week 11</span>
+  </div>
+  <div class="two-col">
+    <div>
+      <div class="col-head">Chart Types to Support</div>
+      <ul class="ops-list">
+        <li><div class="op-icon oi-3">📊</div><div><span>Bar / Column chart</span><span class="op-sub">Category comparison — supplier by amount, month by month</span></div></li>
+        <li><div class="op-icon oi-3">📈</div><div><span>Line chart</span><span class="op-sub">Trend over time — monthly invoice totals</span></div></li>
+        <li><div class="op-icon oi-3">🥧</div><div><span>Pie / Donut chart</span><span class="op-sub">Proportion — IGST vs CGST+SGST split</span></div></li>
+        <li><div class="op-icon oi-3">✎</div><div><span>Update chart title</span><span class="op-sub">Change title to user-specified text</span></div></li>
+        <li><div class="op-icon oi-3">×</div><div><span>Delete chart</span><span class="op-sub">Remove chart from sheet</span></div></li>
+      </ul>
+    </div>
+    <div>
+      <div class="conv-list">
+        <div class="conv-item cellix-purple">
+          <div class="conv-user"><span class="conv-user-label">USER</span>"Create a bar chart showing monthly purchase totals"</div>
+          <div class="conv-cellix"><span class="conv-cellix-label">CELLIX</span><div class="conv-cellix-body">Created column chart with months (Apr–Mar) on X-axis and total purchase amount on Y-axis. Chart placed in current sheet. Title: "Monthly Purchase Totals FY 2024-25". Approve?</div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ════════════ Q&A DIVIDER ════════════ -->
+<div class="tier-divider" id="qa" style="background:#2a1808;">
+  <div class="td-num">Q</div>
+  <div class="td-body">
+    <div class="td-label">Throughout All Tiers</div>
+    <div class="td-title">Conversational Q&A — The Intent Layer</div>
+    <div class="td-desc">Every operation above must also be accessible through natural language. This section defines the 5 intent categories CELLIX must recognise.</div>
+  </div>
+  <div class="td-count"><div class="td-count-num">5</div><div class="td-count-label">Intent Categories</div></div>
+</div>
+
+<!-- QA: ACTION -->
+<div class="use-section" id="qa-action">
+  <div class="use-header">
+    <div class="use-title-block"><span class="use-num">Q&A.1</span><div class="use-title">Action Requests — "Do it for me"</div></div>
+    <span class="use-badge ub-qa">Q&A Layer</span>
+  </div>
+  <p style="font-size:0.88rem;color:var(--ink2);margin-bottom:1rem">The user wants CELLIX to perform an operation. Always show a preview and wait for approval before writing to the sheet.</p>
+  <table class="intent-table">
+    <thead><tr><th>User Says</th><th>CELLIX Intent</th><th>What CELLIX Does</th></tr></thead>
+    <tbody>
+      <tr><td>"Create a new sheet called Q1 Summary"</td><td class="intent-label">CREATE_SHEET</td><td>Create sheet, confirm name and position</td></tr>
+      <tr><td>"Sum all values in column C"</td><td class="intent-label">FORMULA_MATH</td><td>Generate SUM formula, show calculated result in preview</td></tr>
+      <tr><td>"Sort by date newest first"</td><td class="intent-label">SORT</td><td>Sort entire table by detected date column, descending</td></tr>
+      <tr><td>"Filter to show only inter-state transactions"</td><td class="intent-label">FILTER</td><td>Apply filter on state column or IGST column &gt; 0</td></tr>
+      <tr><td>"Make column A bold"</td><td class="intent-label">FORMAT</td><td>Apply bold to detected data range in column A</td></tr>
+      <tr><td>"Add a dropdown in column F: IGST, CGST, Exempt"</td><td class="intent-label">VALIDATION</td><td>Create dropdown validation rule for column F</td></tr>
+      <tr><td>"Copy the formula in D2 down to D100"</td><td class="intent-label">FILL_DOWN</td><td>Copy formula from D2 to D3:D100, show preview</td></tr>
+      <tr><td>"Delete blank rows"</td><td class="intent-label">DELETE_ROWS</td><td>Find blank rows, show count, ask for approval before deleting</td></tr>
+      <tr><td>"Highlight duplicates in column A"</td><td class="intent-label">COND_FORMAT</td><td>Apply conditional formatting for duplicate values</td></tr>
+      <tr><td>"Replace all '₹' symbols in column D with nothing"</td><td class="intent-label">FIND_REPLACE</td><td>Replace, show count of affected cells, ask approval</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- QA: EXPLAIN -->
+<div class="use-section" id="qa-explain">
+  <div class="use-header">
+    <div class="use-title-block"><span class="use-num">Q&A.2</span><div class="use-title">Explain Requests — "Tell me about this"</div></div>
+    <span class="use-badge ub-qa">Q&A Layer</span>
+  </div>
+  <p style="font-size:0.88rem;color:var(--ink2);margin-bottom:1rem">The user wants to understand something about their spreadsheet. Read-only — no changes to the sheet.</p>
+  <table class="intent-table">
+    <thead><tr><th>User Says</th><th>CELLIX Intent</th><th>What CELLIX Returns</th></tr></thead>
+    <tbody>
+      <tr><td>"What does the formula in C5 do?"</td><td class="intent-label">EXPLAIN_FORMULA</td><td>Read formula, decompose each function, explain in plain English with reference to actual column names</td></tr>
+      <tr><td>"Describe this spreadsheet to me"</td><td class="intent-label">DESCRIBE_SHEET</td><td>Sheet name, row count, column names and types, any formulas detected, any errors found</td></tr>
+      <tr><td>"What are all the sheets in this workbook?"</td><td class="intent-label">LIST_SHEETS</td><td>Sheet names, order, visible/hidden status</td></tr>
+      <tr><td>"What named ranges are there?"</td><td class="intent-label">LIST_NAMED_RANGES</td><td>All names and their cell references</td></tr>
+      <tr><td>"What filter is currently active?"</td><td class="intent-label">DESCRIBE_FILTER</td><td>Which columns are filtered and what the current criteria are</td></tr>
+      <tr><td>"What is the data type in column C?"</td><td class="intent-label">DESCRIBE_COLUMN</td><td>Detected type (number, text, date, mixed), count, any anomalies</td></tr>
+      <tr><td>"Are there any merged cells in this sheet?"</td><td class="intent-label">DESCRIBE_MERGES</td><td>Count and location of all merged cells</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- QA: FIX -->
+<div class="use-section" id="qa-fix">
+  <div class="use-header">
+    <div class="use-title-block"><span class="use-num">Q&A.3</span><div class="use-title">Fix Requests — "Something is broken"</div></div>
+    <span class="use-badge ub-qa">Q&A Layer</span>
+  </div>
+  <table class="intent-table">
+    <thead><tr><th>User Says</th><th>CELLIX Intent</th><th>Fix Strategy</th></tr></thead>
+    <tbody>
+      <tr><td>"Fix the #REF error in column H"</td><td class="intent-label">FIX_ERROR_REF</td><td>Trace broken reference, identify what was deleted, propose corrected formula</td></tr>
+      <tr><td>"My VLOOKUP is showing #N/A"</td><td class="intent-label">FIX_ERROR_NA</td><td>Diagnose (usually trailing spaces, type mismatch), suggest TRIM or VALUE wrapper</td></tr>
+      <tr><td>"Fix the #VALUE errors in column E"</td><td class="intent-label">FIX_ERROR_VALUE</td><td>Identify cause (text in numeric cell), propose VALUE(SUBSTITUTE()) fix</td></tr>
+      <tr><td>"There's a circular reference somewhere"</td><td class="intent-label">FIX_CIRCULAR</td><td>Locate the circular reference chain, explain it, suggest how to break it</td></tr>
+      <tr><td>"My dates are not sorting correctly"</td><td class="intent-label">FIX_DATA</td><td>Check if dates are stored as text (common Tally issue), suggest DATEVALUE() conversion</td></tr>
+      <tr><td>"Column D amounts aren't summing — SUM returns 0"</td><td class="intent-label">FIX_DATA</td><td>Diagnose text-stored numbers, suggest VALUE() conversion or format fix</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- QA: DATA QUESTIONS -->
+<div class="use-section" id="qa-data">
+  <div class="use-header">
+    <div class="use-title-block"><span class="use-num">Q&A.4</span><div class="use-title">Data Analysis Questions — "How many? Which? What?"</div></div>
+    <span class="use-badge ub-qa">Q&A Layer</span>
+  </div>
+  <p style="font-size:0.88rem;color:var(--ink2);margin-bottom:1rem">The user wants information about their data. Read-only — compute and return the answer without writing to the sheet.</p>
+  <div class="two-col">
+    <div>
+      <table class="intent-table">
+        <thead><tr><th>User Says</th><th>Answer Type</th></tr></thead>
+        <tbody>
+          <tr><td>"How many rows have data?"</td><td class="intent-label">COUNT</td></tr>
+          <tr><td>"What is the total amount?"</td><td class="intent-label">SUM</td></tr>
+          <tr><td>"What is the highest invoice value?"</td><td class="intent-label">MAX</td></tr>
+          <tr><td>"Which supplier has the most invoices?"</td><td class="intent-label">COUNTIF RANK</td></tr>
+          <tr><td>"How many blank cells are in column C?"</td><td class="intent-label">COUNTBLANK</td></tr>
+          <tr><td>"Are there duplicate values in column A?"</td><td class="intent-label">DUPLICATE CHECK</td></tr>
+          <tr><td>"What is the average amount per supplier?"</td><td class="intent-label">AVERAGEIF</td></tr>
+          <tr><td>"How many rows have IGST above zero?"</td><td class="intent-label">COUNTIF</td></tr>
+          <tr><td>"What percentage of invoices are above 1 lakh?"</td><td class="intent-label">COUNTIF / COUNT %</td></tr>
+          <tr><td>"Which rows have an invalid GSTIN?"</td><td class="intent-label">PATTERN CHECK</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div>
+      <div class="col-head">Example Responses</div>
+      <div class="conv-list">
+        <div class="conv-item cellix-amber">
+          <div class="conv-user"><span class="conv-user-label">USER</span>"Which supplier has the highest total purchase amount?"</div>
+          <div class="conv-cellix"><span class="conv-cellix-label">CELLIX</span><div class="conv-cellix-body">Top supplier by total amount is <strong>Kerala Electricals Pvt Ltd</strong> with ₹34,28,500 across 18 invoices. Second: Murugan Traders ₹18,93,000. Third: Krishnamurthy & Co ₹14,75,000. Want me to create a full supplier ranking table?</div></div>
+        </div>
+        <div class="conv-item cellix-amber">
+          <div class="conv-user"><span class="conv-user-label">USER</span>"How many rows have a GSTIN that doesn't start with 32?"</div>
+          <div class="conv-cellix"><span class="conv-cellix-label">CELLIX</span><div class="conv-cellix-body">207 rows have GSTINs not starting with "32" (state code 32 = Kerala). These are likely inter-state suppliers. IGST should apply to these invoices instead of CGST+SGST.</div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- QA: FORMULA HELP -->
+<div class="use-section" id="qa-formula">
+  <div class="use-header">
+    <div class="use-title-block"><span class="use-num">Q&A.5</span><div class="use-title">Formula Help — "Write this formula for me"</div></div>
+    <span class="use-badge ub-qa">Q&A Layer</span>
+  </div>
+  <p style="font-size:0.88rem;color:var(--ink2);margin-bottom:1rem">The user describes what they want a formula to do. CELLIX generates, verifies, and proposes the formula through the standard Preview → Approve → Apply flow.</p>
+  <table class="intent-table">
+    <thead><tr><th>User Description</th><th>Generated Formula</th><th>Verification Check</th></tr></thead>
+    <tbody>
+      <tr><td>"Calculate 18% GST on the amount in column D"</td><td class="intent-label">=D2*0.18</td><td>Test on sample rows, verify output is numeric and positive</td></tr>
+      <tr><td>"If column C is blank, show 'Missing GSTIN', else show 'OK'"</td><td class="intent-label">=IF(C2="","Missing GSTIN","OK")</td><td>Test on blank and non-blank sample rows</td></tr>
+      <tr><td>"Total the amounts for April 2024 only"</td><td class="intent-label">=SUMPRODUCT((MONTH(B2:B848)=4)*(YEAR(B2:B848)=2024)*D2:D848)</td><td>Verify date range and numeric sum output</td></tr>
+      <tr><td>"Look up the state name from the GSTIN's first 2 digits"</td><td class="intent-label">=INDEX(StateTable!B:B,MATCH(LEFT(C2,2)*1,StateTable!A:A,0))</td><td>Test on known GSTINs, verify text output</td></tr>
+      <tr><td>"Flag if this row is a credit note — narration contains 'CN' or 'Credit'"</td><td class="intent-label">=OR(ISNUMBER(SEARCH("CN",E2)),ISNUMBER(SEARCH("Credit",E2)))</td><td>Test on narration column samples, verify boolean output</td></tr>
+      <tr><td>"Count how many invoices are above 50,000 for each supplier"</td><td class="intent-label">=COUNTIFS($B$2:$B$848,B2,$D$2:$D$848,">"&50000)</td><td>Test with known supplier, verify count matches manual count</td></tr>
+    </tbody>
+  </table>
+  <div class="note note-success" style="margin-top:1rem;">
+    <strong>The Golden Rule for Formula Generation</strong>
+    Always use the actual column letters and header names from WorkbookContext — never hardcode A, B, C. If the user's amount column is column D, the formula uses D. If they rename it to column F next week, the formula must be regenerated using the current context. Never assume column positions.
+  </div>
+</div>
+
+</div><!-- end main-content -->
+</div><!-- end layout -->
+
+<footer>
+  <strong>CELLIX</strong> · Basic Excel Use Cases & Conversational Q&A · Developer Reference · Build Tier 1 → Tier 2 → Tier 3 → Domain Features
+  <span>180+ operations · 5 Q&A intent categories · 60+ conversation examples</span>
+</footer>
+</body>
+</html>

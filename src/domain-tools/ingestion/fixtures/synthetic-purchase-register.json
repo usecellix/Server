@@ -1,0 +1,81 @@
+{
+  "documentId": "synth-pr-001",
+  "format": "synthetic-json",
+  "headers": [
+    "Supplier GSTIN",
+    "Invoice No",
+    "Date",
+    "Taxable Amount",
+    "IGST",
+    "CGST",
+    "SGST",
+    "Narration"
+  ],
+  "rows": [
+    {
+      "gstin": "32AAAAA0000A1Z5",
+      "invoiceNumber": "INV-1001",
+      "invoiceDate": "2026-04-15",
+      "taxableValue": 10000,
+      "igst": 0,
+      "cgst": 900,
+      "sgst": 900,
+      "taxAmount": 1800,
+      "narration": "Software services",
+      "documentType": "invoice",
+      "sourceRow": 2
+    },
+    {
+      "gstin": "29BBBBB1111B1Z5",
+      "invoiceNumber": "INV-1002",
+      "invoiceDate": "2026-04-18",
+      "taxableValue": 25000.5,
+      "igst": 4500,
+      "cgst": 0,
+      "sgst": 0,
+      "taxAmount": 4500,
+      "narration": "Goods purchase",
+      "documentType": "invoice",
+      "sourceRow": 3
+    },
+    {
+      "gstin": "27CCCCC2222C1Z5",
+      "invoiceNumber": "CN2001",
+      "invoiceDate": "2026-04-21",
+      "taxableValue": -5000,
+      "igst": 0,
+      "cgst": -450,
+      "sgst": -450,
+      "taxAmount": -900,
+      "narration": "Credit Note against supplies",
+      "documentType": "credit_note",
+      "sourceRow": 4
+    },
+    {
+      "gstin": "33EEEEE4444E1Z5",
+      "invoiceNumber": "PR-ONLY-1",
+      "invoiceDate": "2026-04-25",
+      "taxableValue": 12000,
+      "igst": 0,
+      "cgst": 1080,
+      "sgst": 1080,
+      "taxAmount": 2160,
+      "narration": "Supplier not yet filed",
+      "documentType": "invoice",
+      "sourceRow": 5
+    },
+    {
+      "gstin": "",
+      "invoiceNumber": "URD-1",
+      "invoiceDate": "2026-04-10",
+      "taxableValue": 3000,
+      "igst": 0,
+      "cgst": 0,
+      "sgst": 0,
+      "taxAmount": 0,
+      "narration": "Freight GTA services",
+      "documentType": "invoice",
+      "sourceRow": 6
+    }
+  ]
+}

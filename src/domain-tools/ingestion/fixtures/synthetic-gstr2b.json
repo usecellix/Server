@@ -1,22 +1,64 @@
 {
   "documentId": "synth-gstr2b-001",
   "format": "synthetic-json",
+  "headers": [
+    "GSTIN of supplier",
+    "Invoice number",
+    "Invoice Date",
+    "Taxable Value",
+    "IGST",
+    "CGST",
+    "SGST",
+    "Document Type"
+  ],
   "rows": [
     {
       "gstin": "32AAAAA0000A1Z5",
       "invoiceNumber": "INV-1001",
       "invoiceDate": "2026-04-15",
       "taxableValue": 10000,
+      "igst": 0,
+      "cgst": 900,
+      "sgst": 900,
       "taxAmount": 1800,
+      "documentType": "invoice",
       "sourceRow": 2
     },
     {
       "gstin": "29BBBBB1111B1Z5",
-      "invoiceNumber": "INV-1002",
+      "invoiceNumber": "INV/1002",
       "invoiceDate": "2026-04-18",
       "taxableValue": 25000,
+      "igst": 4500,
+      "cgst": 0,
+      "sgst": 0,
       "taxAmount": 4500,
+      "documentType": "invoice",
       "sourceRow": 3
+    },
+    {
+      "gstin": "27CCCCC2222C1Z5",
+      "invoiceNumber": "CN-2001",
+      "invoiceDate": "2026-04-20",
+      "taxableValue": -5000,
+      "igst": 0,
+      "cgst": -450,
+      "sgst": -450,
+      "taxAmount": -900,
+      "documentType": "credit_note",
+      "sourceRow": 4
+    },
+    {
+      "gstin": "24DDDDD3333D1Z5",
+      "invoiceNumber": "PORTAL-ONLY-1",
+      "invoiceDate": "2026-04-22",
+      "taxableValue": 8000,
+      "igst": 1440,
+      "cgst": 0,
+      "sgst": 0,
+      "taxAmount": 1440,
+      "documentType": "invoice",
+      "sourceRow": 5
     }
   ]
 }

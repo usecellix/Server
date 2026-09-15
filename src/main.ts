@@ -125,7 +125,7 @@ async function bootstrap(): Promise<void> {
     new ResponseEnvelopeInterceptor(app.get(Reflector)),
   );
   app.enableCors({
-    origin: config.clientOrigin,
+    origin: config.allowedCorsOrigins,
     credentials: true,
   });
 

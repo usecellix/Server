@@ -176,6 +176,25 @@ export class AppConfigService {
     return this.configService.get<string>('CLIENT_ORIGIN', 'https://localhost:3000');
   }
 
+  /**
+   * Comma-separated — Vite's dev port isn't stable (auto-increments past
+   * 5173 whenever it's already taken by another running instance), so local
+   * dev needs more than one landing-page origin allowed at once rather than
+   * chasing whichever port happened to be free this run.
+   */
+  get marketingSiteOrigins(): string[] {
+    const value = this.configService.get<string>('MARKETING_SITE_ORIGIN', '');
+    return value
+      .split(',')
+      .map((origin) => origin.trim())
+      .filter((origin) => origin.length > 0);
+  }
+
+  /** Every origin main.ts's enableCors() should allow — add-in + (if set) the marketing site. */
+  get allowedCorsOrigins(): string[] {
+    return [this.clientOrigin, ...this.marketingSiteOrigins];
+  }
+
   get googleClientId(): string | undefined {
     const value = this.configService.get<string>('GOOGLE_CLIENT_ID', '');
     return value?.trim() ? value.trim() : undefined;

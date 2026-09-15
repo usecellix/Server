@@ -715,12 +715,13 @@ export class ConversationService {
       }
 
       if (routerDecision.route === 'data') {
-        await this.handleSmartDataQuery(
+        await this.handleDataQueryRoute(
           routedRequest,
           analysis,
           conversationId,
-          emit,
           traceId,
+          emit,
+          userId,
         );
         endSseResponse(reply);
         return;
@@ -1115,6 +1116,66 @@ export class ConversationService {
     };
   }
 
+  /**
+   * Gate/debit wrapper around handleSmartDataQuery (CREDIT_SYSTEM.md CD-1/
+   * CD-4). Its own private method — not inlined into handleConversation's
+   * `route === 'data'` branch — for the same reason handleWriteRoute is
+   * separate: a direct-private-method-call test harness
+   * (credit-write-route-integration.spec.ts's pattern) needs a unit boundary
+   * narrower than the whole SSE entry point.
+   *
+   * Prices as FORMULA_QA_SIMPLE — this route is a read-only, single-
+   * active-sheet-scoped lookup ("find 310"), the same shape web-chat's
+   * WebChatService.ask treats as "simple" (scopedToOneConversation), and
+   * CD-1's own pricing table maps "Formula Q&A" to this action type.
+   */
+  private async handleDataQueryRoute(
+    request: ConversationRequestDto,
+    analysis: ReturnType<SheetAnalyzerService['analyze']>,
+    conversationId: string,
+    traceId: string,
+    emit: (event: string, data: Record<string, unknown>) => void,
+    userId?: string,
+  ): Promise<void> {
+    if (userId) {
+      const gateResult = await this.creditGate.checkBalance(userId, 'FORMULA_QA_SIMPLE');
+      if (!gateResult.allowed && gateResult.reason === 'insufficient_balance') {
+        emit('error', {
+          message: 'You are out of credits for this action.',
+          code: 'INSUFFICIENT_CREDIT',
+          availableBalance: gateResult.availableBalance,
+          requiredCredits: gateResult.requiredCredits,
+        });
+        await this.markCompleted(conversationId);
+        this.finalizeWorkflow(traceId, 'failed', {
+          route: 'data',
+          sseOutput: { error: 'insufficient_credit' },
+        });
+        return;
+      }
+    }
+
+    await this.handleSmartDataQuery(request, analysis, conversationId, emit, traceId);
+
+    if (userId) {
+      // Debit AFTER the answer exists (CD-3) — a lost race here (CD-6) means
+      // the answer is already generated and returned uncharged; the NEXT
+      // request's gate is what blocks, matching CD-4.
+      const debitResult = await this.creditLedger.debit(userId, 'FORMULA_QA_SIMPLE', 1, {
+        conversationId,
+      });
+      if (debitResult.debited && debitResult.balances) {
+        emit('credits', {
+          planCredits: debitResult.balances.planCredits,
+          purchasedCredits: debitResult.balances.purchasedCredits,
+          oneTimeCredits: debitResult.balances.oneTimeCredits,
+          debited: resolveCreditCost('FORMULA_QA_SIMPLE'),
+          actionType: 'FORMULA_QA_SIMPLE',
+        });
+      }
+    }
+  }
+
   private async handleSmartDataQuery(
     request: ConversationRequestDto,
     analysis: ReturnType<SheetAnalyzerService['analyze']>,
@@ -1493,6 +1554,31 @@ export class ConversationService {
         }
 
         if (actionHint) {
+          // CREDIT_SYSTEM.md CD-1/CD-4 — Tier 1 (one LLM call, writes to the
+          // workbook) prices as FORMULA_GENERATE_OR_FIX, same category and
+          // same price Tier 2's gate below checks — so a caller who fails
+          // this gate would fail Tier 2's identical gate too, making an
+          // early return here equivalent to falling through, just without
+          // the wasted LLM call Tier 1 would otherwise attempt first.
+          if (userId) {
+            const gateResult = await this.creditGate.checkBalance(userId, 'FORMULA_GENERATE_OR_FIX');
+            if (!gateResult.allowed && gateResult.reason === 'insufficient_balance') {
+              emit('error', {
+                message: 'You are out of credits for this action.',
+                code: 'INSUFFICIENT_CREDIT',
+                availableBalance: gateResult.availableBalance,
+                requiredCredits: gateResult.requiredCredits,
+              });
+              await this.markCompleted(conversationId);
+              this.finalizeWorkflow(traceId, 'failed', {
+                route: 'write',
+                tier: 1,
+                sseOutput: { error: 'insufficient_credit' },
+              });
+              endSseResponse(reply);
+              return;
+            }
+          }
           try {
             const tier1Result = await this.tier1SingleAction.execute(
               routedRequest.message,
@@ -1526,6 +1612,23 @@ export class ConversationService {
                 routerDecision.assumption,
                 emit,
               );
+              if (userId) {
+                // Debit AFTER the actions/ChangeSet already streamed (CD-3) —
+                // same "answer exists, now charge" rule Tier 2's debit below
+                // follows. Fires regardless of later Accept/Reject (CD-3).
+                const debitResult = await this.creditLedger.debit(userId, 'FORMULA_GENERATE_OR_FIX', 1, {
+                  conversationId,
+                });
+                if (debitResult.debited && debitResult.balances) {
+                  emit('credits', {
+                    planCredits: debitResult.balances.planCredits,
+                    purchasedCredits: debitResult.balances.purchasedCredits,
+                    oneTimeCredits: debitResult.balances.oneTimeCredits,
+                    debited: resolveCreditCost('FORMULA_GENERATE_OR_FIX'),
+                    actionType: 'FORMULA_GENERATE_OR_FIX',
+                  });
+                }
+              }
               endSseResponse(reply);
               return;
             }
