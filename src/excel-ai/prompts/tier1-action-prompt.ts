@@ -11,9 +11,12 @@ export function buildTier1SystemPrompt(actionHint: string): string {
   const actionRules: Record<string, string> = {
     SORT_OR_FILTER: `
 Action hint: SORT_OR_FILTER
-Allowed action types: SORT_RANGE
+Allowed action types: SORT_RANGE, AUTO_FILTER
 SORT_RANGE schema: { "type": "SORT_RANGE", "sheetName": "...", "range": "A1:H50", "key": 0, "ascending": true, "hasHeaders": true, "columnName": "..." }
-For filter-only requests with no sort, use SORT_RANGE on the header row range as a best-effort visible reorder, or return a CLARIFY action if the target column is unknown.
+For a genuine HIDE request ("filter to Y", "hide rows below Z", "filter to show only X") — where the user's wording is about filtering/hiding, NOT a sort and NOT a plain "show/highlight/mark" — use AUTO_FILTER with a real condition instead of reordering rows:
+AUTO_FILTER schema: { "type": "AUTO_FILTER", "sheetName": "...", "range": "A1:H50", "filter": { "column": "...", "operator": "equals|notEquals|contains|greaterThan|lessThan", "value": ... } }
+Sorting is never an acceptable stand-in for filtering — a sort reorders every row and shows them all; a filter is supposed to HIDE the non-matching ones. If the target column is unknown, return a CLARIFY action instead of guessing.
+IMPORTANT: A plain "show only rows where X" / "highlight rows where X" / "mark rows where X" with no "filter"/"hide" wording does NOT mean AUTO_FILTER — it means highlight matching rows while keeping every row visible. That is not in this action hint's allowed types; if you detect that wording, return a CLARIFY action noting CONDITIONAL_FORMAT should be used instead of guessing an AUTO_FILTER.
 `,
     FIND_REPLACE: `
 Action hint: FIND_REPLACE (text columns only — numeric/financial columns must never reach this path)

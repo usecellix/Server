@@ -19,16 +19,17 @@ import { TELEMETRY_CATEGORIES } from '../src/common/logging/dto/frontend-log-bat
  * a test that reads the other side's source and fails when they disagree.
  */
 describe('frontend telemetry category parity (TASKS.md #159)', () => {
-  // The add-in lives in `frontend/`, not `client/`. This path has now been
-  // wrong THREE times — TASKS.md #176 fixed it to `frontend/` after the same
-  // ENOENT this file is checking for silenced the drift detector itself; a
-  // later upstream merge (this file) reverted it back to `client/`. That is
-  // precisely the failure the docblock above warns about, which is why the
-  // existence assertion below is not decoration: it is the only thing that
-  // tells the difference between "no drift" and "no test". TASKS.md #166, #176.
+  // This path has flip-flopped between `frontend/` and `client/` across past
+  // sessions/checkouts (TASKS.md #166, #176) — the add-in repo has been
+  // checked out under both names at different times. As of TASKS.md #221/#227
+  // (Sept 2026), the actual checkout on disk is `client/` (git remote
+  // usecellix/client), verified against this filesystem, not assumed. If this
+  // starts failing existence again, check `ls` next to `Server/` before
+  // guessing which name is current — that is exactly what silenced this
+  // detector the first two times. TASKS.md #166, #176.
   const CLIENT_SOURCE = path.resolve(
     __dirname,
-    '../../frontend/src/services/frontendTelemetry.ts',
+    '../../client/src/services/frontendTelemetry.ts',
   );
 
   function clientCategories(): string[] {

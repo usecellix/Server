@@ -4,7 +4,7 @@ import { SheetActionPayload } from '../src/excel-ai/types/sheet-actions.types';
 import { WorkbookContext } from '../src/types/cellix.types';
 
 /**
- * TASKS.md #234 — reproduces the two real shapes this produced in live runs
+ * TASKS.md #238 — reproduces the two real shapes this produced in live runs
  * against a sheet with NO blank rows: `DELETE_ROW row:10 rowCount:21` (seen in
  * the task pane) and `DELETE_ROW row:1 rowCount:30` (seen in the eval harness).
  * Both were reported "verified: true" by the agentic loop.

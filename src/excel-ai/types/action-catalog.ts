@@ -80,7 +80,7 @@ const ACTION_CATALOG: Record<SheetActionType, CatalogEntry> = {
   SET_MATCHING_ROWS: { advertise: true },
   // The only safe way to answer "delete blank rows" / "delete rows where X":
   // which rows match is resolved against the real cells at apply time instead
-  // of being guessed as a DELETE_ROW row/rowCount pair. TASKS.md #234.
+  // of being guessed as a DELETE_ROW row/rowCount pair. TASKS.md #238.
   DELETE_MATCHING_ROWS: { advertise: true },
   CONDITIONAL_FORMAT: { advertise: true },
   DELETE_CONDITIONAL_FORMAT: {

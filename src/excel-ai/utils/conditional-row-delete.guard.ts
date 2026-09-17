@@ -15,7 +15,7 @@ import { WorkbookContext } from '../../types/cellix.types';
  *
  * Deliberately fails closed: if the condition is "blank" and the targeted rows
  * cannot be read from context, the action is dropped rather than trusted.
- * TASKS.md #234.
+ * TASKS.md #238.
  */
 
 /** The user described WHICH rows rather than naming them. */
