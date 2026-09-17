@@ -108,7 +108,7 @@ export class CreditLedgerService {
       // option is set" at debit time, which surfaced in the task pane as a red
       // error on a request the pipeline had already planned and verified.
       // The unit specs mock findOneAndUpdate, so only a live Mongo call shows
-      // it. TASKS.md #233.
+      // it. TASKS.md #237.
       { new: true, updatePipeline: true },
     );
 

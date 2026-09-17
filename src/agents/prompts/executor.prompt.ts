@@ -99,8 +99,9 @@ HIDE_ROW / UNHIDE_ROW schema (hide or reveal whole rows — "hide rows 5 to 10")
 { "type": "HIDE_ROW", "sheetName": "Purchase Register", "row": 4, "rowCount": 6 }
 - row is 0-based; rowCount is how many consecutive rows
 
-CLEAR_FORMAT schema (strip fills/fonts/borders/number formats, keep values and formulas — "clear all formatting in A1:I31"):
+CLEAR_FORMAT schema (strip fills/fonts/borders/number formats, keep values and formulas — "clear all formatting in A1:I31", "remove the highlighting", "clear the red highlight"):
 { "type": "CLEAR_FORMAT", "sheetName": "Purchase Register", "row": 0, "col": 0, "rowCount": 31, "colCount": 9 }
+- "remove/clear the highlight(ing)" (removing a previously-applied CONDITIONAL_FORMAT or FORMAT_MATCHING_ROWS fill) → this schema over the same data range, excluding the header row. This is a different request from "clear all filters" (AUTO_FILTER above) — do not conflate the two just because both are phrased with "clear".
 
 UNMERGE_CELLS schema ("unmerge all merged cells in this sheet"):
 { "type": "UNMERGE_CELLS", "sheetName": "Purchase Register", "row": 0, "col": 0, "rowCount": 1, "colCount": 3 }
@@ -120,6 +121,13 @@ SET_SHEET_COLOR schema (colour a sheet tab — "make the Summary tab blue"):
 AUTO_FILTER schema (add filter dropdowns to a table's header row — "add filters", "make it filterable"):
 { "type": "AUTO_FILTER", "sheetName": "Purchase Register", "range": "A1:N51" }
 - range MUST cover the full header + data range (the filter dropdowns go on the header row of that range)
+
+AUTO_FILTER with a condition (actually HIDES non-matching rows — ONLY for wording that is explicitly about filtering/hiding: "filter to rows above/below/equal to Y", "filter by condition", "filter to show only X", "hide rows where X"):
+{ "type": "AUTO_FILTER", "sheetName": "Purchase Register", "range": "A1:I31", "filter": { "column": "Taxable Amount", "operator": "greaterThan", "value": 100000 } }
+- filter.operator: equals | notEquals | contains | greaterThan | lessThan — value is a number for greaterThan/lessThan, string or number otherwise
+- Without "filter", AUTO_FILTER only adds dropdown arrows — every row STAYS VISIBLE.
+- "Clear all filters" means AUTO_FILTER only (keep dropdowns, show all rows again) — emit AUTO_FILTER on the same range with no "filter". Do NOT also emit CLEAR_FORMAT for this phrase — a CONDITIONAL_FORMAT highlight is not a filter and "clear all filters" must not touch it.
+- CRITICAL — DO NOT confuse with highlighting: a plain "show only rows where X", "highlight rows where X", "mark rows where X", or "flag rows where X" with NO "filter"/"hide" wording does NOT mean AUTO_FILTER. That phrasing means keep every row visible and just mark the matching ones — use CONDITIONAL_FORMAT below (numeric condition) or FORMAT_MATCHING_ROWS (text/status condition) instead. Example: "Show only rows where the taxable amount is above 1 lakh" → CONDITIONAL_FORMAT, not AUTO_FILTER.
 
 FREEZE_PANES schema ("freeze the header row", "freeze top row"):
 { "type": "FREEZE_PANES", "sheetName": "Purchase Register", "freezeRows": 1 }
@@ -161,6 +169,10 @@ formula variant — comparison across two or more columns ("highlight the region
 - $-anchor the COLUMN of any reference that must stay fixed while the row varies (e.g. "$B2") — required for one formula to apply correctly across the whole range
 - range should cover the full row span needed to both read the compared columns and paint the highlight — not just one column
 - Light red → "#FFC7CE"; light yellow → "#FFF2CC"; light green → "#C6EFCE"
+WHOLE-ROW highlight from a SINGLE numeric column ("show only rows where the taxable amount is above 1 lakh", "highlight rows where X" — no "filter"/"hide" wording, so every row STAYS VISIBLE, only matching rows get colored): use the formula variant (not cellValue — cellValue only paints the one column's cells), anchored on that column, spanning the FULL row width:
+{ "type": "CONDITIONAL_FORMAT", "sheetName": "Purchase Register", "range": "A2:J61", "rule": { "kind": "formula", "formula": "=$E2>100000", "format": { "fillColor": "#FFC7CE" } } }
+- range is A2:<last column><last data row> (exclude header row, include every column so the whole row paints)
+- formula references only the condition column, $-anchored (e.g. "=$E2>100000"), relative row so it re-evaluates per row
 topBottom variant — rank-based highlight ("highlight the top 5 suppliers by total", "flag the bottom 10% of scores"), NEVER a fixed threshold:
 { "type": "CONDITIONAL_FORMAT", "sheetName": "Suppliers", "range": "C2:C40", "rule": { "kind": "topBottom", "side": "top", "rank": 5, "format": { "fillColor": "#C6EFCE" } } }
 - range MUST be only the data cells of the single numeric column being ranked (exclude the header row)

@@ -395,9 +395,31 @@ export function normalizeSingleAction(
     }
   }
 
+  // Filter was previously not copied for AUTO_FILTER at all — a plain object
+  // field, unlike `range`/`sheetName`, which the generic copies above already
+  // handle. Without this, "show only rows where X" always arrived as bare
+  // dropdown arrows with every row still visible. TASKS.md #221.
+  if (type === 'AUTO_FILTER') {
+    action.hasHeaders = record.hasHeaders === undefined ? true : Boolean(record.hasHeaders);
+    if (record.filter && typeof record.filter === 'object') {
+      const filter = record.filter as Record<string, unknown>;
+      if (
+        (typeof filter.column === 'string' || typeof filter.column === 'number') &&
+        typeof filter.operator === 'string' &&
+        (typeof filter.value === 'string' || typeof filter.value === 'number')
+      ) {
+        action.filter = {
+          column: String(filter.column),
+          operator: filter.operator as NonNullable<SheetActionPayload['filter']>['operator'],
+          value: filter.value,
+        };
+      }
+    }
+  }
+
   // Same range/filter shape as SET_MATCHING_ROWS, minus the target column —
   // an omitted filter is meaningful here ("rows where every cell is empty").
-  // TASKS.md #234.
+  // TASKS.md #238.
   if (type === 'DELETE_MATCHING_ROWS') {
     if (typeof record.sheetName === 'string') action.sheetName = record.sheetName;
     if (typeof record.range === 'string') action.range = stripSheetPrefix(record.range);

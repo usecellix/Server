@@ -7,6 +7,7 @@ import {
   Post,
   UnprocessableEntityException,
 } from '@nestjs/common';
+import { Action, WorkbookContext } from '../agents/types/agent.types';
 import { ChangeSetService } from './change-set.service';
 import { RevertNoOpError } from './errors/revert-noop.error';
 import { RevertVerificationError } from './errors/revert-verification.error';
@@ -15,6 +16,42 @@ import { CellChange } from './types/change-set.types';
 @Controller('audit')
 export class ChangeSetController {
   constructor(private readonly changeSetService: ChangeSetService) {}
+
+  /**
+   * TASKS.md #250 follow-up — registers an audit trail (and therefore a
+   * working Revert) for actions the CLIENT already resolved and applied
+   * itself with no LLM call at all (the local sheet-action fast lanes:
+   * copy/rename/delete/create-empty sheet). Those actions previously had no
+   * `changeSetId` at all, so the revert control never appeared for them —
+   * not a regression from #250, but a gap in every local fast-lane that
+   * predates it, surfaced when the user asked for revert on a local copy.
+   * Deliberately a thin passthrough to the same `createPreview()` every
+   * LLM-routed action already goes through — no separate code path, no new
+   * diffing logic, so it inherits every existing correctness fix (#245/#246/
+   * #248's false-preview exclusions included) automatically.
+   */
+  @Post('preview-local')
+  async previewLocal(
+    @Body()
+    body: {
+      conversationId: string;
+      traceId?: string;
+      prompt: string;
+      context: WorkbookContext;
+      actions: Action[];
+      workbookId?: string;
+    },
+  ) {
+    const changeSet = await this.changeSetService.createPreview({
+      conversationId: body.conversationId,
+      traceId: body.traceId ?? '-',
+      prompt: body.prompt,
+      context: body.context,
+      actions: body.actions,
+      workbookId: body.workbookId,
+    });
+    return { changeSet };
+  }
 
   @Post('apply/:changeSetId')
   async apply(

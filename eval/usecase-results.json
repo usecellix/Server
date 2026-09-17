@@ -1,29 +1,59 @@
 [
   {
-    "id": "row-delete-blank-gstin",
-    "section": "T1.2",
-    "prompt": "Delete all rows where column D is blank",
+    "id": "logic-missing-gstin",
+    "section": "T1.7",
+    "prompt": "If the GSTIN in column D is blank, mark a new Status column as 'Missing GSTIN'",
     "expect": [
-      "DELETE_MATCHING_ROWS|DELETE_ROW"
+      "*"
     ],
-    "forbid": [
-      "DELETE_SHEET"
-    ],
-    "ms": 10494,
+    "ms": 38117,
     "http": 200,
     "types": [
-      "DELETE_MATCHING_ROWS"
+      "INSERT_COLUMN"
     ],
     "actions": [
       {
-        "type": "DELETE_MATCHING_ROWS",
+        "type": "INSERT_COLUMN",
+        "sheetName": "Purchase Register",
+        "position": "afterLastColumn",
+        "columnName": "Status"
+      }
+    ],
+    "text": "[explanation] Write content on Purchase Register",
+    "errors": [],
+    "statuses": [
+      "Prepared INSERT_COLUMN on Purchase Register",
+      "Progress: 1 step(s) ready · 1 change(s) prepared — continuing…",
+      "Running deterministic checks...",
+      "Actions verified"
+    ],
+    "verdict": "PASS"
+  },
+  {
+    "id": "filter-gt",
+    "section": "T2.2",
+    "prompt": "Show only rows where the taxable amount is above 1 lakh",
+    "expect": [
+      "*"
+    ],
+    "forbid": [
+      "SORT_RANGE"
+    ],
+    "ms": 19542,
+    "http": 200,
+    "types": [
+      "AUTO_FILTER"
+    ],
+    "actions": [
+      {
+        "type": "AUTO_FILTER",
         "sheetName": "Purchase Register",
         "range": "A1:I31",
         "hasHeaders": true,
         "filter": {
-          "column": "GSTIN",
-          "operator": "equals",
-          "value": ""
+          "column": "Taxable Amount",
+          "operator": "greaterThan",
+          "value": 100000
         }
       }
     ],
@@ -38,24 +68,20 @@
     "verdict": "PASS"
   },
   {
-    "id": "row-delete-blank-sheet",
-    "section": "T1.2",
-    "prompt": "Delete blank rows in the Purchase Register sheet",
+    "id": "filter-clear",
+    "section": "T2.2",
+    "prompt": "Clear all filters",
     "expect": [
-      "DELETE_MATCHING_ROWS"
+      "*"
     ],
-    "forbid": [
-      "DELETE_SHEET",
-      "DELETE_ROW"
-    ],
-    "ms": 8771,
+    "ms": 20791,
     "http": 200,
     "types": [
-      "DELETE_MATCHING_ROWS"
+      "AUTO_FILTER"
     ],
     "actions": [
       {
-        "type": "DELETE_MATCHING_ROWS",
+        "type": "AUTO_FILTER",
         "sheetName": "Purchase Register",
         "range": "A1:I31",
         "hasHeaders": true

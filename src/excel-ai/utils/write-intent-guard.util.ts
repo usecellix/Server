@@ -3,8 +3,25 @@
  * classification so mutation requests never silently fall through to a read-only path.
  */
 
+// "mark"/"flag" added after a live-audit miss (TASKS.md #235): "If the GSTIN
+// in column D is blank, mark a new Status column as 'Missing GSTIN'" — the
+// guide's own T1.7/Q&A.4 phrasing for conditional labeling — matched none of
+// the verbs here, so hasWriteIntent() returned false, the router's own
+// misclassification went uncorrected, and the request was answered with
+// "want me to apply that change?" instead of a preview.
 const WRITE_INTENT_VERBS =
-  /\b(sort|filter|delete|remove|insert|add|copy|move|bold|highlight|color|colour|format|merge|split|fill|clear|rename|hide|unhide|freeze|protect|create|build|generate|apply|replace|update|change|set)\b/i;
+  /\b(sort|filter|delete|remove|insert|add|copy|move|bold|highlight|color|colour|format|merge|split|fill|clear|rename|hide|unhide|freeze|protect|create|build|generate|apply|replace|update|change|set|mark|flag)\b/i;
+
+/**
+ * "Show only rows where X" / "display only entries where X" is an unambiguous
+ * filter request, but bare "show"/"display" is deliberately excluded from
+ * WRITE_INTENT_VERBS above (too often just a read verb — "show me the
+ * total"). The live audit hit exactly this construction: "Show only rows
+ * where the taxable amount is above 1 lakh" (guide T2.2) matched no write verb
+ * at all and was answered with a chat question instead of a filter preview.
+ * TASKS.md #235.
+ */
+const FILTER_PHRASE = /\b(?:only|just)\s+(?:the\s+)?(?:rows?|entries|records?)\b[\s\S]{0,40}\bwhere\b|\brows?\s+where\b/i;
 
 /**
  * Requests that LOOK like write-intent verbs but are actually questions about
@@ -97,7 +114,7 @@ export function hasWriteIntent(message: string): boolean {
     return false;
   }
 
-  return WRITE_INTENT_VERBS.test(message);
+  return WRITE_INTENT_VERBS.test(message) || FILTER_PHRASE.test(message);
 }
 
 /** Verbs covered by Spec 11 WRITE_INTENT_VERBS (aligned with Spec 01 catalog mutations). */

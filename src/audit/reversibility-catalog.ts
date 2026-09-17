@@ -40,17 +40,25 @@ export const REVERSIBILITY_CATALOG: Record<SheetActionType, ReversibilityCatalog
   BATCH_SET: { reversible: true },
   CLEAR_CONTENT: { reversible: true },
   CLEAR_ALL: { reversible: true },
-  SET_MATCHING_ROWS: { reversible: true },
+  SET_MATCHING_ROWS: {
+    reversible: false,
+    reason:
+      "Filtered write over a range the executor never fully transcribed — the shadow used to preview it can be missing or stale for rows outside what was actually sampled, so a live-tested run produced a confidently wrong single-cell prediction (predicted row 7's blank GSTIN would change; the real filter, run against live data, correctly left it alone) and a false 'did not match what was proposed' alarm. No longer simulated (see virtualApply.ts), so no before/after state is captured to restore.",
+  },
   DELETE_MATCHING_ROWS: {
     reversible: false,
     reason:
-      'Deleting rows removes cells the generic cell-diff can restore values into, but nothing recreates the rows themselves — the same structural gap DELETE_ROW has. TASKS.md #234.',
+      'Deleting rows removes cells the generic cell-diff can restore values into, but nothing recreates the rows themselves — the same structural gap DELETE_ROW has. TASKS.md #238.',
   },
   SORT_RANGE: { reversible: true }, // permutes values within the same address set, no shift
   FILL_DOWN: { reversible: true },
   FILL_RIGHT: { reversible: true },
   MOVE_RANGE: { reversible: true }, // copies to dest + clears source; no shift of unrelated cells
-  COPY_FILTERED_RANGE: { reversible: true }, // writes into a new/appended range
+  COPY_FILTERED_RANGE: {
+    reversible: false,
+    reason:
+      "Reads the SOURCE sheet through the same shadow SET_MATCHING_ROWS's preview relied on — a live-tested full-sheet copy only had shadow data for ~11 of 61 source rows, so the preview confidently predicted the rest as blank while the real Office.js copy correctly wrote all 61, producing a false 'did not match what was proposed' alarm. No longer simulated (see virtualApply.ts), so no before/after state is captured to restore.",
+  },
   AGGREGATE_TABLE: { reversible: true }, // writes new aggregate cells, append pattern
   WRITE_TABLE: { reversible: true },
 

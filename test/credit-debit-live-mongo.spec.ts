@@ -1,7 +1,7 @@
 import mongoose from 'mongoose';
 
 /**
- * TASKS.md #233 — the credit debit is an aggregation-PIPELINE update (an array),
+ * TASKS.md #237 — the credit debit is an aggregation-PIPELINE update (an array),
  * and Mongoose 9 rejects one unless `updatePipeline: true` is passed. Every
  * billable request from a signed-in user threw "Cannot pass an array to query
  * updates unless the `updatePipeline` option is set" at debit time, after the

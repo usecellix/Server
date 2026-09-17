@@ -36,7 +36,10 @@ import { DataQueryService, FindMatch } from './data-query.service';
 import { IntentClassifierService, intentIsReadOnly } from './intent-classifier.service';
 import { LlmCallTelemetry, LlmUsage, OpenRouterChatMessage, OpenRouterService } from './openrouter.service';
 import { SheetAnalysis, SheetAnalyzerService } from './sheet-analyzer.service';
-import { pruneSpuriousAddSheetActions } from '../../agents/utils/compound-action.util';
+import {
+  pruneSpuriousAddSheetActions,
+  detectCopySheetIntent,
+} from '../../agents/utils/compound-action.util';
 import { guardConditionalRowDeletes } from '../utils/conditional-row-delete.guard';
 import { annotateClearIntentOverwrite } from '../../agents/utils/clear-intent-overwrite.util';
 import {
@@ -546,7 +549,7 @@ Sheet has ${analysis.rowCount} rows, ${analysis.columnCount} columns. Next appen
     }
     // A conditional row delete whose row numbers the model invented is the one
     // failure in this audit that destroys data rather than doing nothing.
-    // TASKS.md #234.
+    // TASKS.md #238.
     const rowDeleteGuard = guardConditionalRowDeletes(
       finalActions,
       userMessage,
@@ -560,6 +563,28 @@ Sheet has ${analysis.rowCount} rows, ${analysis.columnCount} columns. Next appen
       );
     }
     finalActions = rowDeleteGuard.actions;
+
+    // Diagnostic only, deliberately not a blocking guard like the row-delete
+    // one above: a live audit run produced a bare ADD_SHEET (no copyFrom) for
+    // "Copy the Purchase Register sheet and name it March Copy" despite
+    // executor.prompt.ts's explicit "a plain ADD_SHEET makes an EMPTY sheet —
+    // never answer a copy/duplicate request with one" (TASKS.md #213) — two
+    // other runs of the identical prompt that same day got it right, so this
+    // reads as model non-compliance rather than a routing bug. An empty sheet
+    // is the wrong answer but not a destructive one the way a bad row delete
+    // is, and there is no safe way to infer the intended copyFrom generically
+    // enough to auto-correct it here — so this only makes the miss loud
+    // instead of silent. TASKS.md #241.
+    if (
+      userMessage &&
+      detectCopySheetIntent(userMessage) &&
+      finalActions.some((a) => a.type === 'ADD_SHEET' && !a.copyFrom) &&
+      !finalActions.some((a) => a.type === 'COPY_SHEET')
+    ) {
+      this.logger.warn(
+        `Copy-intent message produced ADD_SHEET with no copyFrom (likely model non-compliance, not a routing bug — TASKS.md #241): "${String(userMessage).slice(0, 120)}"`,
+      );
+    }
 
     const sanitized = this.sanitizeActions(finalActions, analysis, richWorkbookContext);
     // A verified batch arriving here and leaving empty is the "1 action,
