@@ -1318,6 +1318,7 @@ export class AgenticLoopService {
         result.actions,
         execContext,
         subtask.targetSheet,
+        baseShadow,
       );
       formulaValidationLog.push(preValidation);
 

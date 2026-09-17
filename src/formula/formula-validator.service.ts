@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Action, WorkbookContext } from '../agents/types/agent.types';
 import { colIndexToLetter, letterToColIndex } from '../virtual/shadowWorkbook';
 import { ShadowWorkbook } from '../virtual/shadowWorkbook.types';
+import { virtualApply } from '../virtual/virtualApply';
 import { FUNCTION_NAMES, parseFormula } from './formula.parser';
 import {
   FormulaValidationIssue,
@@ -34,17 +35,31 @@ interface ExtractedFormula {
 export class FormulaValidatorService {
   private readonly logger = new Logger(FormulaValidatorService.name);
 
+  /**
+   * `shadow`, when given, is simulated with `actions` first and its resulting
+   * shape (via `shadowAsContext`) is what reference bounds are checked
+   * against — otherwise a formula in the same batch as the row/cell writes it
+   * depends on always fails bounds-checking against the PRE-batch sheet shape,
+   * no matter how many times the Executor retries with the identical, already
+   * -correct actions (TASKS.md #237). `checkPostApply` below already does this
+   * correctly for its own post-apply pass; this brings pre-apply in line with
+   * it rather than duplicating the simulate-then-check pattern a third time.
+   */
   validatePreApply(
     actions: Action[],
     context: WorkbookContext,
     defaultSheet?: string,
+    shadow?: ShadowWorkbook,
   ): FormulaValidationResult {
     const issues: FormulaValidationIssue[] = [];
     const formulas = this.extractFormulas(actions, defaultSheet ?? context.activeSheetName);
+    const referenceContext = shadow
+      ? this.shadowAsContext(virtualApply(shadow, actions), context)
+      : context;
 
     for (const entry of formulas) {
       issues.push(...this.validateSyntax(entry));
-      issues.push(...this.validateReferences(entry, context));
+      issues.push(...this.validateReferences(entry, referenceContext));
       issues.push(...this.validateNamedRanges(entry, context));
     }
 

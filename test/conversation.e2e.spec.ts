@@ -36,11 +36,13 @@ describe('conversation e2e — tier + mode contracts', () => {
       expectedExecutableFull: 2,
       writeAllowed: true,
     },
+    // TASKS.md #238 — a short two-step instruction on one sheet resolves at
+    // its own tier (1) instead of escalating to 3.
     {
       message: 'sort by column B and then create a chart',
       mode: 'action',
-      expectedClassified: 3,
-      expectedExecutableFull: 3,
+      expectedClassified: 1,
+      expectedExecutableFull: 1,
       writeAllowed: true,
     },
     {

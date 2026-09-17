@@ -98,6 +98,52 @@ describe('FormulaValidatorService', () => {
     expect(result.passed).toBe(true);
   });
 
+  // TASKS.md #237 — a batch that writes a row AND references it in a formula
+  // in the SAME batch must validate against the sheet shape AFTER its own
+  // writes apply, not the sheet shape before them. Without a shadow, this
+  // failed identically on every retry — unwinnable, not flaky — because the
+  // check was against a sheet that could never grow no matter how many times
+  // the Executor re-emitted the same already-correct actions.
+  it('validates same-batch row writes and dependent formula together when given a shadow', () => {
+    const headerOnly: WorkbookContext = {
+      activeSheetName: 'Sheet1',
+      sheets: [
+        {
+          name: 'Sheet1',
+          usedRange: 'A1:D1',
+          rowCount: 1,
+          columnCount: 4,
+          values: [['Item', 'Quantity', 'Price', 'Total']],
+          formulas: [['', '', '', '']],
+          numberFormats: [['General', 'General', 'General', 'General']],
+          structure: 'data_table',
+          headerRowIndex: 0,
+        },
+      ],
+      namedRanges: [],
+      tables: [],
+    };
+    const actions: Action[] = [
+      { type: 'SET_CELL', sheetName: 'Sheet1', row: 1, col: 0, value: 'Widget' },
+      { type: 'SET_CELL', sheetName: 'Sheet1', row: 1, col: 1, value: 5 },
+      { type: 'SET_CELL', sheetName: 'Sheet1', row: 1, col: 2, value: 10 },
+      { type: 'SET_FORMULA', sheetName: 'Sheet1', row: 1, col: 3, formula: '=B2*C2' },
+    ];
+
+    // Without a shadow: fails, because B2/C2 don't exist in the PRE-batch
+    // 1-row context — this is the bug, reproduced.
+    const withoutShadow = validator.validatePreApply(actions, headerOnly);
+    expect(withoutShadow.passed).toBe(false);
+    expect(withoutShadow.issues.some((i) => i.code === 'REFERENCE')).toBe(true);
+
+    // With a shadow: passes, because B2/C2 are simulated as existing once
+    // this batch's own earlier SET_CELL actions are accounted for — the fix.
+    const shadow = buildShadowWorkbook(headerOnly);
+    const withShadow = validator.validatePreApply(actions, headerOnly, undefined, shadow);
+    expect(withShadow.passed).toBe(true);
+    expect(withShadow.issues.filter((i) => i.severity === 'error')).toHaveLength(0);
+  });
+
   it('rejects hardcoded numeric literals where formulas are expected', () => {
     const actions: Action[] = [
       { type: 'SET_CELL', sheetName: 'Sheet1', row: 1, col: 2, value: 180 },

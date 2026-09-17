@@ -3,9 +3,11 @@ import { buildRefinementContext } from '../src/excel-ai/utils/refinement-context
 import { ChangeSetRecord } from '../src/audit/types/change-set.types';
 
 describe('write route tier classification', () => {
-  it('classifies a multi-step parent request as tier 3 compound', () => {
+  // TASKS.md #238 — a short two-step instruction on one sheet no longer
+  // escalates; contrast the purchase-register test below, which still does.
+  it('classifies a short two-step request at its own tier, not escalated', () => {
     const parent = classifyComplexity('sort by column B and then create a chart');
-    expect(parent.match?.tier).toBe(3);
+    expect(parent.match?.tier).toBe(1);
   });
 
   it('classifies a quick-edit follow-up independently as tier 1', () => {

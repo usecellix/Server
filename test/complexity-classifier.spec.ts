@@ -12,18 +12,18 @@ const catalogFixtures = JSON.parse(
 
 describe('classifyComplexity', () => {
   describe('compound signal priority', () => {
-    it('escalates to tier 3 when compound signal matches alongside a single-action pattern', () => {
+    // TASKS.md #238 — these two are now the short-single-sentence carve-out
+    // shape, so they no longer escalate; see the dedicated describe block
+    // below for the full reasoning and more cases.
+    it('does not escalate a short compound instruction on one sheet', () => {
       const result = classifyComplexity('bold A1:C1 and then sort column B');
-      expect(result.match).toEqual({
-        tier: 3,
-        actionHint: 'CELL_FORMAT',
-        matchedBy: 'regex',
-      });
+      expect(result.match?.tier).toBe(0);
+      expect(result.match?.actionHint).toBe('CELL_FORMAT');
     });
 
-    it('escalates sort+chart compound to tier 3', () => {
+    it('does not escalate a short sort+chart instruction on one sheet', () => {
       const result = classifyComplexity('sort by column B and then create a chart');
-      expect(result.match?.tier).toBe(3);
+      expect(result.match?.tier).toBe(1);
       expect(result.match?.actionHint).toBe('SORT_OR_FILTER');
     });
 
@@ -36,6 +36,44 @@ describe('classifyComplexity', () => {
       const result = classifyComplexity('bold A1, italic B1');
       expect(result.match?.tier).toBe(0);
       expect(result.match?.actionHint).toBe('CELL_FORMAT');
+    });
+  });
+
+  // TASKS.md #238 — a SHORT, single-sentence prompt whose only compound
+  // signal is a bare "then"/"and" connecting two ordinary steps on one sheet
+  // must not escalate: that shape was forcing the 100-credit-per-subtask
+  // Tier 3 pipeline onto requests with no real planning need (live bug:
+  // "add a header row..., then in row 2 put..., and a formula..." burned a
+  // Tier 3 subtask that could never even complete — TASKS.md #237). Anything
+  // longer, multi-sentence, or naming a real second object (a summary sheet,
+  // "for each") still escalates via the unchanged COMPOUND_SIGNALS path.
+  describe('short single-sentence sequential carve-out', () => {
+    it('does not escalate a short two-step same-sheet instruction', () => {
+      const result = classifyComplexity(
+        'write a header row in A1:D1, then a formula in D2 that multiplies quantity by price',
+      );
+      expect(result.match?.tier).not.toBe(3);
+    });
+
+    it('still escalates a long multi-sentence multi-feature build', () => {
+      const prompt =
+        'Create a purchase register from the data in this workbook. Add columns for purchase date, ' +
+        'supplier, invoice number, item, category, quantity, unit price, tax %, tax amount, total amount, ' +
+        'payment status, department, requested by, and approved by. Add formulas for tax and total amount. ' +
+        'Add filters, freeze the header row, and create a summary showing total purchases, paid amount, ' +
+        'pending amount, and purchases by department.';
+      const result = classifyComplexity(prompt);
+      // No single-action pattern matches this prompt's opening clause, so the
+      // classifier defers to the LLM router (null) rather than guessing — the
+      // point of this test is that it is NOT suppressed into a non-3 tier by
+      // the new carve-out, which only applies to already-recognized single
+      // actions on a short prompt.
+      expect(result.match === null || result.match.tier === 3).toBe(true);
+    });
+
+    it('still escalates when the compound signal names a second object', () => {
+      const result = classifyComplexity('bold A1:C1 and add a summary sheet');
+      expect(result.match?.tier).toBe(3);
     });
   });
 

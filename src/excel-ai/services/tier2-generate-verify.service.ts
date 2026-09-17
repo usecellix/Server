@@ -12,6 +12,7 @@ import {
 } from '../../agents/types/agent.types';
 import { mergeRangeIntoSheet } from '../../agents/utils/range-merge.util';
 import { FormulaValidatorService } from '../../formula/formula-validator.service';
+import { buildShadowWorkbook } from '../../virtual/shadowWorkbook';
 import { SourceRef } from '../../domain-tools/types/domain-tool.types';
 import { buildWorkbookSourceRefsFromActions } from '../../audit/utils/provenance.util';
 import { SheetAction } from '../types/sheet-actions.types';
@@ -162,6 +163,8 @@ export class Tier2GenerateVerifyService {
     let preApply = this.formulaValidator.validatePreApply(
       executorResult.actions,
       workingContext,
+      undefined,
+      buildShadowWorkbook(workingContext),
     );
     let verifierResult = await this.verifierAgent.verify(
       message,
@@ -260,6 +263,8 @@ export class Tier2GenerateVerifyService {
       preApply = this.formulaValidator.validatePreApply(
         executorResult.actions,
         workingContext,
+        undefined,
+        buildShadowWorkbook(workingContext),
       );
       assertTier2VerifierMandatory({ usedShouldSkipVerifier: false });
       verifierResult = await this.verifierAgent.verify(
@@ -290,6 +295,8 @@ export class Tier2GenerateVerifyService {
             preApply = this.formulaValidator.validatePreApply(
               executorResult.actions,
               workingContext,
+              undefined,
+              buildShadowWorkbook(workingContext),
             );
             assertTier2VerifierMandatory({ usedShouldSkipVerifier: false });
             verifierResult = await this.verifierAgent.verify(
@@ -462,6 +469,8 @@ export class Tier2GenerateVerifyService {
     const preApply = this.formulaValidator.validatePreApply(
       executorResult.actions,
       workbookContext,
+      undefined,
+      buildShadowWorkbook(workbookContext),
     );
     if (!preApply.passed) {
       const reason = this.formulaValidator.formatFeedback(preApply.issues);
