@@ -16,6 +16,9 @@ import { FormattingChecker } from './checkers/formatting.checker';
 import { SemanticFormulaChecker } from './checkers/semantic-formula.checker';
 import { OverwriteOccupancyChecker } from './checkers/overwrite-occupancy.checker';
 import { StructuralIntentChecker } from './checkers/structural-intent.checker';
+import { ComputedColumnChecker } from './checkers/computed-column.checker';
+import { SpecConformanceChecker } from './checkers/spec-conformance.checker';
+import { SpecExtractorAgent } from './spec-extractor.agent';
 import { ToolBridgeService } from './tool-bridge.service';
 import { StructuredLogger } from './logging/structured-logger';
 
@@ -41,6 +44,9 @@ import { StructuredLogger } from './logging/structured-logger';
     SemanticFormulaChecker,
     OverwriteOccupancyChecker,
     StructuralIntentChecker,
+    ComputedColumnChecker,
+    SpecConformanceChecker,
+    SpecExtractorAgent,
   ],
   exports: [
     OrchestratorService,

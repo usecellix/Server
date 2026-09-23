@@ -1,4 +1,5 @@
 import { SheetActionPayload } from '../types/sheet-actions.types';
+import { resolveColumnWidthToPoints } from './column-width.util';
 
 export interface ShortcutHandler {
   id: string;
@@ -382,7 +383,12 @@ const SHORTCUT_REGISTRY: ShortcutHandler[] = [
       const colStart = cols?.colStart ?? 'A';
       const colEnd = cols?.colEnd ?? colStart;
       const colAction = toColumnAction('SET_COLUMN_WIDTH', { colStart, colEnd }, activeSheetName);
-      return [{ ...colAction, width }];
+      // "make column B 20 wide" means 20 in the unit Excel's OWN UI shows the
+      // user (characters), not the points Office.js writes — so the same
+      // resolution the Executor's output gets applies here. Without it this
+      // fast lane produced a 20pt sliver for a perfectly reasonable request.
+      // TASKS.md #273.
+      return [{ ...colAction, width: resolveColumnWidthToPoints(width) }];
     },
   },
   {

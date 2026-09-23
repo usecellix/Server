@@ -21,6 +21,9 @@ import {
 } from '../utils/table-request.util';
 import { ConversationMessageEntry } from '../schemas/conversation.schema';
 import { SheetActionPayload } from '../types/sheet-actions.types';
+import { parseA1Range } from '../../agents/utils/range-merge.util';
+import { stripSheetPrefix } from '../../agents/utils/range-address.util';
+import { colIndexToLetter } from '../../formula/pattern.detector';
 import { buildWorkbookContext } from '../utils/workbook-context.util';
 import {
   groupActionsBySheet,
@@ -664,7 +667,17 @@ Sheet has ${analysis.rowCount} rows, ${analysis.columnCount} columns. Next appen
     ]);
     if (rowOnlyTypes.has(action.type)) return false;
     if (action.type === 'WRITE_TABLE') return false;
-    if (action.type === 'MERGE_CELLS' || action.type === 'FORMAT_RANGE') return false;
+    // UNMERGE_CELLS is MERGE_CELLS's own inverse and was missing from this
+    // exemption — a live-tested "unmerge all merged cells in this sheet"
+    // naturally spans the whole used range starting at row 0, got
+    // misclassified as a header-row clobber, and was silently dropped here
+    // even on a sheet full of real data: passed "Actions verified"/"1
+    // actions ready for preview" over SSE, then the request failed at the
+    // very last step with an unexplained "Something went wrong — try
+    // rephrasing". TASKS.md #258.
+    if (action.type === 'MERGE_CELLS' || action.type === 'UNMERGE_CELLS' || action.type === 'FORMAT_RANGE') {
+      return false;
+    }
     // A whole-range CLEAR (CLEAR_CONTENT/CLEAR_ALL/CLEAR_FORMAT) that happens to
     // start at row 0 is not an accidental header clobber — it's a deliberate
     // "clear the sheet" request, already vetted by annotateClearIntentOverwrite
@@ -788,9 +801,42 @@ Sheet has ${analysis.rowCount} rows, ${analysis.columnCount} columns. Next appen
       case 'UNHIDE_COLUMN':
       case 'SHOW_COLUMN':
       case 'SET_COLUMN_WIDTH':
-      case 'FILL_DOWN':
         if (col === undefined) return null;
         return { ...action, col };
+      // The client's actual FILL_DOWN handler (cell.handler.ts) reads
+      // sourceRange/targetRange, not row/col at all — but nothing tells the
+      // model that (FILL_DOWN has no schema in executor.prompt.ts), so a
+      // live-tested "copy the formula in J2 down to J61" emitted the one
+      // shape a model reaches for unprompted: a single `range`. That was
+      // being checked against `col` (a field the client never even reads)
+      // by the shared case above, and #183/#215's range→indices conversion
+      // never covered FILL_DOWN either — so the action verified cleanly and
+      // was then silently dropped here regardless, surfacing as the same
+      // unexplained "Something went wrong — try rephrasing". Derive the pair
+      // the client actually needs directly from `range`: the natural reading
+      // of "fill down this range" is that the top row already has the
+      // source value/formula and everything below it is the target.
+      // TASKS.md #258.
+      case 'FILL_DOWN': {
+        if (typeof action.sourceRange === 'string' && typeof action.targetRange === 'string') {
+          return action;
+        }
+        if (typeof action.range !== 'string') return null;
+        const parsed = parseA1Range(stripSheetPrefix(action.range));
+        if (!parsed || parsed.endRow <= parsed.startRow) return null;
+        const colLetter = colIndexToLetter(parsed.startCol);
+        const sourceRow = parsed.startRow + 1; // 1-based Excel row
+        const targetStartRow = sourceRow + 1;
+        const targetEndRow = parsed.endRow + 1;
+        return {
+          ...action,
+          sourceRange: `${colLetter}${sourceRow}`,
+          targetRange:
+            targetEndRow > targetStartRow
+              ? `${colLetter}${targetStartRow}:${colLetter}${targetEndRow}`
+              : `${colLetter}${targetStartRow}`,
+        };
+      }
       case 'FILL_RIGHT':
         if (row === undefined || col === undefined) return null;
         return { ...action, row, col };

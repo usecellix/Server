@@ -43,6 +43,7 @@ export interface CellChange {
 export type StructuralOpType =
   | 'ADD_SHEET'
   | 'DELETE_SHEET'
+  | 'RENAME_SHEET'
   | 'INSERT_COLUMN'
   | 'DELETE_COLUMN'
   | 'INSERT_ROW'

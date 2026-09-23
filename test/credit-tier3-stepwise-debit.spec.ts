@@ -20,6 +20,9 @@ describe('ConversationService — credit debit around stepwise Tier 3 completion
   let service: ConversationService;
   let creditLedger: { debit: jest.Mock };
   let agentRunState: { markStatus: jest.Mock; summarizeSkipped: jest.Mock };
+  // TASKS.md #267 — finishStepwiseRun now persists a closing message, so
+  // conversationModel must be a real-enough stub or that call throws.
+  let conversationModel: { updateOne: jest.Mock };
   const emittedEvents: Array<{ event: string; data: Record<string, unknown> }> = [];
 
   const reply = {} as FastifyReply;
@@ -44,9 +47,10 @@ describe('ConversationService — credit debit around stepwise Tier 3 completion
       markStatus: jest.fn().mockResolvedValue(undefined),
       summarizeSkipped: jest.fn().mockReturnValue([]),
     };
+    conversationModel = { updateOne: jest.fn().mockResolvedValue(undefined) };
 
     service = new ConversationService(
-      {} as never,
+      conversationModel as never,
       {} as never,
       {} as never,
       {} as never,

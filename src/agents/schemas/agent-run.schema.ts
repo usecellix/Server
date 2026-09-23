@@ -109,6 +109,17 @@ export class AgentRun {
   @Prop({ type: String, required: false })
   routerAssumption?: string;
 
+  /**
+   * The host's probed Excel capabilities, carried from the run's FIRST request
+   * — TASKS.md #269. `/continue` has no body field for them, so without this a
+   * wave has no way to know whether the host supports dynamic arrays, and the
+   * consolidation pass would have to assume the worst and emit its
+   * compatibility note instead of a live spilling formula on a host that
+   * supports one.
+   */
+  @Prop({ type: SchemaTypes.Mixed, required: false })
+  excelCapabilities?: { dynamicArrays?: boolean };
+
   @Prop({ type: Date, default: () => new Date(Date.now() + AGENT_RUN_TTL_MS) })
   expiresAt!: Date;
 }

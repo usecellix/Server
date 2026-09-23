@@ -21,3 +21,21 @@ export function writeSseEvent(reply: FastifyReply, event: string, data: unknown)
 export function endSseResponse(reply: FastifyReply): void {
   reply.raw.end();
 }
+
+/**
+ * An AbortSignal that fires when the underlying HTTP connection for this SSE
+ * response closes — the client navigating away, closing the taskpane, or the
+ * "Stop" button aborting its fetch. Without this, the agentic loop had no way
+ * to learn a run was cancelled: it kept executing every remaining wave (LLM
+ * calls included) to completion, only to write to a response nobody was
+ * reading. Call once per request, right after `initSseResponse`, and pass the
+ * `signal` down into anything long-running (AgenticLoopService's wave loop).
+ * TASKS.md #260.
+ */
+export function createRequestAbortSignal(reply: FastifyReply): AbortSignal {
+  const controller = new AbortController();
+  const onClose = () => controller.abort();
+  reply.raw.once('close', onClose);
+  reply.raw.once('error', onClose);
+  return controller.signal;
+}

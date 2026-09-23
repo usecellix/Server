@@ -1,12 +1,14 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { PlannerAgent } from './planner.agent';
 import { AgenticLoopService } from './agenticLoop.service';
+import { SpecExtractorAgent } from './spec-extractor.agent';
 import { SseEmitter } from './sse.emitter';
 import { Action, AgentRunOptions, PlannerOutput } from './types/agent.types';
 import { annotateExplicitOverwriteConfirmation } from '../excel-ai/utils/overwrite-confirmation.util';
 import { annotateClearIntentOverwrite } from './utils/clear-intent-overwrite.util';
 import { pruneSpuriousAddSheetActions } from './utils/compound-action.util';
-import { createUsageAccumulator } from './utils/usage-accumulator.util';
+import { createUsageAccumulator, UsageTotals } from './utils/usage-accumulator.util';
+import { checkPlanIntegrity } from './utils/plan-integrity.util';
 import { LlmCallTelemetry } from '../excel-ai/services/openrouter.service';
 
 export interface OrchestratorRunResult {
@@ -59,7 +61,73 @@ export class OrchestratorService {
   constructor(
     private readonly planner: PlannerAgent,
     private readonly agenticLoop: AgenticLoopService,
+    @Optional() private readonly specExtractor?: SpecExtractorAgent,
   ) {}
+
+  /**
+   * Pins the user's own column lists onto the plan — LONG_PROMPT_RELIABILITY_PLAN.md
+   * Phase 1.
+   *
+   * TASKS.md #281 — a turn that answers a clarifying question sends only the
+   * short reply ("dd-mm-yyyy") as `prompt`; the ORIGINAL long request lives in
+   * `conversationHistory` (TASKS.md #259 already saves it there for the
+   * Planner's benefit). A live run showed the cost of feeding the raw short
+   * reply here instead: `shouldExtractBuildSpec`'s length/subtask-count gate
+   * saw a 10-character prompt and skipped Phase 1 entirely, and even if it
+   * hadn't, extraction itself would have had no column list to find in
+   * "dd-mm-yyyy" alone — so a resumed long build silently lost EVERY
+   * reliability protection built this session (Phase 1's header pinning,
+   * Phase 1.5's deterministic split) for that turn, and hit the same
+   * near-timeout the original session's live runs did. Reconstructing the
+   * turn's real prompt from prior user messages fixes both: the gate sees the
+   * true length, and extraction has the actual column list to ground against.
+   */
+  private async withBuildSpec(
+    prompt: string,
+    plan: PlannerOutput,
+    usageTotals: UsageTotals,
+    conversationHistory: NonNullable<AgentRunOptions['conversationHistory']> = [],
+  ): Promise<PlannerOutput> {
+    if (!this.specExtractor) return plan;
+    const priorUserText = conversationHistory
+      .filter((entry) => entry.role === 'user')
+      .map((entry) => entry.content)
+      .join('\n');
+    const effectivePrompt = priorUserText ? `${priorUserText}\n${prompt}` : prompt;
+    return this.specExtractor.attach(effectivePrompt, plan, usageTotals);
+  }
+
+  /**
+   * Phase 6 (TASKS.md #291) — a cheap, deterministic check that the plan is
+   * not already wrong, run BEFORE any Executor call is spent on it. Every
+   * other coverage net reasons from what the PLAN says; this one reasons from
+   * what the USER asked for, which is the gap #285 fell through.
+   */
+  private applyPlanIntegrityGate(
+    prompt: string,
+    plan: PlannerOutput,
+    context: AgentRunOptions['context'],
+  ): PlannerOutput {
+    const result = checkPlanIntegrity({ prompt, plan, context });
+
+    for (const violation of result.violations) {
+      const message = `Plan integrity (${violation.kind}): ${violation.detail}`;
+      if (violation.fatal) this.logger.error(message);
+      else this.logger.warn(message);
+    }
+    if (result.repaired.length > 0) {
+      this.logger.log(
+        `Plan integrity: recovered ${result.repaired.length} missing entit${
+          result.repaired.length === 1 ? 'y' : 'ies'
+        } before execution (${result.repaired.join(', ')}).`,
+      );
+    }
+    if (result.violations.length === 0) {
+      this.logger.log(`Plan integrity: ${plan.subtasks.length} step(s) passed pre-execution checks.`);
+    }
+
+    return result.plan;
+  }
 
   /**
    * Plan mode: run only the PlannerAgent and return its structured plan without
@@ -122,24 +190,30 @@ export class OrchestratorService {
     const usageTotals = createUsageAccumulator();
     try {
       emitter.send({ type: 'THINKING', message: 'Planning your request...' });
-      const plan = await this.planner.plan(
+      const plan = await this.withBuildSpec(
         opts.prompt,
-        opts.context,
-        opts.conversationHistory ?? [],
-        opts.promptContext,
-        this.resolveCorrelationId(opts.correlationId),
-        opts.routerAssumption,
-        opts.complexity,
+        await this.planner.plan(
+          opts.prompt,
+          opts.context,
+          opts.conversationHistory ?? [],
+          opts.promptContext,
+          this.resolveCorrelationId(opts.correlationId),
+          opts.routerAssumption,
+          opts.complexity,
+          usageTotals,
+          (summary) => emitter.send({ type: 'THINKING', message: summary }),
+        ),
         usageTotals,
-        (summary) => emitter.send({ type: 'THINKING', message: summary }),
+        opts.conversationHistory ?? [],
       );
 
-      const openQuestions = this.resolveOpenQuestions(plan);
-      const mustAsk = this.shouldBlockForClarification(plan);
+      const gatedPlan = this.applyPlanIntegrityGate(opts.prompt, plan, opts.context);
+      const openQuestions = this.resolveOpenQuestions(gatedPlan);
+      const mustAsk = this.shouldBlockForClarification(gatedPlan);
       if (mustAsk) {
         emitter.send({ type: 'CLARIFY', questions: openQuestions });
       }
-      return { plan, openQuestions, mustAsk };
+      return { plan: gatedPlan, openQuestions, mustAsk };
     } finally {
       this.applyUsageToTelemetry(telemetry, usageTotals);
     }
@@ -186,6 +260,7 @@ export class OrchestratorService {
           correlationId: this.resolveCorrelationId(opts.correlationId),
           toolEmit: opts.toolEmit,
           usageTotals,
+          abortSignal: opts.abortSignal,
         },
       );
 
@@ -235,6 +310,7 @@ export class OrchestratorService {
       complexity,
       onWaveComplete,
       precomputedPlan,
+      abortSignal,
     } = opts;
     const resolvedCorrelationId = this.resolveCorrelationId(correlationId);
     const usageTotals = createUsageAccumulator();
@@ -254,6 +330,7 @@ export class OrchestratorService {
         usageTotals,
         onWaveComplete,
         precomputedPlan,
+        abortSignal,
       );
     } finally {
       this.applyUsageToTelemetry(telemetry, usageTotals);
@@ -276,6 +353,7 @@ export class OrchestratorService {
     onWaveComplete: AgentRunOptions['onWaveComplete'],
     /** Already-planned output handed over by the stepwise gate — TASKS.md #196. */
     precomputedPlan?: PlannerOutput,
+    abortSignal?: AbortSignal,
   ): Promise<OrchestratorRunResult> {
     // A plan already computed by the stepwise gate is reused rather than
     // re-derived. `tryStartStepwiseRun` plans, finds a single wave, declines,
@@ -291,17 +369,23 @@ export class OrchestratorService {
     if (precomputedPlan) {
       plan = precomputedPlan;
     } else {
-      plan = await this.planner.plan(
+      plan = await this.withBuildSpec(
         prompt,
-        context,
-        conversationHistory,
-        promptContext,
-        resolvedCorrelationId,
-        routerAssumption,
-        complexity,
+        await this.planner.plan(
+          prompt,
+          context,
+          conversationHistory,
+          promptContext,
+          resolvedCorrelationId,
+          routerAssumption,
+          complexity,
+          usageTotals,
+          (summary) => emitter.send({ type: 'THINKING', message: summary }),
+        ),
         usageTotals,
-        (summary) => emitter.send({ type: 'THINKING', message: summary }),
+        conversationHistory,
       );
+      plan = this.applyPlanIntegrityGate(prompt, plan, context);
     }
 
     // Block ONLY when there is nothing to build — TASKS.md #171.
@@ -370,6 +454,7 @@ export class OrchestratorService {
       toolEmit,
       usageTotals,
       onWaveComplete,
+      abortSignal,
     });
 
     this.logger.log(
@@ -453,11 +538,41 @@ export class OrchestratorService {
     return [];
   }
 
-  /** Blocks ONLY when there is nothing to build, or the model doubts its reading. */
+  /**
+   * A large multi-step build (many sheets/tables/formulas) whose Planner still
+   * has open questions — TASKS.md #259. Deliberately a NARROW addition on top
+   * of #171's "don't block" rule, not a reversal of it: #171's regression was
+   * a 23-subtask plan thrown away over 2 side-questions the plan had ALREADY
+   * answered for itself with sensible defaults (placeholders, current year).
+   * Losing that plan was the actual mistake — not the act of asking.
+   *
+   * Chosen by the user after that exact tradeoff was explained: for a request
+   * this size (12 month sheets + dashboard + payment tracking is the live
+   * case that prompted this), getting bank/unit names wrong across ~150
+   * actions is expensive to redo, so asking once up front beats guessing and
+   * hoping the summary note gets read. Small/simple edits (few subtasks) are
+   * unaffected — they still never block, exactly as #171 intended.
+   */
+  private static readonly BIG_BUILD_SUBTASK_THRESHOLD = 6;
+
+  private isBigAmbiguousBuild(plan: PlannerOutput): boolean {
+    return (
+      plan.subtasks.length >= OrchestratorService.BIG_BUILD_SUBTASK_THRESHOLD &&
+      plan.clarificationsNeeded.length > 0
+    );
+  }
+
+  /**
+   * Blocks when there is nothing to build, the model doubts its reading, or
+   * (TASKS.md #259) this is a big build with real open questions — see
+   * `isBigAmbiguousBuild`'s docblock for why that last case is scoped
+   * narrowly rather than reverting #171 wholesale.
+   */
   private shouldBlockForClarification(plan: PlannerOutput): boolean {
     return (
       plan.confidence === 'low' ||
-      (plan.clarificationsNeeded.length > 0 && plan.subtasks.length === 0)
+      (plan.clarificationsNeeded.length > 0 && plan.subtasks.length === 0) ||
+      this.isBigAmbiguousBuild(plan)
     );
   }
 

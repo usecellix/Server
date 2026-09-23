@@ -10,6 +10,10 @@ import {
   ensureBudgetForReasoning,
   escalatedRetryBudget,
 } from '../utils/reasoning-budget.util';
+import {
+  backoffDelayMs,
+  classifyLlmError,
+} from '../../agents/utils/transient-llm-error.util';
 
 export type OpenRouterChatMessage = {
   role: 'system' | 'user' | 'assistant';
@@ -128,7 +132,52 @@ export class OpenRouterService {
     return Boolean(this.config.openRouterApiKey);
   }
 
-  async complete(opts: {
+  /**
+   * LONG_PROMPT_RELIABILITY_PLAN.md Phase 3 (TASKS.md #286) — retries a
+   * TRANSIENT provider fault with exponential backoff before surfacing it.
+   *
+   * The motivating failure is `OpenRouter could not verify available credits
+   * for this request in time. Retry shortly.`: a 402 that is a credit-CHECK
+   * timeout under concurrency, not an empty wallet, and which killed whole
+   * month-sheet waves across this session. Retrying here rather than in the
+   * agentic loop is deliberate — a retry at this level is invisible to the
+   * caller's iteration budget, so a provider hiccup can no longer consume the
+   * subtask retries reserved for genuine non-convergence.
+   *
+   * A permanent fault (auth, bad request, genuinely insufficient credit) is
+   * rethrown immediately, exactly as before.
+   */
+  async complete(opts: Parameters<OpenRouterService['completeOnce']>[0]): Promise<string> {
+    const maxAttempts = 3;
+    let lastError: unknown;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      try {
+        return await this.completeOnce(opts);
+      } catch (error: unknown) {
+        lastError = error;
+        const { transient, reason } = classifyLlmError(error);
+        if (!transient || attempt === maxAttempts) {
+          if (transient) {
+            this.logger.error(
+              `OpenRouter transient fault persisted after ${maxAttempts} attempts (${reason}) — giving up.`,
+            );
+          }
+          throw error;
+        }
+        const delay = backoffDelayMs(attempt);
+        this.logger.warn(
+          `OpenRouter transient fault (${reason}) — retrying in ${delay}ms ` +
+            `(attempt ${attempt}/${maxAttempts - 1} of retries).`,
+        );
+        await new Promise((resolve) => setTimeout(resolve, delay));
+      }
+    }
+
+    throw lastError;
+  }
+
+  private async completeOnce(opts: {
     systemPrompt: string;
     userMessage: string;
     model?: string;

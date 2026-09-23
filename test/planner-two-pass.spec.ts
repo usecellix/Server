@@ -109,8 +109,11 @@ describe('PlannerAgent — two-pass planning', () => {
     // 1 coarse call + 3 phase-expansion calls (one per phase) — never one
     // giant single-pass call describing all subtasks at once.
     expect(complete).toHaveBeenCalledTimes(4);
-    // 3 expanded + February cloned from January (repeatFor coverage, #229).
-    expect(plan.subtasks).toHaveLength(4);
+    // 3 expanded + February cloned from January (repeatFor coverage, #229),
+    // + a create for Lists: this fixture's Lists subtask says "Write lists"
+    // and nothing creates that sheet, so #262's target-sheet net adds one.
+    expect(plan.subtasks).toHaveLength(5);
+    expect(plan.subtasks.filter((s) => !s.id.startsWith('auto_'))).toHaveLength(4);
   });
 
   // TASKS.md #193 — the user asked for small, summarized progress updates
@@ -192,7 +195,14 @@ describe('PlannerAgent — two-pass planning', () => {
 
     const ids = plan.subtasks.map((s) => s.id);
     expect(new Set(ids).size).toBe(ids.length); // all unique
-    expect(ids).toEqual(['p1_s1', 'p1_s1_r2', 'p2_s1', 'p3_s1']);
+    // Phase-namespacing is what this test is about — #262's auto-added
+    // creates carry their own `auto_*` ids and are asserted elsewhere.
+    expect(ids.filter((id) => !id.startsWith('auto_'))).toEqual([
+      'p1_s1',
+      'p1_s1_r2',
+      'p2_s1',
+      'p3_s1',
+    ]);
   });
 
   it('wires a phase\'s subtasks (with no local dependsOn) to depend on the phases it declared as dependencies', async () => {
@@ -211,7 +221,14 @@ describe('PlannerAgent — two-pass planning', () => {
     const plan = await agent.plan(REAL_INCIDENT_PROMPT, emptyContext(), [], undefined, 'corr_4', undefined, 3);
 
     const p3Subtask = plan.subtasks.find((s) => s.id === 'p3_s1')!;
-    expect(p3Subtask.dependsOn.sort()).toEqual(['p1_s1', 'p1_s1_r2', 'p2_s1']);
+    // Phase wiring only — the extra `auto_*` dependency #262 adds (this
+    // fixture never creates the Lists sheet it writes to) is not what this
+    // test is pinning.
+    expect(p3Subtask.dependsOn.filter((d) => !d.startsWith('auto_')).sort()).toEqual([
+      'p1_s1',
+      'p1_s1_r2',
+      'p2_s1',
+    ]);
   });
 
   it('expands phases in dependency order, so a later phase sees an earlier phase\'s REAL subtask ids', async () => {
@@ -269,7 +286,7 @@ describe('PlannerAgent — two-pass planning', () => {
     expect(plan.subtasks[0].description).toBe('Do the whole thing');
   });
 
-  it('prunes a phase whose expansion depends on a phase that failed entirely, same as single-pass pruning', async () => {
+  it('RECOVERS a phase whose expansion failed entirely, rather than dropping it (TASKS.md #285)', async () => {
     const complete = jest
       .fn()
       .mockResolvedValueOnce(coarseResponse)
@@ -289,12 +306,22 @@ describe('PlannerAgent — two-pass planning', () => {
 
     const plan = await agent.plan(REAL_INCIDENT_PROMPT, emptyContext(), [], undefined, 'corr_8', undefined, 3);
 
-    // p1 failed and produced no subtasks; p2 and p3 (depending only on p2's
-    // real id, since p1 contributed nothing to stitch) still deliver.
+    // p2 and p3 deliver as before.
     const ids = plan.subtasks.map((s) => s.id);
     expect(ids).toContain('p2_s1');
     expect(ids).toContain('p3_s1');
-    expect(plan.clarificationsNeeded.some((c) => /could not plan/i.test(c))).toBe(true);
+
+    // TASKS.md #285 changed what happens to p1. It used to contribute NOTHING
+    // and raise a "could not plan" note — which a live run showed silently
+    // costing a build all twelve of its month sheets. Its repeatFor entries
+    // are now synthesized from the phase itself instead, so the sheets it was
+    // responsible for still get planned...
+    const sheets = plan.subtasks.map((s) => s.targetSheet);
+    expect(sheets).toContain('January');
+    expect(sheets).toContain('February');
+    // ...and the note telling the user to ask for that work again is gone,
+    // because the plan now actually contains it.
+    expect(plan.clarificationsNeeded.some((c) => /could not plan/i.test(c))).toBe(false);
   });
 });
 
@@ -350,9 +377,12 @@ describe('PlannerAgent — two-pass planning — coverage safety nets (TASKS.md 
     expect(sheets).toContain('Lists');
 
     // Main waits for every month, not just January — and its expansion call
-    // was told about all 12 month subtask ids.
-    const main = plan.subtasks.find((s) => s.targetSheet === 'Main')!;
-    expect(main.dependsOn).toHaveLength(12);
+    // was told about all 12 month subtask ids. Skip any `auto_*` create #262
+    // prepends for Main (which has no dependencies of its own, by design).
+    const main = plan.subtasks.find(
+      (s) => s.targetSheet === 'Main' && !s.id.startsWith('auto_'),
+    )!;
+    expect(main.dependsOn.filter((d) => !d.startsWith('auto_'))).toHaveLength(12);
     const mainCall = complete.mock.calls[2][0] as { userMessage: string };
     expect(mainCall.userMessage).toContain('p1_s1_r12');
 
@@ -418,7 +448,8 @@ describe('PlannerAgent — two-pass planning — same-sheet phase merge', () => 
     // call ever expands Main's build, so it can't duplicate itself.
     expect(complete).toHaveBeenCalledTimes(3);
     const ids = plan.subtasks.map((s) => s.id);
-    expect(ids).toEqual(['p1_s1', 'p1_s1_r2', 'p2_s1']);
+    // Phase merging only — `auto_*` creates (#262) are asserted elsewhere.
+    expect(ids.filter((id) => !id.startsWith('auto_'))).toEqual(['p1_s1', 'p1_s1_r2', 'p2_s1']);
   });
 
   it('does not merge repeatFor phases even if they share a representative targetSheet', async () => {
@@ -490,6 +521,7 @@ describe('PlannerAgent — two-pass planning — same-sheet phase merge', () => 
     // subtask still ends up depending on Main's real subtask ids.
     expect(complete).toHaveBeenCalledTimes(4);
     const notesSubtask = plan.subtasks.find((s) => s.id === 'p4_s1')!;
-    expect(notesSubtask.dependsOn).toEqual(['p2_s1']);
+    // Phase-id remapping only — `auto_*` creates (#262) are asserted elsewhere.
+    expect(notesSubtask.dependsOn.filter((d) => !d.startsWith('auto_'))).toEqual(['p2_s1']);
   });
 });

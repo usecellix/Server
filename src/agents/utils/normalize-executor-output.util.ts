@@ -10,6 +10,7 @@ import { annotateClearIntentOverwrite } from './clear-intent-overwrite.util';
 import { stripSheetPrefix } from './range-address.util';
 import { parseA1Cell, parseA1Range } from './range-merge.util';
 import { normalizeChartColorScheme } from './chart-color-scheme.util';
+import { resolveColumnWidthToPoints } from '../../excel-ai/utils/column-width.util';
 
 /** Action types that sanitizeAction requires integer row/col for. */
 const INDEX_RANGE_ACTION_TYPES = new Set<SheetActionType>([
@@ -139,6 +140,23 @@ export function normalizeSingleAction(
   if (typeof record.oldName === 'string') action.oldName = record.oldName;
   if (typeof record.newName === 'string') action.newName = record.newName;
   if (typeof record.name === 'string') action.name = record.name;
+  // TASKS.md #279 — ADD_SHEET/CREATE_SHEET's real field for the NEW sheet's
+  // name is `name` (client/src/engine/handlers/sheet.handler.ts reads only
+  // that), but line 110 above sets `sheetName` on every action unconditionally
+  // and this prompt's own generic "Set sheetName on actions" guidance points
+  // the model at exactly that field. A model that follows the generic
+  // guidance instead of ADD_SHEET's own schema emits `sheetName` with no
+  // `name` at all, and the client throws Office.js's generic "argument is
+  // invalid or missing" — a real live symptom, not hypothetical (frontend.log:
+  // 5 ADD_SHEET failures in one changeset, identical message). Only fills the
+  // gap; a model that DID emit `name` is untouched.
+  if (
+    (type === 'ADD_SHEET' || type === 'CREATE_SHEET') &&
+    !action.name &&
+    typeof action.sheetName === 'string'
+  ) {
+    action.name = action.sheetName;
+  }
   if (typeof record.tableName === 'string') action.tableName = record.tableName;
   if (typeof record.question === 'string') action.question = record.question;
   if (Array.isArray(record.options)) action.options = record.options.map(String);
@@ -239,6 +257,11 @@ export function normalizeSingleAction(
     if (typeof tableName === 'string') action.tableName = tableName.trim();
     action.hasHeaders =
       record.hasHeaders === undefined ? true : Boolean(record.hasHeaders);
+    // Unlike hasHeaders, this one must NOT be defaulted — an absent value has
+    // to reach the client absent so Excel keeps its own default. TASKS.md #268.
+    if (record.showFilterButton !== undefined) {
+      action.showFilterButton = Boolean(record.showFilterButton);
+    }
   }
 
   if (type === 'SORT_RANGE') {
@@ -559,6 +582,10 @@ export function normalizeSingleAction(
   }
   expandColumnLettersToIndices(action, record);
 
+  if (type === 'SET_COLUMN_WIDTH') {
+    clampColumnWidth(action);
+  }
+
   if (!hasRequiredFields(action)) return null;
 
   return action;
@@ -670,6 +697,44 @@ function expandRangeStringToIndices(action: SheetActionPayload): void {
  * address ("A1:B2") on a single-cell action resolves to its top-left, which is
  * the only cell such an action can mean.
  */
+/**
+ * TASKS.md #265 — `Range.format.columnWidth` (what the client's
+ * `handleWorksheetAction` writes SET_COLUMN_WIDTH's `width` into) is in
+ * POINTS, Excel's own unit, where the default column is ~48pt. The Executor
+ * prompt's schema examples disagreed with each other on this — one used 130
+ * (plausible points), the other 20 (a "character count" a literal user
+ * request happened to say) — with no unit stated either place. Live, the
+ * model reached for small numbers (12-22) styling a dashboard, which at 22pt
+ * is under half the DEFAULT column width: "Guest Name", "Rate Per Night" etc.
+ * all clipped down to a couple of characters, reading as broken/blank sheets.
+ *
+ * The first cut of this was a FLOOR (raise anything under 40 to 40) and that
+ * was not enough — TASKS.md #273. Telling the model to use points did not
+ * stop it reaching for character counts: a later live run emitted a sub-40
+ * value for all thirteen columns, so every one was floored to exactly 40 and
+ * the sheet came out uniformly cramped. A floor destroys the one thing the
+ * model got RIGHT — the relative sizing, a wide "Guest Name" against a narrow
+ * "Unit No" — by flattening every column to the same minimum.
+ *
+ * So convert rather than clamp. Excel's own character-width unit maps to
+ * pixels as `chars * MaxDigitWidth + 5` (MaxDigitWidth is 7px for the default
+ * Calibri 11), and pixels to points as `px * 0.75`. That round-trips the
+ * known default exactly: 8.43 chars -> 64px -> 48pt.
+ *
+ * Which unit a number is in is decided by the same boundary the floor used,
+ * and for the same reason: under ~40 POINTS is narrower than half a default
+ * column and unusable for real text, so such a value is far more likely a
+ * character count than a deliberate choice. Above it, the number is taken at
+ * its word. A deliberate sub-40pt spacer column is the one case this gets
+ * wrong — it would be widened — but the previous behaviour got that case
+ * wrong too (flattened to 40), and the common case is now right instead of
+ * merely legible.
+ */
+function clampColumnWidth(action: SheetActionPayload): void {
+  if (typeof action.width !== 'number') return;
+  action.width = resolveColumnWidthToPoints(action.width);
+}
+
 function expandCellAddressToIndices(action: SheetActionPayload): void {
   if (isValidIndex(action.row) && isValidIndex(action.col)) {
     return;

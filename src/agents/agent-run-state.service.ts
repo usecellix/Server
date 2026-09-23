@@ -38,6 +38,8 @@ export interface CreateRunInput {
   promptContext?: string;
   conversationHistory?: { role: 'user' | 'assistant'; content: string }[];
   routerAssumption?: string;
+  /** Probed host capabilities, persisted so later waves can read them — TASKS.md #269. */
+  excelCapabilities?: { dynamicArrays?: boolean };
 }
 
 /**
@@ -85,6 +87,7 @@ export class AgentRunStateService {
       promptContext: input.promptContext,
       conversationHistory: input.conversationHistory ?? [],
       routerAssumption: input.routerAssumption,
+      excelCapabilities: input.excelCapabilities,
       expiresAt: new Date(Date.now() + AGENT_RUN_TTL_MS),
     });
   }
@@ -95,6 +98,37 @@ export class AgentRunStateService {
    * runId is guessable enough that without it, holding one would be enough to
    * drive another user's build.
    */
+  /**
+   * The unfinished run for a conversation, if there is one — Phase 8 of
+   * LONG_PROMPT_RELIABILITY_PLAN.md (TASKS.md #293).
+   *
+   * A stepwise build spans several HTTP requests, and each one ends by handing
+   * control back to the client. If that client never comes back — the task pane
+   * lost its connection, Excel was closed, the machine slept — the run simply
+   * sits in `awaiting_decision` until its TTL expires, with its finished waves
+   * already applied and no way for anyone to continue it. Observed live: a run
+   * whose first wave had completed successfully was stranded with no route
+   * back, and the only option was to start the whole build again.
+   *
+   * Long builds are hit hardest for the obvious reason that they are long.
+   */
+  async findResumableRun(
+    conversationId: string,
+    userId?: string,
+  ): Promise<AgentRunDocument | null> {
+    const run = await this.agentRunModel
+      .findOne({ conversationId, status: { $in: ['awaiting_decision', 'running'] } })
+      .sort({ _id: -1 });
+
+    if (!run) return null;
+    // Same ownership discipline as `loadRunForUser`: a run recorded with an
+    // owner may only be resumed by that owner; one without predates auth
+    // wiring (or came from the eval-bypass path) and stays resumable.
+    if (run.userId && userId && run.userId !== userId) return null;
+    // Nothing left to do is not resumable, however the status reads.
+    return this.nextExecutableWave(run) ? run : null;
+  }
+
   async loadRunForUser(runId: string, userId?: string): Promise<AgentRunDocument> {
     const run = await this.agentRunModel.findOne({ runId });
     if (!run) {

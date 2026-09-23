@@ -39,14 +39,24 @@ BATCH_SET schema (write several cells at once — the efficient way to lay down 
 - If you are unsure of the exact addresses, emit individual SET_CELL actions instead;
   a correct SET_CELL beats a malformed BATCH_SET.
 
+FILL_DOWN schema (copy one cell's value/formula down into every row below it — "copy the formula in J2 down to J61"):
+{ "type": "FILL_DOWN", "sheetName": "Purchase Register", "sourceRange": "J2", "targetRange": "J3:J61" }
+- sourceRange is the ONE cell that already has the value/formula; targetRange is everywhere it gets copied TO — never include the source cell in targetRange.
+- Do NOT emit a single "range" spanning source+target (e.g. "J2:J61") — this schema needs the two split apart, not one combined span.
+
 CREATE_TABLE schema (a REAL Excel table that auto-expands when the user types below it):
-{ "type": "CREATE_TABLE", "sheetName": "January", "range": "A1:M50", "tableName": "tblJanuary", "hasHeaders": true, "style": "TableStyleMedium2" }
+{ "type": "CREATE_TABLE", "sheetName": "January", "range": "A1:M2", "tableName": "tblJanuary", "hasHeaders": true, "style": "TableStyleLight1", "showFilterButton": false }
 - tableName MUST have no spaces and be unique in the workbook
-- range covers the header row plus the initial data rows; the table grows on its own from there
+- range MUST cover the header row PLUS at least one data row ("A1:M2"), never the header alone ("A1:M1"). A header-only table has no data row, so a calculated column has nowhere to live and NOTHING computes when the user types under it — a live build shipped 12 month sheets that way and every Total Amount stayed blank.
+- Put each derived column's formula in that first data row (guarded, e.g. H2 =IF(OR(F2="",G2=""),"",F2*G2)). Excel turns it into the column's formula and applies it to every row typed afterwards — that propagation is the entire point of using a Table.
+- "showFilterButton": false on a data-ENTRY table. Excel otherwise puts a sort/filter dropdown on every header cell, which a live user read as unwanted "dropdowns in the header"; the intended dropdowns are DATA_VALIDATION ones in the data cells.
+- Prefer a LIGHT style ("TableStyleLight1"/"TableStyleLight8") for entry templates: a coloured header row and plain rows beneath. "TableStyleMedium*" adds banded row fills that read as heavy next to a clean sheet.
 - Emit AFTER the header row has been written, never before
 
 SET_COLUMN_WIDTH schema (deliberate widths — autofit collapses an empty template to header width):
 { "type": "SET_COLUMN_WIDTH", "sheetName": "January", "columns": ["A", "B"], "width": 130 }
+- width is in POINTS (Excel's own unit here, not a character count) — the default column is ~48pt, so anything under ~50 reads as a near-empty sliver with no room for real text
+- typical widths: short codes/dates/status ~60-70, names/amounts ~90-130, longer text (guest names, addresses) ~140-180
 
 HIDE_GRIDLINES schema (make a dashboard read as a document, not a spreadsheet):
 { "type": "HIDE_GRIDLINES", "sheetName": "Main" }
@@ -89,11 +99,12 @@ DELETE_MATCHING_ROWS schema (delete rows by CONDITION — "delete blank rows", "
 - Which rows match is resolved against the real cells when the change is applied, so you do NOT compute row numbers
 - NEVER answer a conditional delete with DELETE_ROW and a guessed row/rowCount — on a sheet with no matching rows that destroys real data. Use DELETE_ROW only when the user names explicit row NUMBERS ("delete row 7", "delete rows 10-12")
 
-SET_ROW_HEIGHT / SET_COLUMN_WIDTH schema (sizing — "set the height of rows 2 to 5 to 25", "make column B 20 wide"):
+SET_ROW_HEIGHT / SET_COLUMN_WIDTH schema (sizing — "set the height of rows 2 to 5 to 25", "make column B 90 points wide"):
 { "type": "SET_ROW_HEIGHT", "sheetName": "Purchase Register", "row": 1, "rowCount": 4, "height": 25 }
-{ "type": "SET_COLUMN_WIDTH", "sheetName": "Purchase Register", "col": 1, "colCount": 1, "width": 20 }
+{ "type": "SET_COLUMN_WIDTH", "sheetName": "Purchase Register", "col": 1, "colCount": 1, "width": 90 }
 - row/col are 0-BASED (row 2 in Excel is row: 1); rowCount/colCount cover the whole requested span
 - height/width are REQUIRED — an action without them is dropped before preview
+- height and width are both in POINTS. If the user states an explicit number ("make it 40 wide"), use exactly that number — do not rescale it. Only when YOU are choosing a width yourself (no number given), see the guidance above SET_COLUMN_WIDTH's first example: stay at or above ~50
 
 HIDE_ROW / UNHIDE_ROW schema (hide or reveal whole rows — "hide rows 5 to 10"):
 { "type": "HIDE_ROW", "sheetName": "Purchase Register", "row": 4, "rowCount": 6 }

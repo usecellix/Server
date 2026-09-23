@@ -52,11 +52,14 @@ describe('executor column/row action shapes (#215)', () => {
     });
 
     it('accepts a singular column field', () => {
+      // width kept above TASKS.md #265's 40pt readability floor — this test
+      // is about column-letter conversion, not the clamp (covered separately
+      // in normalize-executor-output.spec.ts).
       const action = normalizeSingleAction(
-        { type: 'SET_COLUMN_WIDTH', sheetName: 'Sheet1', column: 'C', width: 20 },
+        { type: 'SET_COLUMN_WIDTH', sheetName: 'Sheet1', column: 'C', width: 90 },
         'Sheet1',
       );
-      expect(action).toMatchObject({ col: 2, width: 20 });
+      expect(action).toMatchObject({ col: 2, width: 90 });
     });
 
     it('leaves an explicit col index alone', () => {

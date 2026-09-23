@@ -330,6 +330,8 @@ const INTENTIONAL_TRANSFORMS: Partial<Record<SheetActionType, string[]>> = {
   MOVE_RANGE: [],
   CREATE_TABLE: ['name'], // name mirrored into tableName
   ADD_ROW: [], // values/data mirrored
+  // width below the 40pt readability floor is raised — TASKS.md #265
+  SET_COLUMN_WIDTH: ['width'],
 };
 
 function deepEqualish(a: unknown, b: unknown): boolean {

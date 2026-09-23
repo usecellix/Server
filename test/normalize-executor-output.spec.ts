@@ -629,4 +629,154 @@ describe('normalizeExecutorOutput', () => {
       expect(result.droppedActions).toEqual([]);
     });
   });
+
+  /**
+   * TASKS.md #265 — `Range.format.columnWidth` is in POINTS (default column
+   * ~48pt), but the Executor prompt's own examples disagreed on the unit (130
+   * vs. 20), and the model reached for small "character count"-looking
+   * numbers styling a live dashboard: widths of 12-22 points made every
+   * header ("Guest Name", "Rate Per Night"...) clip down to 1-2 characters,
+   * reading as a blank/broken sheet.
+   */
+  describe('SET_COLUMN_WIDTH width clamp (TASKS.md #265)', () => {
+    /**
+     * TASKS.md #273 — this used to assert a flat floor (14 -> 40). A later
+     * live run emitted a sub-40 value for ALL THIRTEEN columns, so every one
+     * floored to exactly 40 and the sheet came out uniformly cramped: the
+     * floor destroyed the relative sizing the model had got right. The value
+     * is now read as a character count and converted, which both widens it
+     * and keeps a wide column wide.
+     */
+    it('converts a character-count width into points instead of flattening it', () => {
+      const result = normalizeExecutorOutput(
+        {
+          subtaskId: 's1',
+          actions: [{ type: 'SET_COLUMN_WIDTH', sheetName: 'January', col: 2, width: 14 }],
+        },
+        subtask,
+      );
+      expect(result.actions).toHaveLength(1);
+      // 14 chars -> 14*7+5 = 103px -> 77pt.
+      expect((result.actions[0] as { width: number }).width).toBe(77);
+    });
+
+    it("round-trips Excel's own default column width (8.43 chars is 48pt)", () => {
+      const result = normalizeExecutorOutput(
+        {
+          subtaskId: 's1',
+          actions: [{ type: 'SET_COLUMN_WIDTH', sheetName: 'January', col: 0, width: 8.43 }],
+        },
+        subtask,
+      );
+      expect((result.actions[0] as { width: number }).width).toBe(48);
+    });
+
+    it('preserves RELATIVE sizing — a wide name column stays wider than a narrow code column', () => {
+      const result = normalizeExecutorOutput(
+        {
+          subtaskId: 's1',
+          actions: [
+            { type: 'SET_COLUMN_WIDTH', sheetName: 'January', col: 0, width: 8 },
+            { type: 'SET_COLUMN_WIDTH', sheetName: 'January', col: 2, width: 22 },
+          ],
+        },
+        subtask,
+      );
+      const [unitNo, guestName] = result.actions as unknown as Array<{ width: number }>;
+      expect(guestName.width).toBeGreaterThan(unitNo.width);
+      // The exact failure being fixed: these must NOT both be 40.
+      expect(unitNo.width).not.toBe(guestName.width);
+    });
+
+    it('still floors a degenerate tiny count that converts below readability', () => {
+      const result = normalizeExecutorOutput(
+        {
+          subtaskId: 's1',
+          actions: [{ type: 'SET_COLUMN_WIDTH', sheetName: 'January', col: 2, width: 2 }],
+        },
+        subtask,
+      );
+      expect((result.actions[0] as { width: number }).width).toBe(40);
+    });
+
+    it('leaves an already-reasonable width untouched', () => {
+      const result = normalizeExecutorOutput(
+        {
+          subtaskId: 's1',
+          actions: [{ type: 'SET_COLUMN_WIDTH', sheetName: 'January', col: 2, width: 130 }],
+        },
+        subtask,
+      );
+      expect((result.actions[0] as { width: number }).width).toBe(130);
+    });
+
+    it('does not touch width on an unrelated action type', () => {
+      // width is a generic optional scalar copied onto every action type —
+      // the clamp must only fire for SET_COLUMN_WIDTH.
+      const result = normalizeExecutorOutput(
+        {
+          subtaskId: 's1',
+          actions: [
+            { type: 'BATCH_SET', sheetName: 'January', operations: [{ address: 'A1', value: 1 }], width: 5 },
+          ],
+        },
+        subtask,
+      );
+      expect((result.actions[0] as { width?: number }).width).toBe(5);
+    });
+
+    it('leaves a missing or non-numeric width for sanitizeAction to reject, rather than inventing one', () => {
+      const result = normalizeExecutorOutput(
+        {
+          subtaskId: 's1',
+          actions: [{ type: 'SET_COLUMN_WIDTH', sheetName: 'January', col: 2 }],
+        },
+        subtask,
+      );
+      expect((result.actions[0] as { width?: number }).width).toBeUndefined();
+    });
+  });
+
+  /**
+   * Live incident (TASKS.md #279): frontend.log showed 5 ADD_SHEET actions in
+   * one changeset throwing "RichApi.Error: The argument is invalid or missing
+   * or has an incorrect format." — the client handler
+   * (sheet.handler.ts:handleAddSheet) reads only `action.name` for the new
+   * sheet's name, but the model, following this normalizer's own generic
+   * "sheetName" convention used by every other action type, sometimes emits
+   * ADD_SHEET with `sheetName` and no `name` at all.
+   */
+  describe('ADD_SHEET/CREATE_SHEET name fallback (TASKS.md #279)', () => {
+    it('falls back to sheetName when the model omits name entirely', () => {
+      const result = normalizeExecutorOutput(
+        { subtaskId: 's1', actions: [{ type: 'ADD_SHEET', sheetName: 'May' }] },
+        subtask,
+      );
+      expect((result.actions[0] as { name?: string }).name).toBe('May');
+    });
+
+    it('does the same for CREATE_SHEET', () => {
+      const result = normalizeExecutorOutput(
+        { subtaskId: 's1', actions: [{ type: 'CREATE_SHEET', sheetName: 'May' }] },
+        subtask,
+      );
+      expect((result.actions[0] as { name?: string }).name).toBe('May');
+    });
+
+    it('leaves an explicit name untouched — never overrides a correct emission', () => {
+      const result = normalizeExecutorOutput(
+        { subtaskId: 's1', actions: [{ type: 'ADD_SHEET', sheetName: 'May', name: 'June' }] },
+        subtask,
+      );
+      expect((result.actions[0] as { name?: string }).name).toBe('June');
+    });
+
+    it('never applies the fallback to other action types (sheetName means something else there)', () => {
+      const result = normalizeExecutorOutput(
+        { subtaskId: 's1', actions: [{ type: 'SET_CELL', sheetName: 'May', address: 'A1', value: 1 }] },
+        subtask,
+      );
+      expect((result.actions[0] as { name?: string }).name).toBeUndefined();
+    });
+  });
 });

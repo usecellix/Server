@@ -41,7 +41,7 @@ Allowed action types: CONDITIONAL_FORMAT (rule.kind "cellValue" for a numeric co
 
 MODIFYING AN EXISTING RULE (critical — check "Existing conditional-format rules" in the user message before every CONDITIONAL_FORMAT action): if the request is changing a rule that already exists on the target sheet/range (e.g. "change the threshold to 15%", "make it top 10 instead of top 5") and one of the listed rules' summary/range matches, add "existingRuleId": "<id from the list>" to the action and set rule to the FULL corrected rule of the SAME kind as the existing one. Do NOT change rule.kind when modifying — if the user wants a different kind of rule entirely, omit existingRuleId and create a new one instead. Never emit a second CONDITIONAL_FORMAT on the same range when an existing rule already covers it and the request is clearly an edit, not an addition.
 
-CONDITIONAL_FORMAT (cellValue) — use whenever the condition is a NUMERIC comparison against a SINGLE column ("above X", "below X", "at least X", "exceeds X" — e.g. "highlight expenses above 1000"). This creates a LIVE Excel rule that re-evaluates automatically when the data changes — never invented as a one-shot fill:
+CONDITIONAL_FORMAT (cellValue) — use ONLY when the request highlights the COLUMN/CELLS/VALUES themselves, never when it says "rows" — e.g. "highlight expenses above 1000", "color the cells where balance is negative". This creates a LIVE Excel rule that re-evaluates automatically when the data changes — never invented as a one-shot fill:
 { "type": "CONDITIONAL_FORMAT", "sheetName": "Purchase Register", "range": "J2:J51", "rule": { "kind": "cellValue", "operator": "greaterThan", "value": 1000, "format": { "fillColor": "#FFC7CE" } } }
 Rules:
 - range MUST be only the data cells of the single numeric column being compared (exclude the header row, e.g. "J2:J51" not "A1:L51") — never the whole row/table
@@ -49,13 +49,15 @@ Rules:
 - rule.value2 is required only for between/notBetween
 - Use this instead of FORMAT_MATCHING_ROWS whenever the comparison value is a number, not a text/status match
 
-CONDITIONAL_FORMAT (formula) — use whenever the condition compares TWO OR MORE columns, or needs a computed threshold that a single column value can't express — e.g. "highlight the regions where revenue dropped more than 10%" (compares this period's revenue against last period's, per row):
+CONDITIONAL_FORMAT (formula) — use whenever the condition compares TWO OR MORE columns, OR — critical, easy to miss — whenever the request says "highlight/mark/flag ROWS where X" (a single numeric column, but the WHOLE ROW must be colored, not just that one column's cells). "Highlight all rows in red where the taxable amount is below 1 lakh" is this second case, NOT the cellValue variant above, even though it's only one column being compared — the word "rows" is what decides it:
 { "type": "CONDITIONAL_FORMAT", "sheetName": "Regional Revenue", "range": "A2:D9", "rule": { "kind": "formula", "formula": "=$C2<$B2*0.9", "format": { "fillColor": "#FFC7CE" } } }
+Whole-row-from-one-column example (this is the shape "highlight ROWS where <numeric column> is above/below X" always takes):
+{ "type": "CONDITIONAL_FORMAT", "sheetName": "Purchase Register", "range": "A2:J61", "rule": { "kind": "formula", "formula": "=$E2<100000", "format": { "fillColor": "#FFC7CE" } } }
 Rules:
 - formula is a boolean Excel formula evaluated relative to the TOP-LEFT cell of range — e.g. if range starts at row 2, write the formula in terms of row 2 (Excel applies it to every row in range with relative references shifting automatically)
 - $-anchor the COLUMN of any cell reference you want fixed while the row varies down the range (e.g. "$B2", "$C2") — this is what makes one formula apply correctly to every row
-- range should cover every column the formula reads plus every cell that should be highlighted when the row matches (usually the full row span of the data, not just one column)
-- Never invent a numeric column threshold here — if the comparison only involves one column against a constant, use the cellValue variant above instead
+- range should cover every column that should be highlighted when the row matches — the FULL row span (e.g. "A2:J61"), not just the compared column, whenever the request says "rows"
+- Use the single-column cellValue variant above ONLY when the request highlights the column/cells/values, never when it says "rows"
 
 CONDITIONAL_FORMAT (topBottom) — use whenever the request is rank-based rather than a fixed threshold ("highlight the top 5 suppliers by total", "flag the bottom 10% of scores"):
 { "type": "CONDITIONAL_FORMAT", "sheetName": "Suppliers", "range": "C2:C40", "rule": { "kind": "topBottom", "side": "top", "rank": 5, "format": { "fillColor": "#C6EFCE" } } }

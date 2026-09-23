@@ -7,11 +7,9 @@ import { SheetActionType } from '../excel-ai/types/sheet-actions.types';
  *
  * Deliberately NOT derived from `virtual-apply-catalog.ts`'s `simulated` flag, even though
  * the two look related. `simulated: true` only means "the shadow workbook's cell state
- * reflects this action's effect" — it does not mean a *correct* inverse exists. Three
- * types expose the gap directly:
- *   - RENAME_SHEET is `simulated: true`, but a rename isn't a cell-value change at all —
- *     the generic cell-diff machinery would misread the old sheet name's cells as entirely
- *     deleted and the new sheet name's cells as entirely new, producing a nonsense revert.
+ * reflects this action's effect" — it does not mean a *correct* inverse exists. Two
+ * types still expose the gap directly (RENAME_SHEET no longer does — TASKS.md #255 gave
+ * it a real structural inverse, the same shape ADD_SHEET/DELETE_SHEET already had):
  *   - COPY_SHEET is `simulated: true`, but its "revert" (via the generic cell-level path)
  *     would only clear the copy's cell values — it never removes the sheet itself,
  *     leaving a phantom empty sheet behind. The same class of bug TASKS.md #13 fixed for
@@ -88,12 +86,11 @@ export const REVERSIBILITY_CATALOG: Record<SheetActionType, ReversibilityCatalog
       'Revert-only inverse of CREATE_TABLE (not advertised to the Executor — see action-catalog.ts). If ever applied as a forward action directly, nothing captures the original range/style needed to recreate the table.',
   },
 
-  // ---- Simulated but genuinely NOT revertible today — the gap this catalog exists to catch ----
-  RENAME_SHEET: {
-    reversible: false,
-    reason:
-      "A rename isn't a cell-value change — the generic cell-diff would treat the old sheet name's cells as deleted and the new name's cells as newly created, producing an incorrect revert rather than renaming back.",
-  },
+  // TASKS.md #255 — now has a real structural inverse (captureStructuralOps
+  // reads oldName/newName straight off the action, no cell diffing involved)
+  // instead of relying on the generic cell-diff path, which could never work
+  // for a rename (no CellChange is ever produced by one).
+  RENAME_SHEET: { reversible: true },
   MOVE_SHEET: {
     reversible: false,
     reason:

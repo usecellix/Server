@@ -51,10 +51,23 @@ describe('every advertised action type survives finalizeActions (#215)', () => {
     UNHIDE_COLUMN: { type: 'UNHIDE_COLUMN', sheetName: 'S', col: 8, colCount: 1 },
     SET_COLUMN_WIDTH: { type: 'SET_COLUMN_WIDTH', sheetName: 'S', col: 1, width: 20 },
     FORMAT_RANGE: { type: 'FORMAT_RANGE', sheetName: 'S', row: 1, col: 0, rowCount: 30, colCount: 9, format: { bold: true } },
-    FILL_DOWN: { type: 'FILL_DOWN', sheetName: 'S', row: 1, col: 4, rowCount: 30 },
+    // TASKS.md #258 — the shape a model actually reaches for unprompted
+    // ("copy the formula in J2 down to J61" -> a single `range`), not the
+    // row/col/rowCount shape the OLD sanitizeAction case (wrongly) checked
+    // and this fixture used to assert against — that agreement between a
+    // buggy implementation and a buggy fixture is exactly why the bug went
+    // uncaught. The client's real FILL_DOWN handler needs sourceRange/
+    // targetRange, never row/col at all.
+    FILL_DOWN: { type: 'FILL_DOWN', sheetName: 'S', range: 'E2:E31' } as never,
     FILL_RIGHT: { type: 'FILL_RIGHT', sheetName: 'S', row: 1, col: 4, colCount: 3 },
     MERGE_CELLS: { type: 'MERGE_CELLS', sheetName: 'S', row: 1, col: 0, rowCount: 1, colCount: 3 },
-    UNMERGE_CELLS: { type: 'UNMERGE_CELLS', sheetName: 'S', row: 1, col: 0, rowCount: 1, colCount: 3 },
+    // row: 0 (not 1) is deliberate — TASKS.md #258's live repro was "unmerge
+    // ALL merged cells in this sheet", which naturally spans the whole used
+    // range starting at row 0. The previous row: 1 fixture never touched the
+    // header-mutation guard's row===0 check at all, so it could not have
+    // caught the bug that guard actually had (UNMERGE_CELLS missing from the
+    // MERGE_CELLS exemption a few lines above it in conversation-engine.service.ts).
+    UNMERGE_CELLS: { type: 'UNMERGE_CELLS', sheetName: 'S', row: 0, col: 0, rowCount: 31, colCount: 9 },
     CLEAR_CONTENT: { type: 'CLEAR_CONTENT', sheetName: 'S', row: 1, col: 0, rowCount: 30, colCount: 9 },
     CLEAR_FORMAT: { type: 'CLEAR_FORMAT', sheetName: 'S', row: 1, col: 0, rowCount: 30, colCount: 9 },
     SORT_RANGE: { type: 'SORT_RANGE', sheetName: 'S', range: 'A1:I31', key: 1, ascending: true, hasHeaders: true },
@@ -97,5 +110,39 @@ describe('every advertised action type survives finalizeActions (#215)', () => {
     const sample = SAMPLES[type];
     const finalized = engine.finalizeActions([sample], analysis, undefined, 'do the thing');
     expect(finalized.map((action) => action.type)).toContain(type);
+  });
+
+  /**
+   * TASKS.md #258 — the it.each above only checks the type survived, not that
+   * the RIGHT fields came out — which is exactly how FILL_DOWN's bug hid:
+   * it "survived" with row/col attached, fields the client handler silently
+   * ignores, so the action looked fine here and did nothing real in Excel.
+   */
+  it('derives sourceRange/targetRange from a single range string (the shape models actually emit for "copy X down to Y")', () => {
+    const finalized = engine.finalizeActions(
+      [{ type: 'FILL_DOWN', sheetName: 'S', range: 'J2:J61' } as never],
+      analysis,
+      undefined,
+      'Copy the formula in J2 down to J61',
+    );
+    expect(finalized).toEqual([
+      expect.objectContaining({
+        type: 'FILL_DOWN',
+        sourceRange: 'J2',
+        targetRange: 'J3:J61',
+      }),
+    ]);
+  });
+
+  it('leaves an already-correct sourceRange/targetRange pair untouched', () => {
+    const finalized = engine.finalizeActions(
+      [{ type: 'FILL_DOWN', sheetName: 'S', sourceRange: 'J2', targetRange: 'J3:J61' } as never],
+      analysis,
+      undefined,
+      'do the thing',
+    );
+    expect(finalized).toEqual([
+      expect.objectContaining({ sourceRange: 'J2', targetRange: 'J3:J61' }),
+    ]);
   });
 });

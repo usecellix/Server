@@ -36,13 +36,16 @@ describe('reversibility-catalog (TASKS.md #18)', () => {
     }
   });
 
-  it('does NOT mark RENAME_SHEET/COPY_SHEET/DEFINE_NAMED_RANGE reversible despite being shadow-simulated', () => {
+  it('does NOT mark COPY_SHEET/DEFINE_NAMED_RANGE reversible despite being shadow-simulated', () => {
     // These are the exact gap this catalog exists to catch — see the file's own
     // header comment for why `virtual-apply-catalog.ts`'s `simulated: true` is not
     // an equivalent signal.
-    expect(REVERSIBILITY_CATALOG.RENAME_SHEET.reversible).toBe(false);
     expect(REVERSIBILITY_CATALOG.COPY_SHEET.reversible).toBe(false);
     expect(REVERSIBILITY_CATALOG.DEFINE_NAMED_RANGE.reversible).toBe(false);
+  });
+
+  it('DOES mark RENAME_SHEET reversible — captureStructuralOps reads old/new names straight off the action, no cell diffing needed (TASKS.md #255)', () => {
+    expect(REVERSIBILITY_CATALOG.RENAME_SHEET.reversible).toBe(true);
   });
 
   it('marks the base CREATE_CHART entry reversible, and DELETE_CHART irreversible as a revert-only synthetic action (TASKS.md #15)', () => {
@@ -70,10 +73,10 @@ describe('reversibility-catalog (TASKS.md #18)', () => {
       const result = computeIrreversibleActionTypes([
         'SET_CELL',
         'FREEZE_PANES',
-        'RENAME_SHEET',
+        'COPY_SHEET',
         'FREEZE_PANES',
       ]);
-      expect(result.sort()).toEqual(['FREEZE_PANES', 'RENAME_SHEET']);
+      expect(result.sort()).toEqual(['COPY_SHEET', 'FREEZE_PANES']);
     });
 
     it('fails closed on an unknown/unlisted type rather than assuming it is safe', () => {

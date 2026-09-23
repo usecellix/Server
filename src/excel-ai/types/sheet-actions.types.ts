@@ -281,6 +281,8 @@ export interface SheetActionPayload {
   name?: string;
   tableName?: string;
   hasHeaders?: boolean;
+  /** CREATE_TABLE: false hides the per-header filter dropdowns — TASKS.md #268. */
+  showFilterButton?: boolean;
   style?: string;
   sourceSheetName?: string;
   chartType?: string;

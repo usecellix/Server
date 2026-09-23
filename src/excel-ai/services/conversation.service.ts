@@ -15,7 +15,12 @@ import {
   ConversationDocument,
   ConversationMessageEntry,
 } from '../schemas/conversation.schema';
-import { endSseResponse, initSseResponse, writeSseEvent } from '../utils/sse.util';
+import {
+  createRequestAbortSignal,
+  endSseResponse,
+  initSseResponse,
+  writeSseEvent,
+} from '../utils/sse.util';
 import { AuditService } from '../../audit/audit.service';
 import {
   getComplexityTieringMode,
@@ -23,6 +28,12 @@ import {
 } from '../utils/complexity-tiering-flag.util';
 import { ChangeSetService } from '../../audit/change-set.service';
 import { buildWorkbookSourceRefsFromActions } from '../../audit/utils/provenance.util';
+import {
+  describeReconcileGaps,
+  reconcileRun,
+  ReconcileResult,
+} from '../../agents/utils/reconcile.util';
+import { buildPlanSummary } from '../../agents/utils/plan-summary.util';
 import { ChangeSetRecord } from '../../audit/types/change-set.types';
 import { ActionWave, splitIntoActionWaves } from '../utils/action-wave.util';
 import { classifyIntent, detectAmbiguity } from '../llm/ambiguity-detector';
@@ -59,6 +70,8 @@ import {
 import { modeIsReadOnly, normalizeAssistantMode, stripWriteActions } from '../utils/mode-guard.util';
 import { PlannerOutput } from '../../agents/types/agent.types';
 import { buildStatusMessage } from '../utils/status-message.util';
+import { applyConsolidationPass } from '../utils/consolidation-pass.util';
+import { SheetActionPayload } from '../types/sheet-actions.types';
 import { tryDeterministicTableCreate } from '../utils/table-request.util';
 import { routeShortcutAction, buildShortcutAnswer } from '../utils/shortcut-router.util';
 import {
@@ -2468,10 +2481,17 @@ export class ConversationService {
     );
 
     if (mustAsk) {
+      // TASKS.md #259 — same reasoning as streamWithOrchestrator's identical
+      // fix: save the real question text so the resuming turn's planner
+      // context knows what it's resolving, not just that something was asked.
+      const questionText =
+        openQuestions.length > 0
+          ? openQuestions.map((q) => q.trim()).join(' ')
+          : 'I need a bit more information before building this — could you clarify?';
       await this.saveMessage(opts.conversationId, {
         id: `msg_${Date.now()}_assistant`,
         role: 'assistant',
-        content: '[Clarification needed]',
+        content: questionText,
         type: 'clarification',
         timestamp: new Date(),
       });
@@ -2507,6 +2527,9 @@ export class ConversationService {
       promptContext: opts.promptContext,
       conversationHistory: opts.conversationHistory,
       routerAssumption: opts.routerAssumption,
+      // Only this first request carries them; /continue has no such field.
+      // TASKS.md #269.
+      excelCapabilities: opts.request.excelCapabilities,
     });
 
     this.logger.log(
@@ -2528,6 +2551,23 @@ export class ConversationService {
       opts.emit('status', {
         message: `Proceeding under an assumption — ${openQuestions[0]}`,
       });
+    }
+
+    // LONG_PROMPT_RELIABILITY_PLAN.md Phase 5 (TASKS.md #288) — say what a big
+    // build is about to do before it starts. Sent as `status`, NOT the `plan`
+    // event, for precisely the reason the note above gives: `plan` is the Plan
+    // MODE contract and renders a "Run as Action" button that makes no sense
+    // mid-build. This is one informational line, and deliberately not a
+    // question — what goes wrong on these builds is scale, not ambiguity, and
+    // every question added to this path has cost more than it bought.
+    const planSummary = buildPlanSummary(plan.subtasks);
+    if (planSummary) {
+      opts.emit('status', { message: planSummary.text });
+      this.logger.log(
+        `Stepwise run ${run.runId} plan summary: ${planSummary.sheetCount} sheet(s), ` +
+          `${planSummary.subtaskCount} subtask(s) (${planSummary.llmSubtaskCount} needing a model call), ` +
+          `~${planSummary.estimatedMinutes} min.`,
+      );
     }
 
     await this.executeStepwiseWave(run, opts.reply, opts.emit, opts.sseEmitter, opts.telemetry);
@@ -2555,6 +2595,12 @@ export class ConversationService {
 
     await this.agentRunState.markStatus(run, 'running');
 
+    // Fires when THIS request's connection closes (client disconnect/"Stop").
+    // Each stepwise wave is its own HTTP request, so a fresh signal per wave
+    // is exactly right — without it, stopping mid-wave left the backend
+    // running that wave's Executor/verifier calls to completion regardless.
+    const abortSignal = createRequestAbortSignal(reply);
+
     // Everything earlier waves produced, so this wave's Executor and shadow
     // workbook see the sheets those waves created (SD-1).
     const priorActions = run.subtaskStates
@@ -2578,6 +2624,7 @@ export class ConversationService {
         complexity: 3,
         waveSubtasks: next.subtasks,
         priorActions,
+        abortSignal,
       },
       sseEmitter,
       telemetry,
@@ -2638,6 +2685,51 @@ export class ConversationService {
             ? `Note: 1 of ${next.subtasks.length} planned steps in this batch produced no changes — ${missing[0].reason.slice(0, 110)}`
             : `Note: ${missing.length} of ${next.subtasks.length} planned steps in this batch produced no changes (e.g. ${missing[0].reason.slice(0, 90)})`,
       });
+    }
+
+    // TASKS.md #269 — make a consolidated table actually consolidate on the
+    // STEPWISE path too.
+    //
+    // `applyConsolidationPass` (#142) exists precisely for the symptom a live
+    // user reported again here — "when i write the guest name and date ... it
+    // wont reflect in the main sheet" — but it only ever ran inside
+    // `finalizeActions`, which this path never calls: `executeStepwiseWave`
+    // hands its raw actions straight to `createPreview`. So every large build
+    // (the only kind that goes stepwise) shipped a consolidated header that
+    // stayed empty forever.
+    //
+    // It cannot run on this wave's actions alone: `planConsolidation` needs
+    // the month-sheet CREATEs and their header rows to be in the same batch as
+    // Main's consolidated header, and stepwise splits those across waves by
+    // construction. So it runs over the accumulated run — prior waves plus
+    // this one — and only the actions it APPENDS are added here (the pass is
+    // documented append-only, so anything past the input length is new).
+    const accumulated = [
+      ...priorActions.flatMap((entry) => entry.actions),
+      ...waveResult.actions,
+    ] as SheetActionPayload[];
+    const consolidationAppended = applyConsolidationPass(accumulated, {
+      dynamicArrays: run.excelCapabilities?.dynamicArrays,
+    }).slice(accumulated.length);
+    // Guard against re-emitting on every later wave once the pattern is
+    // detectable: if an earlier wave already wrote to the same target cell,
+    // this wave must not write it again.
+    const newConsolidation = consolidationAppended.filter(
+      (candidate) =>
+        !accumulated.some(
+          (existing) =>
+            existing.type === candidate.type &&
+            existing.sheetName === candidate.sheetName &&
+            existing.row === candidate.row &&
+            existing.col === candidate.col,
+        ),
+    );
+    if (newConsolidation.length > 0) {
+      waveResult.actions.push(...(newConsolidation as typeof waveResult.actions));
+      this.logger.log(
+        `Stepwise run ${run.runId} wave ${next.waveIndex}: consolidation pass appended ` +
+          `${newConsolidation.length} action(s) so Main reflects the month sheets.`,
+      );
     }
 
     const changeSet = await this.changeSetService.createPreview({
@@ -2702,6 +2794,24 @@ export class ConversationService {
       changeSet.changes.length,
     );
 
+    // TASKS.md #267 — every OTHER path that emits an 'actions' SSE event also
+    // persists a matching message (`metadata.actions`/`changeSetId`) so
+    // `messagesToTurns` can rebuild the card on reload. This stepwise path
+    // never did, for any wave, in any run — a completed multi-wave build
+    // (exactly what a large "12 sheets + dashboard" request produces) showed
+    // its cards live over SSE and then vanished entirely on reopening the
+    // conversation from history: `GET /conversation/:id` returned only the
+    // original user message, so the rebuilt turn had a tab label and zero
+    // blocks. Save one message per wave, in step with the live SSE card.
+    await this.saveMessage(run.conversationId, {
+      id: `msg_${Date.now()}_assistant`,
+      role: 'assistant',
+      content: label,
+      type: 'answer',
+      timestamp: new Date(),
+      metadata: this.buildWriteMetadata(waveResult.actions, changeSet.changeSetId),
+    });
+
     // The stream ends here but the RUN does not — this is what tells the client
     // to accept and then call /continue, rather than treating the build as done.
     emit('wave_ready', {
@@ -2715,23 +2825,135 @@ export class ConversationService {
   }
 
   /** Closes out a run whose waves are all decided, reporting skips honestly. */
+  /**
+   * Applies Phase 4's deterministic repairs as one final acceptable change set
+   * — TASKS.md #287. Modelled on the per-wave emit above so the client renders
+   * and accepts it through exactly the same path; a repair the user cannot see
+   * or reject would be a worse cure than the disease.
+   */
+  private async emitReconciliationWave(
+    run: AgentRunDocument,
+    repairActions: SheetActionPayload[],
+    emit: (event: string, data: Record<string, unknown>) => void,
+  ): Promise<void> {
+    try {
+      const changeSet = await this.changeSetService.createPreview({
+        conversationId: run.conversationId,
+        traceId: run.traceId,
+        prompt: run.prompt,
+        context: run.context as AgentWorkbookContext,
+        actions: repairActions,
+        provenance: {
+          sourceRefs: buildWorkbookSourceRefsFromActions(
+            repairActions,
+            run.context.activeSheetName || 'workbook',
+            run.context.activeSheetName,
+          ),
+          workbookId: run.context.activeSheetName || 'workbook',
+          activeSheetName: run.context.activeSheetName,
+        },
+      });
+
+      const label = this.describeProgressiveWave(repairActions);
+      const previousChangeSetId = run.changeSetIds[run.changeSetIds.length - 1];
+
+      emit('actions', {
+        actions: repairActions,
+        explanation: label,
+        userFacingSummary: buildUserFacingSummary({
+          answer: label,
+          actions: repairActions,
+          changes: changeSet.changes,
+          activeSheetName: run.context.activeSheetName,
+          planSubtasks: [],
+        }),
+        changeSetId: changeSet.changeSetId,
+        changes: changeSet.changes,
+        irreversibleActionTypes: changeSet.irreversibleActionTypes,
+        tier: 3,
+        stepLabel: label,
+        stepwise: true,
+        runId: run.runId,
+        ...(previousChangeSetId ? { dependsOnChangeSetId: previousChangeSetId } : {}),
+      });
+
+      run.changeSetIds.push(changeSet.changeSetId);
+      await run.save();
+
+      await this.saveMessage(run.conversationId, {
+        id: `msg_${Date.now()}_assistant`,
+        role: 'assistant',
+        content: label,
+        type: 'answer',
+        timestamp: new Date(),
+        metadata: this.buildWriteMetadata(repairActions, changeSet.changeSetId),
+      });
+    } catch (error) {
+      // A failed repair must never take the finished build down with it — the
+      // gaps are still reported in the summary either way.
+      this.logger.warn(
+        `Stepwise run ${run.runId}: reconciliation wave could not be emitted: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  }
+
   private async finishStepwiseRun(
     run: AgentRunDocument,
     reply: FastifyReply,
     emit: (event: string, data: Record<string, unknown>) => void,
   ): Promise<void> {
     const skipped = this.agentRunState.summarizeSkipped(run);
+
+    // LONG_PROMPT_RELIABILITY_PLAN.md Phase 4 (TASKS.md #287) — before telling
+    // the user this is done, diff what the run actually built against what its
+    // own plan said it would. Every failure this session chased ended the same
+    // way: "✓ Applied" over a workbook missing sheets, missing header rows, or
+    // carrying formulas pointing at sheets nobody created. This checks the
+    // OUTCOME, so it catches the next such cause too, whatever it turns out
+    // to be. Repairs are deterministic only; anything else is reported.
+    let reconciliation: ReconcileResult = { gaps: [], repairActions: [] };
+    try {
+      const appliedActions = (run.subtaskStates ?? [])
+        .filter((state) => state.completed)
+        .flatMap((state) => (state.actions ?? []) as SheetActionPayload[]);
+      reconciliation = reconcileRun({
+        subtasks: run.subtasks,
+        appliedActions,
+        preExistingSheets: (run.context?.sheets ?? []).map((sheet) => sheet.name),
+      });
+    } catch (error) {
+      // Never let the safety net become the thing that breaks the build.
+      this.logger.warn(
+        `Stepwise run ${run.runId}: reconciliation could not run: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+    if (reconciliation.gaps.length > 0) {
+      this.logger.warn(
+        `Stepwise run ${run.runId} reconciliation found ${reconciliation.gaps.length} gap(s): ` +
+          reconciliation.gaps.map((gap) => `${gap.kind}:${gap.sheet}`).join(', '),
+      );
+    }
+    if (reconciliation.repairActions.length > 0) {
+      await this.emitReconciliationWave(run, reconciliation.repairActions, emit);
+    }
+
     await this.agentRunState.markStatus(run, 'completed');
     await this.markCompleted(run.conversationId);
 
     // An incomplete build reported as complete is the false-completeness
     // failure CODEBASE_ANALYSIS.md §3.7 keeps re-teaching — say what was left.
-    const summary =
+    const gapNote = describeReconcileGaps(reconciliation.gaps);
+    const baseSummary =
       skipped.length === 0
         ? 'All steps applied.'
         : skipped.length === 1
           ? `Done — 1 step was not applied: ${skipped[0].description}`
           : `Done — ${skipped.length} steps were not applied (e.g. ${skipped[0].description})`;
+    const summary = gapNote ? `${baseSummary} ${gapNote}` : baseSummary;
 
     if (run.userId) {
       // CREDIT_SYSTEM.md CD-3 — debit ONCE for the whole run, here, since
@@ -2762,6 +2984,17 @@ export class ConversationService {
       // an accepted, rare timing artifact, not a reason to withhold the
       // already-applied build from the user.
     }
+
+    // TASKS.md #267 — closes out the run's history the same way the one-shot
+    // path's final answer message does; without this the reloaded thread
+    // ended on the last wave's card with no closing text at all.
+    await this.saveMessage(run.conversationId, {
+      id: `msg_${Date.now()}_assistant`,
+      role: 'assistant',
+      content: summary,
+      type: 'answer',
+      timestamp: new Date(),
+    });
 
     emit('conversation_end', {
       summary,
@@ -2864,6 +3097,10 @@ export class ConversationService {
     const telemetry: LlmCallTelemetry = { provider: 'openrouter', modelTier: 'high' };
     let success = false;
     let actionsCount: number | undefined;
+    // Fires when the client disconnects/aborts (e.g. "Stop") — threaded down
+    // into the agentic loop so a cancelled run stops burning LLM calls instead
+    // of running every remaining wave to completion against a dead response.
+    const abortSignal = createRequestAbortSignal(reply);
 
     const richWorkbookContext = resolveWorkbookContext(request, analysis, request.sheetData);
     const agentContext = buildAgentWorkbookContext(
@@ -3020,6 +3257,7 @@ export class ConversationService {
           routerAssumption,
           complexity: complexity ?? 3,
           onWaveComplete: progressive.onWaveComplete,
+          abortSignal,
         },
         sseEmitter,
         // Populates telemetry.usage/model from the real Planner+Executor+Verifier
@@ -3030,10 +3268,20 @@ export class ConversationService {
       const rawActions = orchestratorResult.actions;
 
       if (orchestratorResult.clarificationRequested) {
+        // TASKS.md #259 — store the REAL question text, not a placeholder.
+        // The old '[Clarification needed]' string told the planner nothing on
+        // the resuming turn; conversationHistory would show only that plus
+        // the user's short answer, with no way to know what was actually
+        // asked. Saving the question(s) here means the next planner.plan()
+        // call sees exactly what it needs to resolve the answer against.
+        const questionText =
+          orchestratorResult.openQuestions.length > 0
+            ? orchestratorResult.openQuestions.map((q) => q.trim()).join(' ')
+            : 'I need a bit more information before building this — could you clarify?';
         await this.saveMessage(conversationId, {
           id: `msg_${Date.now()}_assistant`,
           role: 'assistant',
-          content: '[Clarification needed]',
+          content: questionText,
           type: 'clarification',
           timestamp: new Date(),
         });
@@ -3477,6 +3725,12 @@ export class ConversationService {
       this.logger.warn(
         `Orchestrator failed trace=${traceId} conversation=${conversationId} durationMs=${Date.now() - startedAt} error="${this.clipForLog(message, 300)}"`,
       );
+      // The message alone is not enough to locate a thrown TypeError — a live
+      // "name.trim is not a function" could have come from any of several
+      // helpers, and this log was the only record of it. TASKS.md #263.
+      if (error instanceof Error && error.stack) {
+        this.logger.warn(`Orchestrator failure stack: ${this.clipForLog(error.stack, 1200)}`);
+      }
       // End the SSE stream cleanly — do not rethrow. Rethrowing after parallel
       // LLM aborts can surface as unhandled TypeError("terminated") and crash nodemon.
       emit('error', {
@@ -4167,6 +4421,34 @@ export class ConversationService {
     if (doc.expiresAt && doc.expiresAt.getTime() < Date.now()) {
       throw new GoneException('CONVERSATION_EXPIRED');
     }
+    // Phase 8 (TASKS.md #293) — a stepwise build spans several requests, and a
+    // client that never came back leaves one stranded mid-build with its
+    // finished waves already applied. Surfacing it here is what lets the panel
+    // offer to carry on instead of making the user rebuild from scratch.
+    let resumableRun: { runId: string; waveIndex: number; waveTotal: number } | undefined;
+    try {
+      const run = await this.agentRunState.findResumableRun(conversationId, userId);
+      if (run) {
+        resumableRun = {
+          runId: run.runId,
+          // The wave the user would be continuing FROM, 1-based for display.
+          waveIndex: run.waveIndex + 2,
+          waveTotal: run.waveTotal,
+        };
+        this.logger.log(
+          `Conversation ${conversationId} has a resumable run ${run.runId} ` +
+            `(wave ${run.waveIndex + 2} of ${run.waveTotal}).`,
+        );
+      }
+    } catch (error) {
+      // Never let this cost someone their conversation history.
+      this.logger.warn(
+        `Could not check for a resumable run on ${conversationId}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+
     return {
       conversationId: doc.conversationId,
       messages: doc.messages ?? [],
@@ -4175,6 +4457,7 @@ export class ConversationService {
       workbookId: doc.workbookId,
       sheetSnapshot: doc.sheetSnapshot,
       updatedAt: (doc as { updatedAt?: Date }).updatedAt ?? doc.expiresAt,
+      ...(resumableRun ? { resumableRun } : {}),
     };
   }
 

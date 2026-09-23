@@ -94,6 +94,32 @@ export interface SubTask {
   estimatedActions: number;
   /** Optional nudge toward a native action type (e.g. COPY_FILTERED_RANGE). */
   suggestedActionType?: string;
+  /**
+   * Column headers the USER spelled out for this subtask's sheet, verbatim and
+   * in order — set by `applyBuildSpecToSubtasks` (Phase 1 of
+   * LONG_PROMPT_RELIABILITY_PLAN.md) and enforced by SpecConformanceChecker.
+   * Persists with the run because `subtasks` is stored as-is.
+   */
+  expectedHeaders?: string[];
+  /**
+   * Set by `splitSpecPinnedSubtasks` — this subtask's actions (create sheet +
+   * header row + table) are built entirely by code from `expectedHeaders`,
+   * with no Executor/LLM call at all. `agenticLoop.service.ts` short-circuits
+   * on this flag; `ComputedColumnChecker` exempts it (its formula, if any,
+   * belongs to the dependent subtask this one was split from).
+   */
+  isDeterministicHeaderStep?: boolean;
+  /**
+   * The FULL header row this step must build — the user's columns plus any
+   * computed ones the planner interleaved — resolved ONCE at split time from
+   * the original subtask's description. TASKS.md #292.
+   *
+   * Carried explicitly because the split gives the header step a short,
+   * synthesized description of its own; re-deriving the row from THAT at
+   * execution time silently falls back to the narrower `expectedHeaders`, so
+   * the table gets built narrower than the rest step was told it would be.
+   */
+  resolvedHeaderRow?: string[];
 }
 
 export interface PlannerOutput {
@@ -214,4 +240,11 @@ export interface AgentRunOptions {
    * reference to. TASKS.md #196.
    */
   precomputedPlan?: PlannerOutput;
+  /**
+   * Fires when the client disconnects or aborts (e.g. the "Stop" button) —
+   * checked between execution waves so a cancelled run stops burning LLM
+   * calls/time instead of running to completion against a response nobody
+   * is reading anymore.
+   */
+  abortSignal?: AbortSignal;
 }

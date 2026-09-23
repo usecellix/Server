@@ -443,6 +443,26 @@ export function captureStructuralOps(
       continue;
     }
 
+    // TASKS.md #255 — a rename isn't a cell-value change at all, so the
+    // generic cell-diff path (which this used to fall back to, producing NO
+    // usable inverse — RENAME_SHEET has no `changes`, ever) can never revert
+    // it. Read the names directly off the action instead of diffing shadows;
+    // nothing about a rename requires inspecting cell content.
+    if (action.type === 'RENAME_SHEET') {
+      // Matches virtualApply.ts's own field-reading precedence exactly:
+      // `sheetName` is an alias for the OLD name there, not the new one.
+      const oldName = action.sheetName ?? action.oldName;
+      const newName = action.newSheetName ?? action.newName;
+      if (!newName || !oldName) continue;
+      ops.push({
+        opType: 'RENAME_SHEET',
+        sheetName: newName,
+        params: { oldName },
+        appliedAt: new Date(),
+      });
+      continue;
+    }
+
     if (action.type === 'DELETE_SHEET') {
       const sheetName = action.sheetName;
       if (!sheetName) continue;
@@ -673,6 +693,13 @@ export function structuralOpsToInverseActions(
   for (const op of [...ops].reverse()) {
     if (op.opType === 'ADD_SHEET') {
       post.push({ type: 'DELETE_SHEET', sheetName: op.sheetName } as Action);
+      continue;
+    }
+
+    if (op.opType === 'RENAME_SHEET') {
+      const oldName = op.params.oldName as string;
+      // op.sheetName is the POST-rename (new) name — swap back.
+      post.push({ type: 'RENAME_SHEET', sheetName: op.sheetName, newSheetName: oldName } as Action);
       continue;
     }
 
