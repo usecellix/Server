@@ -10,8 +10,12 @@ import {
   parseBuildSpec,
   shouldExtractBuildSpec,
 } from './utils/build-spec.util';
-import { splitSpecPinnedSubtasks } from './utils/header-table-split.util';
+import {
+  relaxConsolidationDependencies,
+  splitSpecPinnedSubtasks,
+} from './utils/header-table-split.util';
 import { addUsage, UsageTotals } from './utils/usage-accumulator.util';
+import { replaceDashboardSubtasks } from './utils/dashboard-builder.util';
 
 const SPEC_SYSTEM_PROMPT = `You extract the column lists a user explicitly wrote in a spreadsheet request.
 
@@ -86,9 +90,35 @@ export class SpecExtractorAgent {
     // hitting "max iterations" or timing out running completely ALONE — not a
     // concurrency problem, a per-subtask workload problem.
     const subtasks = splitSpecPinnedSubtasks(pinned);
+    // TASKS.md #309 — a dashboard needs the month sheets to EXIST, not to be
+    // finished. Depending on each month’s optional tail meant one month
+    // failing to converge gated the dashboard off entirely: two of this
+    // session’s smoke runs delivered twelve good month sheets and no Main.
+    const { subtasks: relaxedSubtasks, relaxed } = relaxConsolidationDependencies(subtasks);
+    // TASKS.md #327 — once the month sheets' header row is known, the
+    // dashboard is fully determined; build it by code instead of the model,
+    // which got Main wrong a different way on every live run.
+    const dashboard = replaceDashboardSubtasks(relaxedSubtasks);
+    const ordered = dashboard.subtasks;
+    if (dashboard.shape) {
+      this.logger.log(
+        `Dashboard '${dashboard.shape.dashboardSheet}' built deterministically over ` +
+          `${dashboard.shape.sourceSheets.length} sheet(s) (total column ${dashboard.shape.totalColumn}, ` +
+          `status column ${dashboard.shape.statusColumn ?? 'none'}); replaced ${dashboard.replaced.length} ` +
+          `planned subtask(s): ${dashboard.replaced.join(', ')}`,
+      );
+    }
+    if (relaxed.length > 0) {
+      this.logger.log(
+        `Relaxed ${relaxed.length} consolidation dependenc(ies) onto the deterministic ` +
+          `header steps: ${relaxed
+            .map((edge) => `${edge.consumer}: ${edge.from} -> ${edge.to}`)
+            .join(', ')}`,
+      );
+    }
     this.logger.log(
       `Build spec: ${spec.sheets.length} sheet group(s), ${stamped}/${plan.subtasks.length} subtask(s) pinned to the user's columns, ${subtasks.length - plan.subtasks.length} deterministic header/table step(s) split out`,
     );
-    return { ...plan, subtasks };
+    return { ...plan, subtasks: ordered };
   }
 }

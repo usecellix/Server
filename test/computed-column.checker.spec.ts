@@ -1,5 +1,5 @@
 import { ComputedColumnChecker } from '../src/agents/checkers/computed-column.checker';
-import { SubTask } from '../src/agents/types/agent.types';
+import { Action, SubTask } from '../src/agents/types/agent.types';
 
 /**
  * TASKS.md #270 — the live failure this exists to catch: the month sheets got
@@ -164,5 +164,91 @@ describe('ComputedColumnChecker', () => {
     expect(result.passed).toBe(false);
     expect(result.subtaskResults[0].issues).toHaveLength(1);
     expect(result.subtaskResults[0].issues[0].description).toContain('December');
+  });
+});
+
+/**
+ * TASKS.md #298 — the blindness Phase 1.5's split introduced here.
+ *
+ * Before the split, one subtask wrote the headers AND the formulas, so
+ * `collectWrittenHeaders` could see a "Total Amount" header and demand a
+ * formula from the same subtask. After the split the header row is written by
+ * the deterministic step (exempt, correctly) and the formulas belong to the
+ * "rest" step — which writes no headers at all, so this checker collected
+ * nothing and had no opinion on the one subtask whose job the formulas now
+ * are. A live run shipped April with validations, formats and widths and zero
+ * formulas, `completed: true`, and every net in the pipeline passed it.
+ */
+describe('ComputedColumnChecker — a split rest step (TASKS.md #298)', () => {
+  const checker = new ComputedColumnChecker();
+  const HEADERS = ['Unit No', 'Guest', 'Check In', 'Check Out', 'Nights', 'Total Amount'];
+
+  const restStep = (sheet: string): SubTask => ({
+    id: `p2_${sheet}`,
+    targetSheet: sheet,
+    dependsOn: [`hdr_${sheet}`],
+    estimatedActions: 20,
+    description: `Add formulas, validation and widths to '${sheet}'`,
+    resolvedHeaderRow: HEADERS,
+  });
+
+  it('fails the April shape: formats and widths, no formula, no headers of its own', () => {
+    const result = checker.check([
+      {
+        subtask: restStep('April'),
+        actions: [
+          { type: 'DATA_VALIDATION', sheetName: 'April', range: 'I2:I500', values: ['Paid'] },
+          { type: 'FORMAT_RANGE', sheetName: 'April', range: 'A1:M1', bold: true },
+          { type: 'SET_COLUMN_WIDTH', sheetName: 'April', col: 0, width: 80 },
+        ] as unknown as Action[],
+      },
+    ]);
+
+    expect(result.passed).toBe(false);
+    expect(result.issues.some((i) => i.description.includes('Total Amount'))).toBe(true);
+  });
+
+  it('passes the same step once it writes its formula', () => {
+    const result = checker.check([
+      {
+        subtask: restStep('March'),
+        actions: [
+          { type: 'SET_FORMULA', sheetName: 'March', row: 1, col: 5, formula: '=E2*D2' },
+          { type: 'SET_COLUMN_WIDTH', sheetName: 'March', col: 0, width: 80 },
+        ] as unknown as Action[],
+      },
+    ]);
+
+    expect(result.passed).toBe(true);
+  });
+
+  it('a rest step whose pinned row is all input columns is not failed', () => {
+    // The false positive that would cost a real retry on correct work.
+    const result = checker.check([
+      {
+        subtask: {
+          ...restStep('Lists'),
+          resolvedHeaderRow: ['Guest', 'Bank Account', 'Rate Per Night', 'Source'],
+        },
+        actions: [
+          { type: 'SET_COLUMN_WIDTH', sheetName: 'Lists', col: 0, width: 80 },
+        ] as unknown as Action[],
+      },
+    ]);
+
+    expect(result.passed).toBe(true);
+  });
+
+  it('the deterministic header step itself stays exempt (TASKS.md #280)', () => {
+    const result = checker.check([
+      {
+        subtask: { ...restStep('July'), id: 'hdr_July', isDeterministicHeaderStep: true },
+        actions: [
+          { type: 'ADD_SHEET', name: 'July', sheetName: 'July' },
+        ] as unknown as Action[],
+      },
+    ]);
+
+    expect(result.passed).toBe(true);
   });
 });

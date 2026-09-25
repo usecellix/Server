@@ -319,6 +319,92 @@ export function ensureTargetSheetsCreated(
   };
 }
 
+
+export interface WriterOrderingResult {
+  plan: PlannerOutput;
+  /** `writerId -> creatorId` edges added, for the log. */
+  added: Array<{ writer: string; creator: string; sheet: string }>;
+}
+
+/**
+ * Every subtask that writes to a sheet must run AFTER the subtask that creates
+ * it. TASKS.md #299.
+ *
+ * `ensureTargetSheetsCreated` above only fires when NOTHING creates the sheet.
+ * When something does, nothing until now forced the other writers to depend on
+ * it — and `computeExecutionWaves` schedules purely on `dependsOn` edges, so
+ * without that edge a writer can land in the same wave as the creator, or an
+ * earlier one. A live smoke run built Main correctly (its creator emitted
+ * ADD_SHEET first, exactly as planned) and still emitted SET_CELL,
+ * FORMAT_RANGE, BATCH_SET and SET_COLUMN_WIDTH against Main ahead of it: in a
+ * real workbook that is the "The requested resource doesn't exist" failure at
+ * Accept that made Accept look dead.
+ *
+ * Deliberately conservative: an edge is added only when the sheet does not
+ * already exist in the workbook, the creator is a different subtask, no
+ * dependency path already orders them, and the edge cannot close a cycle.
+ * Leaving a writer unordered is recoverable; a cycle would strand the run.
+ */
+export function ensureWritersDependOnCreator(
+  plan: PlannerOutput,
+  context: WorkbookContext,
+): WriterOrderingResult {
+  if (plan.subtasks.length === 0) return { plan, added: [] };
+
+  const preExisting = new Set(context.sheets.map((s) => normalizeSheet(s.name)));
+  const byId = new Map(plan.subtasks.map((s) => [s.id, s]));
+
+  /** Whether `fromId` already reaches `toId` through dependsOn edges. */
+  const reaches = (fromId: string, toId: string): boolean => {
+    const seen = new Set<string>();
+    const stack = [fromId];
+    while (stack.length > 0) {
+      const current = stack.pop() as string;
+      if (current === toId) return true;
+      if (seen.has(current)) continue;
+      seen.add(current);
+      const node = byId.get(current);
+      if (node) stack.push(...node.dependsOn);
+    }
+    return false;
+  };
+
+  // The creator of each sheet: the subtask whose description says it creates
+  // it, preferring one that also targets it.
+  const creatorOf = new Map<string, string>();
+  for (const subtask of plan.subtasks) {
+    const sheet = subtask.targetSheet?.trim();
+    if (!sheet || preExisting.has(normalizeSheet(sheet))) continue;
+    if (!describesSheetCreation(subtask.description, sheet)) continue;
+    if (!creatorOf.has(normalizeSheet(sheet))) creatorOf.set(normalizeSheet(sheet), subtask.id);
+  }
+  if (creatorOf.size === 0) return { plan, added: [] };
+
+  const added: Array<{ writer: string; creator: string; sheet: string }> = [];
+  const extra = new Map<string, string[]>();
+
+  for (const subtask of plan.subtasks) {
+    const sheet = subtask.targetSheet?.trim();
+    if (!sheet) continue;
+    const creator = creatorOf.get(normalizeSheet(sheet));
+    if (!creator || creator === subtask.id) continue;
+    if (subtask.dependsOn.includes(creator)) continue;
+    if (reaches(subtask.id, creator)) continue; // already ordered, indirectly
+    // The creator depending on this writer would make the new edge a cycle.
+    if (reaches(creator, subtask.id)) continue;
+
+    extra.set(subtask.id, [...(extra.get(subtask.id) ?? []), creator]);
+    added.push({ writer: subtask.id, creator, sheet });
+  }
+
+  if (added.length === 0) return { plan, added: [] };
+
+  const subtasks = plan.subtasks.map((s) =>
+    extra.has(s.id) ? { ...s, dependsOn: [...s.dependsOn, ...(extra.get(s.id) as string[])] } : s,
+  );
+  return { plan: { ...plan, subtasks }, added };
+}
+
 /**
  * A last-resort plan for a phase whose expansion produced NOTHING — TASKS.md #285.
  *
@@ -351,4 +437,61 @@ export function synthesizeSubtasksForEmptyPhase(phase: PlanPhase): SubTask[] {
       `Create sheet '${entry}' and build it as described: ${phase.kind}` +
       (entries.length > 1 ? ` (this is the '${entry}' one of ${entries.length}).` : '.'),
   }));
+}
+
+/**
+ * A description the model shortened into a stub — TASKS.md #271. Keyed on the
+ * elision marker, not length alone: "Hide the Lists sheet" is terse but whole,
+ * "Write headers..." is the model signalling it left content out.
+ */
+export function isElidedDescription(description: string | undefined): boolean {
+  const text = (description ?? '').trim();
+  if (text.length === 0) return true;
+  return text.length < 60 && /(\.\.\.|…)\s*$/.test(text);
+}
+
+/** True when enough of these subtasks are stubs that the batch as a whole was elided. */
+export function isElidedBatch(subtasks: SubTask[]): boolean {
+  if (subtasks.length === 0) return false;
+  const stubs = subtasks.filter((s) => isElidedDescription(s.description)).length;
+  return stubs > 0 && stubs / subtasks.length >= 0.3;
+}
+
+/**
+ * In a repeatFor phase, drop the subtasks of any entry whose descriptions were
+ * elided, as long as some OTHER entry came back whole — so
+ * `ensureRepeatForCoverage` re-creates the dropped entries from that whole
+ * sibling with the entry name substituted. Twelve month sheets share one
+ * schema, so a whole February is exactly what an elided March should have
+ * said. TASKS.md #325.
+ */
+export function dropElidedRepeatEntries(
+  phase: PlanPhase,
+  subtasks: SubTask[],
+): { subtasks: SubTask[]; dropped: string[] } {
+  const entries = phase.repeatFor ?? [];
+  if (entries.length < 2) return { subtasks, dropped: [] };
+
+  const entryOf = (s: SubTask) =>
+    entries.find((e) => normalizeSheet(e) === normalizeSheet(s.targetSheet));
+  const elidedEntries = new Set<string>();
+  const wholeEntries = new Set<string>();
+  for (const s of subtasks) {
+    const entry = entryOf(s);
+    if (!entry) continue;
+    if (isElidedDescription(s.description)) elidedEntries.add(entry);
+    else wholeEntries.add(entry);
+  }
+  // An entry is only replaceable when ALL its subtasks are stubs; a mixed
+  // entry keeps its whole parts rather than being swapped for a sibling's.
+  for (const entry of wholeEntries) elidedEntries.delete(entry);
+  if (elidedEntries.size === 0 || wholeEntries.size === 0) return { subtasks, dropped: [] };
+
+  return {
+    subtasks: subtasks.filter((s) => {
+      const entry = entryOf(s);
+      return !entry || !elidedEntries.has(entry);
+    }),
+    dropped: [...elidedEntries],
+  };
 }

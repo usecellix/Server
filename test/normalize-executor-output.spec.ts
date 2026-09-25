@@ -583,6 +583,40 @@ describe('normalizeExecutorOutput', () => {
       ]);
     });
 
+    // TASKS.md #322 — live: the model emitted `operations: [28]` (the COUNT of
+    // the writes it meant) for Main's Monthly Totals. It passed as non-empty,
+    // the subtask "completed", and rows 4–10 were never written.
+    it.each([
+      ['a bare count', [28]],
+      ['strings instead of objects', ['A4', 'B4']],
+      ['an op naming no cell', [{ value: 'Month' }]],
+      ['an op writing nothing', [{ address: 'A4' }]],
+      ['one good op mixed with a bad one', [{ address: 'A4', value: 'Month' }, 14]],
+    ])('drops a BATCH_SET whose operations are not cell writes: %s', (_label, operations) => {
+      const result = normalizeExecutorOutput(
+        { subtaskId: 's1', actions: [{ type: 'BATCH_SET', sheetName: 'Main', operations }] },
+        subtask,
+      );
+
+      expect(result.actions).toHaveLength(0);
+      expect(result.droppedActions).toEqual([
+        { rawType: 'BATCH_SET', reason: 'missing-required-fields' },
+      ]);
+    });
+
+    it('keeps a BATCH_SET whose operations use row/col instead of an address', () => {
+      const result = normalizeExecutorOutput(
+        {
+          subtaskId: 's1',
+          actions: [
+            { type: 'BATCH_SET', sheetName: 'Main', operations: [{ row: 3, col: 0, value: 'Month' }] },
+          ],
+        },
+        subtask,
+      );
+      expect(result.actions).toHaveLength(1);
+    });
+
     it('drops a BATCH_SET with an empty operations array', () => {
       const result = normalizeExecutorOutput(
         { subtaskId: 's1', actions: [{ type: 'BATCH_SET', sheetName: 'Main', operations: [] }] },

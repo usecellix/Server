@@ -1,4 +1,4 @@
-import { Action, SubTask } from '../types/agent.types';
+import { Action, isDeterministicStep, SubTask } from '../types/agent.types';
 import { buildHeaderTableActions, resolveHeaderRow } from './header-table-split.util';
 import { findHeaderMismatches } from './build-spec.util';
 import { isPlausibleSheetName } from './sheet-name.util';
@@ -24,7 +24,8 @@ export type ReconcileGapKind =
   | 'missing-sheet'
   | 'missing-header-row'
   | 'header-mismatch'
-  | 'dangling-reference';
+  | 'dangling-reference'
+  | 'derived-column-no-formula';
 
 export interface ReconcileGap {
   kind: ReconcileGapKind;
@@ -131,6 +132,126 @@ function referencedSheets(action: Action): string[] {
     }
   }
   return [...names];
+}
+
+/**
+ * Header labels that are a calculation rather than something the user types.
+ * Deliberately the same conservative list `ComputedColumnChecker` uses — a
+ * false positive here would report a correct build as broken.
+ */
+const DERIVED_HEADER_PATTERNS: RegExp[] = [
+  /^nights?$/,
+  /^total[ ]*(amount|amt|value|price|cost)$/,
+  /^(balance[ ]*(due)?|amount[ ]*due|outstanding)$/,
+  /^days?[ ]*overdue$/,
+  /^gross[ ]*(pay|salary|amount)$/,
+  /^(line|row)[ ]*total$/,
+  /^sub[ ]*total$/,
+];
+
+function isDerivedHeader(label: string): boolean {
+  const normalized = label.trim().toLowerCase().split(/[ ]+/).join(' ');
+  return DERIVED_HEADER_PATTERNS.some((pattern) => pattern.test(normalized));
+}
+
+/** Whether any action wrote a formula onto this sheet below the header row. */
+function sheetHasFormula(actions: Action[], sheet: string): boolean {
+  const target = key(sheet);
+  return actions.some((action) => {
+    const record = action as unknown as Record<string, unknown>;
+    if (key(String(record.sheetName ?? '')) !== target) return false;
+    if (typeof record.formula === 'string' && record.formula.trim().startsWith('=')) return true;
+    // FILL_DOWN propagates a formula rather than carrying one.
+    if (action.type === 'FILL_DOWN') return true;
+    if (Array.isArray(record.operations)) {
+      return (record.operations as Array<Record<string, unknown>>).some(
+        (op) => typeof op.formula === 'string' && op.formula.trim().startsWith('='),
+      );
+    }
+    return false;
+  });
+}
+
+/**
+ * A formula a SIBLING sheet already carries for the same column, retargeted to
+ * this sheet. TASKS.md #310.
+ *
+ * Not a guess, and that distinction is the whole justification: eleven months
+ * built the identical column with the identical formula, so the twelfth is not
+ * being invented — it is being copied, exactly as Phase 2 clones a template's
+ * accepted actions. When there is no sibling to copy from, this returns null
+ * and the gap stays reported rather than filled, because THAT would be a
+ * guess.
+ */
+function siblingFormulaFor(
+  actions: Action[],
+  sheet: string,
+  column: number,
+  headerRowOf: (candidate: string) => string[],
+  derivedHeader: string,
+): { formula: string; row: number } | null {
+  const target = key(sheet);
+
+  for (const action of actions) {
+    const record = action as unknown as Record<string, unknown>;
+    const candidate = String(record.sheetName ?? '').trim();
+    if (!candidate || key(candidate) === target) continue;
+
+    // The sibling must hold this column in the SAME position, otherwise the
+    // formula's own relative references would land on different data.
+    const siblingRow = headerRowOf(candidate);
+    const at = siblingRow.findIndex((label) => normalizeHeader(label) === normalizeHeader(derivedHeader));
+    if (at === -1 || at + 1 !== column) continue;
+
+    for (const candidateFormula of formulasAt(action, column)) {
+      return { formula: candidateFormula.formula, row: candidateFormula.row };
+    }
+  }
+  return null;
+}
+
+const normalizeHeader = (value: string): string =>
+  value.trim().toLowerCase().split(/[ ]+/).join(' ');
+
+/** Formulas this action writes into the given 1-based column, below row 1. */
+function formulasAt(action: Action, column: number): Array<{ formula: string; row: number }> {
+  const record = action as unknown as Record<string, unknown>;
+  const out: Array<{ formula: string; row: number }> = [];
+
+  if (Array.isArray(record.operations)) {
+    for (const op of record.operations as Array<Record<string, unknown>>) {
+      const text = op.formula;
+      if (typeof text !== 'string' || !text.startsWith('=')) continue;
+      const at = parseCellAddress(String(op.address ?? ''));
+      if (at && at.row > 1 && at.col === column) out.push({ formula: text, row: at.row });
+    }
+  }
+
+  if (typeof record.formula === 'string' && record.formula.startsWith('=')) {
+    const raw = String(record.range ?? record.address ?? '').split(':')[0];
+    const at = parseCellAddress(raw);
+    if (at && at.row > 1 && at.col === column) {
+      out.push({ formula: record.formula, row: at.row });
+    } else if (
+      typeof record.col === 'number' &&
+      typeof record.row === 'number' &&
+      record.row > 0 &&
+      record.col + 1 === column
+    ) {
+      out.push({ formula: record.formula, row: record.row + 1 });
+    }
+  }
+
+  return out;
+}
+
+/** `A1` / `$AB$12` -> 1-based { col, row }. */
+function parseCellAddress(address: string): { col: number; row: number } | null {
+  const match = /^\$?([A-Za-z]{1,3})\$?(\d+)$/.exec(address.trim());
+  if (!match) return null;
+  let col = 0;
+  for (const ch of match[1].toUpperCase()) col = col * 26 + (ch.charCodeAt(0) - 64);
+  return { col, row: Number(match[2]) };
 }
 
 export function reconcileRun(input: {
@@ -248,6 +369,89 @@ export function reconcileRun(input: {
       detail: `Formulas on "${sheet}" read from sheet(s) that do not exist: ${[...refs].join(', ')}.`,
       repairable: false,
     });
+  }
+
+  // 5. A derived column that carries no formula anywhere below row 1.
+  //
+  //    TASKS.md #298: a live run built all twelve months with correct
+  //    headers, and April came out with validations, formats and widths but
+  //    no formula at all — its subtask reported `completed: true` with no
+  //    failure of any kind. Checks 1-4 above all passed it: the sheet
+  //    exists, its header row is right, and nothing dangles. A column the
+  //    user was promised can only ever be blank, and the run said "done".
+  //
+  //    Reported, never repaired. The formula is the SUBTASK’S to write and
+  //    inventing one here would be guessing at the user’s arithmetic — the
+  //    same reason a dangling reference above is reported rather than fixed.
+  for (const subtask of subtasks) {
+    const sheet = subtask.targetSheet?.trim();
+    if (!sheet || isDeterministicStep(subtask)) continue;
+    if (!existing.has(key(sheet))) continue; // already reported as missing
+
+    const headerRow = subtask.resolvedHeaderRow?.length
+      ? subtask.resolvedHeaderRow
+      : rowOneValuesOn(appliedActions, sheet);
+    const derived = headerRow.filter((label) => isDerivedHeader(label));
+    if (derived.length === 0) continue;
+
+    if (sheetHasFormula(appliedActions, sheet)) continue;
+
+    // TASKS.md #310 — REPAIR it from a sibling that built the same column,
+    // rather than only reporting it. Eleven months carrying the identical
+    // formula means the twelfth is not being invented, it is being copied —
+    // the same reasoning that lets Phase 2 clone a template’s actions. With
+    // no sibling to copy, it stays reported, because THAT would be a guess.
+    const repairs: Action[] = [];
+    const unrepairable: string[] = [];
+    for (const derivedHeader of derived) {
+      const column = headerRow.findIndex(
+        (label) => normalizeHeader(label) === normalizeHeader(derivedHeader),
+      ) + 1;
+      if (column === 0) continue;
+
+      const sibling = siblingFormulaFor(
+        appliedActions,
+        sheet,
+        column,
+        (candidate) => rowOneValuesOn(appliedActions, candidate),
+        derivedHeader,
+      );
+      if (!sibling) {
+        unrepairable.push(derivedHeader);
+        continue;
+      }
+      repairs.push({
+        type: 'SET_FORMULA',
+        sheetName: sheet,
+        row: sibling.row - 1,
+        col: column - 1,
+        formula: sibling.formula,
+      } as Action);
+    }
+
+    if (repairs.length > 0) {
+      repairActions.push(...repairs);
+      gaps.push({
+        kind: 'derived-column-no-formula',
+        sheet,
+        detail:
+          `Sheet "${sheet}" was missing its calculated column(s) ` +
+          `${derived.filter((d) => !unrepairable.includes(d)).join(', ')} — copied the formula ` +
+          `its sibling sheets already use.`,
+        repairable: true,
+      });
+    }
+    if (unrepairable.length > 0) {
+      gaps.push({
+        kind: 'derived-column-no-formula',
+        sheet,
+        detail:
+          `Sheet "${sheet}" has calculated column(s) ${unrepairable.join(', ')} but no formula ` +
+          `was written anywhere on it, and no other sheet built that column to copy from — ` +
+          `those columns can only ever be blank.`,
+        repairable: false,
+      });
+    }
   }
 
   return { gaps, repairActions };

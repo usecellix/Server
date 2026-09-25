@@ -1,4 +1,4 @@
-import { SubTask } from '../types/agent.types';
+import { isDeterministicStep, SubTask } from '../types/agent.types';
 
 /**
  * LONG_PROMPT_RELIABILITY_PLAN.md Phase 5 — one line telling the user what a
@@ -37,7 +37,7 @@ export function buildPlanSummary(subtasks: SubTask[]): PlanSummary | null {
   const sheets = new Set(
     subtasks.map((subtask) => subtask.targetSheet?.trim()).filter((name): name is string => Boolean(name)),
   );
-  const llmSubtaskCount = subtasks.filter((subtask) => !subtask.isDeterministicHeaderStep).length;
+  const llmSubtaskCount = subtasks.filter((subtask) => !isDeterministicStep(subtask)).length;
   const estimatedMinutes = Math.max(
     1,
     Math.round((llmSubtaskCount * SECONDS_PER_LLM_SUBTASK) / 60),

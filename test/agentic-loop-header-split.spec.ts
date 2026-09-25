@@ -131,3 +131,164 @@ describe('AgenticLoopService — deterministic header/table split (TASKS.md #280
     expect(wave2.actions.some((a) => a.type === 'SET_FORMULA')).toBe(true);
   });
 });
+
+/**
+ * TASKS.md #302 — a subtask refused for having already done its own work.
+ *
+ * Live shape, from the third smoke run: ALL TWELVE month "rest" steps failed
+ * to converge, and the refusal quoted the step's own formula back at it as the
+ * existing value:
+ *
+ *   Write blocked: target range F2 already contains data. This action would
+ *   overwrite existing values. Existing values include: =IF(OR(D2="",E2="")…
+ *
+ * `runDeterministicChecks` graded the occupancy checker against
+ * `verifyContext` — the shadow enriched from EVERY state including the
+ * subtask's own actions — so the subtask was graded against a workbook that
+ * already contained the very writes being graded. Every retry was refused the
+ * same way, all twelve gated off Main, and the run ended at wave 4 of 6.
+ *
+ * The check fires only for "add/insert column" descriptions, which is exactly
+ * what a split rest step's description looks like ("Add only what is still
+ * needed…", "…already has its header cell and column position").
+ */
+describe('AgenticLoopService — a retry is not an overwrite of itself (TASKS.md #302)', () => {
+  let executor: jest.Mocked<Pick<ExecutorAgent, 'execute' | 'retryStep'>>;
+  let verifier: jest.Mocked<Pick<VerifierAgent, 'verify'>>;
+  let service: AgenticLoopService;
+
+  beforeEach(() => {
+    executor = { execute: jest.fn(), retryStep: jest.fn() };
+    executor.retryStep.mockImplementation(async (retryContext, context, previousActions) =>
+      executor.execute(retryContext.originalStep, context, previousActions),
+    );
+    verifier = { verify: jest.fn() };
+    const formulaAnalyzer = { analyzeSheet: jest.fn().mockReturnValue({ llmSummary: '' }) };
+    const formulaValidator = {
+      validatePreApply: jest.fn().mockReturnValue({ passed: true, issues: [], phase: 'pre_apply' }),
+      checkPostApply: jest.fn().mockReturnValue({ passed: true, issues: [], phase: 'post_apply' }),
+      formatFeedback: jest.fn().mockReturnValue(''),
+      summarizeForVerifier: jest.fn().mockReturnValue('ok'),
+    };
+    const toolBridge = { waitForRangeData: jest.fn() };
+    service = new AgenticLoopService(
+      executor as unknown as ExecutorAgent,
+      verifier as unknown as VerifierAgent,
+      formulaAnalyzer as unknown as FormulaAnalyzer,
+      formulaValidator as unknown as FormulaValidatorService,
+      toolBridge as unknown as ToolBridgeService,
+      new CompletenessChecker(),
+      new FormattingChecker(),
+      new OverwriteOccupancyChecker(),
+    );
+  });
+
+  const emit = () => {};
+
+  /** A sheet that already has a header row and a seeded, EMPTY data row. */
+  const contextWithSeededSheet: WorkbookContext = {
+    ...baseContext,
+    sheets: [
+      ...baseContext.sheets,
+      {
+        name: 'January',
+        usedRange: 'A1:F2',
+        rowCount: 2,
+        columnCount: 6,
+        values: [
+          ['Unit No', 'Guest', 'Check In', 'Check Out', 'Rate', 'Total Amount'],
+          ['', '', '', '', '', ''],
+        ],
+        formulas: [
+          ['', '', '', '', '', ''],
+          ['', '', '', '', '', ''],
+        ],
+        numberFormats: [['General'], ['General']],
+        structure: 'data_table',
+        headerRowIndex: 0,
+      },
+    ],
+  };
+
+  /** The live rest-step description, which is what makes the checker fire. */
+  const restStep: SubTask = {
+    id: 'p2_s1',
+    targetSheet: 'January',
+    dependsOn: [],
+    estimatedActions: 20,
+    description:
+      "Sheet 'January', its header row and table 'tblJanuary' already exist — do not rewrite the " +
+      'header row: every column below, including any computed ones, already has its header cell ' +
+      'and column position. Add only what is still needed: row-2 formulas, dropdowns, and ' +
+      'set column widths A=80, B=80.',
+  };
+
+  it('the rest step completes instead of being refused for its own write', async () => {
+    executor.execute.mockResolvedValue({
+      subtaskId: restStep.id,
+      actions: [
+        {
+          type: 'SET_FORMULA',
+          sheetName: 'January',
+          row: 1,
+          col: 5,
+          formula: '=IF(OR(C2="",D2=""),"",D2-C2)',
+        } as Action,
+      ],
+      isDone: true,
+    });
+    verifier.verify.mockResolvedValue({
+      passed: true,
+      feedback: 'ok',
+      issues: [],
+      subtaskResults: [{ subtaskId: restStep.id, passed: true, feedback: 'OK', issues: [] }],
+    });
+
+    const result = await service.run(
+      'Build January',
+      [restStep],
+      contextWithSeededSheet,
+      new SseEmitter(emit),
+    );
+
+    expect(result.failedSubtasks).toEqual([]);
+    expect(result.actions.some((a) => a.type === 'SET_FORMULA')).toBe(true);
+  });
+
+  it('a write onto a cell that was ALREADY occupied is still refused', async () => {
+    // The check must keep doing its job: F2 holds real pre-existing data that
+    // this run did not write, so overwriting it is the genuine mistake.
+    const occupied: WorkbookContext = {
+      ...contextWithSeededSheet,
+      sheets: contextWithSeededSheet.sheets.map((sheet) =>
+        sheet.name === 'January'
+          ? {
+              ...sheet,
+              values: [
+                ['Unit No', 'Guest', 'Check In', 'Check Out', 'Rate', 'Total Amount'],
+                ['', '', '', '', '', 1200],
+              ],
+            }
+          : sheet,
+      ),
+    };
+
+    executor.execute.mockResolvedValue({
+      subtaskId: restStep.id,
+      actions: [
+        { type: 'SET_FORMULA', sheetName: 'January', row: 1, col: 5, formula: '=D2-C2' } as Action,
+      ],
+      isDone: true,
+    });
+    verifier.verify.mockResolvedValue({
+      passed: false,
+      feedback: 'overwrite',
+      issues: [],
+      subtaskResults: [{ subtaskId: restStep.id, passed: false, feedback: 'overwrite', issues: [] }],
+    });
+
+    const result = await service.run('Build January', [restStep], occupied, new SseEmitter(emit));
+
+    expect(result.failedSubtasks.length).toBeGreaterThan(0);
+  });
+});

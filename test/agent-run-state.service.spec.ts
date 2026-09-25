@@ -193,4 +193,24 @@ describe('AgentRunStateService — decisions and cascade skipping', () => {
     expect(skipped[0].subtaskId).toBe('s2');
     expect(skipped[0].description).toBe('subtask s2');
   });
+
+  // TASKS.md #314 — live run_1790319451898_zyshq7v closed "All steps applied."
+  // with 5 of Main's 7 subtasks built nothing: each sat in an ACCEPTED wave.
+  it('counts a subtask that failed inside an accepted wave, and names what blocked its dependents', () => {
+    const subtasks = [subtask('s1'), subtask('s2'), subtask('s3', ['s2'])];
+    const run = makeRun(subtasks, [['s1', 's2'], ['s3']], 1);
+    for (const state of run.subtaskStates) state.decision = 'accepted';
+    Object.assign(run.subtaskStates.find((s) => s.subtaskId === 's1')!, { completed: true });
+    Object.assign(run.subtaskStates.find((s) => s.subtaskId === 's2')!, {
+      completed: false,
+      failedReason: 'hit max iterations (10)',
+    });
+    Object.assign(run.subtaskStates.find((s) => s.subtaskId === 's3')!, { completed: false });
+
+    const skipped = service.summarizeSkipped(run);
+
+    expect(skipped.map((s) => s.subtaskId)).toEqual(['s2', 's3']);
+    expect(skipped[0].reason).toBe('hit max iterations (10)');
+    expect(skipped[1].reason).toContain('s2');
+  });
 });

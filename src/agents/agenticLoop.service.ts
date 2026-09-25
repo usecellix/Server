@@ -1,3 +1,4 @@
+import { dedupeIdenticalWrites } from './utils/dedupe-writes.util';
 import { Injectable, Logger } from '@nestjs/common';
 import { ExecutorAgent } from './executor.agent';
 import { VerifierAgent } from './verifier.agent';
@@ -365,6 +366,14 @@ export class AgenticLoopService {
             state.completed = true;
             return { iterations: 0 as number, error: null as unknown };
           }
+          // A step whose actions were built by code at plan time (the ledger
+          // dashboard, TASKS.md #327) — applied verbatim, no model call.
+          if (subtask.deterministicActions?.length) {
+            state.actions = subtask.deterministicActions.map((action) => ({ ...action }));
+            state.droppedActions = [];
+            state.completed = true;
+            return { iterations: 0 as number, error: null as unknown };
+          }
 
           const visibleIds = new Set([...completedIds, ...subtask.dependsOn]);
           try {
@@ -625,13 +634,26 @@ export class AgenticLoopService {
       // subtasks, so a stepwise wave never re-judges work already accepted.
       const shadow = this.buildShadowFromStates(context, subtaskStates);
       const verifyContext = this.enrichContextFromShadow(shadow);
+      // The workbook WITHOUT this wave’s own writes. TASKS.md #302: the
+      // occupancy checker asks "was this cell already occupied?", and
+      // grading it against `verifyContext` means grading a subtask’s
+      // actions against a workbook that already contains those very
+      // actions — so a step is refused for having already done its work,
+      // and every retry is refused the same way. A live run lost all twelve
+      // month formula steps to this, the refusal quoting the step’s own
+      // formula back at it as the "existing value".
+      const priorStates = subtaskStates.filter((entry) => !ownStates.includes(entry));
+      const contextBeforeOwnWrites = this.enrichContextFromShadow(
+        this.buildShadowFromStates(context, priorStates),
+      );
       const cheapChecks = this.runDeterministicChecks(
         originalPrompt,
         ordered,
         ownStates,
         verifyContext,
         context,
-        this.sheetsCreatedBy(subtaskStates.filter((entry) => !ownStates.includes(entry))),
+        this.sheetsCreatedBy(priorStates),
+        contextBeforeOwnWrites,
       );
 
       if (cheapChecks.passed && !cheapChecks.requiresLlmVerification) {
@@ -1034,6 +1056,25 @@ export class AgenticLoopService {
       failedSubtasks = [failedSubtask];
     }
 
+    // A subtask that finished but was held back by the partial-delivery policy
+    // is a failure to report, not a silent drop. TASKS.md #315.
+    const heldBack = candidateCompleted.filter(
+      (entry) =>
+        !completedSubtasks.some((kept) => kept.subtaskId === entry.subtaskId) &&
+        !failedSubtasks.some((failed) => failed.subtaskId === entry.subtaskId),
+    );
+    if (heldBack.length > 0) {
+      failedSubtasks = [
+        ...failedSubtasks,
+        ...heldBack.map((entry) => ({
+          subtaskId: entry.subtaskId,
+          reason: 'Held back — a step it depends on did not complete',
+        })),
+      ];
+      failedSubtask = failedSubtask ?? failedSubtasks[0];
+    }
+    const heldBackIds = new Set(heldBack.map((entry) => entry.subtaskId));
+
     const partialProgress =
       !verifierPassed && completedSubtasks.length > 0 && failedSubtask !== null;
 
@@ -1088,14 +1129,52 @@ export class AgenticLoopService {
       // that never finished contributes nothing, which for a wave where NO
       // subtask completed means this now correctly ships zero actions instead
       // of a workbook of half-built sheets.
-      actions = subtaskStates.filter((state) => state.completed).flatMap((state) => state.actions);
+      actions = subtaskStates
+        .filter((state) => state.completed && !heldBackIds.has(state.subtask.id))
+        .flatMap((state) => state.actions);
     }
+
+    // What is RECORDED as delivered must be exactly what ships. The branches
+    // above that flatten `state.completed` ship subtasks `completedSubtasks`
+    // may have filtered out, and the stepwise path records completion from
+    // `completedSubtasks` — so a live run applied 12 month sheets while
+    // recording all 12 as not done, hiding them from every later wave.
+    // TASKS.md #318.
+    const shipsCompletedStates =
+      verifierPassed || !(options.preferCompletedOnly && (partialProgress || withheldDestructive));
+    const deliveredSubtasks: CompletedSubtaskResult[] = shipsCompletedStates
+      ? subtaskStates
+          .filter(
+            (state) =>
+              state.completed && state.actions.length > 0 && !heldBackIds.has(state.subtask.id),
+          )
+          .map((state) => ({
+            subtaskId: state.subtask.id,
+            actions: state.actions,
+            verified: state.verified === true || verifierPassed,
+          }))
+      : completedSubtasks;
+
+    // Parallel subtasks writing the same shared cells: keep one copy, or the
+    // client's overwrite guard refuses the second and the step can never be
+    // accepted. TASKS.md #317.
+    const deduped = dedupeIdenticalWrites(actions);
+    if (deduped.removed > 0 || deduped.conflicts.length > 0) {
+      this.logger.warn(
+        `Wave writes: dropped ${deduped.removed} identical duplicate write(s)` +
+          (deduped.conflicts.length > 0
+            ? `; ${deduped.conflicts.length} cell(s) written with DIFFERENT values by more than one action: ` +
+              deduped.conflicts.slice(0, 5).join(', ')
+            : ''),
+      );
+    }
+    actions = deduped.actions;
 
     return {
       actions,
       iterationsRun,
       verifierPassed,
-      completedSubtasks,
+      completedSubtasks: deliveredSubtasks,
       failedSubtask,
       failedSubtasks,
       partialProgress,
@@ -1128,7 +1207,13 @@ export class AgenticLoopService {
     return candidates.filter((entry) => {
       const state = byId.get(entry.subtaskId);
       const dependsOn = state?.subtask.dependsOn ?? [];
-      const depsMet = dependsOn.every((depId) => passedIds.has(depId));
+      // A dependency with no state here belongs to an EARLIER stepwise wave —
+      // already built and accepted, or wave gating (#261) would not have let
+      // this subtask run. Treating it as unmet dropped every finished sibling
+      // the moment any peer in the wave failed: 12 built month sheets in one
+      // live run, Main's Monthly Totals in another, each recorded as not done
+      // with no reason. TASKS.md #315.
+      const depsMet = dependsOn.every((depId) => passedIds.has(depId) || !byId.has(depId));
       if (!depsMet) {
         return false;
       }
@@ -1178,6 +1263,12 @@ export class AgenticLoopService {
     preRunContext: WorkbookContext = context,
     /** Sheets earlier waves of this run already created — TASKS.md #294. */
     sheetsCreatedByEarlierWaves: Set<string> = new Set(),
+    /**
+     * The workbook as it stood before the subtasks being graded wrote
+     * anything — earlier waves included, their own actions excluded.
+     * TASKS.md #302.
+     */
+    contextBeforeOwnWrites: WorkbookContext = context,
   ): CheckerResult {
     const completeness = this.completenessChecker.check(subtasks, subtaskStates);
     const formatting = this.formattingChecker.check(subtaskStates, context);
@@ -1187,7 +1278,21 @@ export class AgenticLoopService {
       subtaskStates,
       context,
     );
-    const overwriteOccupancy = this.overwriteOccupancyChecker.check(subtaskStates, context);
+    // TASKS.md #302 — MUST be the context WITHOUT these subtasks’ own
+    // writes. Every other checker here wants to see the result of the work;
+    // this one asks whether the cell was occupied BEFORE it, and handing it
+    // the shadow-enriched context makes every write self-refuting. The same
+    // distinction #294 had to draw, in a different guard.
+    //
+    // Narrowing worth stating: two subtasks in the SAME wave writing the
+    // same cell are no longer caught here. The frontend’s
+    // `guardAgainstOverwrite` still runs against the real workbook at apply
+    // time and is the authoritative guard; this checker exists to catch it
+    // earlier, not to be the only one that does.
+    const overwriteOccupancy = this.overwriteOccupancyChecker.check(
+      subtaskStates,
+      contextBeforeOwnWrites,
+    );
     // TASKS.md #294 — MUST be the pre-run context, not the shadow-enriched
     // one. `virtualApply`'s `ensureSheet` conjures a sheet the moment anything
     // writes to it, so a subtask that wrote to "Main" without ever emitting
