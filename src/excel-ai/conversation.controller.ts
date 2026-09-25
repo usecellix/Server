@@ -5,6 +5,7 @@ import {
   Get,
   Headers,
   HttpCode,
+  Optional,
   Param,
   Patch,
   Post,
@@ -13,6 +14,12 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { FastifyReply } from 'fastify';
+import { randomUUID } from 'node:crypto';
+import {
+  runWithLlmUsageContext,
+  type LlmUsageContext,
+} from '../llm-usage/llm-usage.context';
+import { LlmUsageService } from '../llm-usage/llm-usage.service';
 import { TRACE_ID_HEADER } from '../common/constants/trace-id.constant';
 import { SkipEnvelope } from '../common/decorators/skip-envelope.decorator';
 import { AuthGuard, AuthUserSession, Session } from '../auth/auth.guard';
@@ -37,7 +44,10 @@ import { ConversationService } from './services/conversation.service';
 @UseGuards(AuthGuard)
 @Controller('excel-ai')
 export class ConversationController {
-  constructor(private readonly conversationService: ConversationService) {}
+  constructor(
+    private readonly conversationService: ConversationService,
+    @Optional() private readonly llmUsage?: LlmUsageService,
+  ) {}
 
   @Post('conversation')
   @SkipEnvelope()
@@ -47,11 +57,21 @@ export class ConversationController {
     @Res() reply: FastifyReply,
     @Session() session: AuthUserSession | undefined,
   ): Promise<void> {
-    await this.conversationService.handleConversation(
-      body,
-      reply,
-      traceId,
-      session?.user?.id,
+    // The trace id doubles as the prompt id, so a stepwise run (which stores
+    // it) can attribute its later /continue waves back to this prompt.
+    const promptId = traceId?.trim() && traceId.trim() !== '-' ? traceId.trim() : randomUUID();
+    const context: LlmUsageContext = {
+      promptId,
+      userId: session?.user?.id,
+      conversationId: body.conversationId,
+    };
+    this.llmUsage?.beginPrompt(context, {
+      prompt: body.message,
+      mode: body.mode,
+      workbookId: body.workbookId,
+    });
+    await this.trackRequest(context, () =>
+      this.conversationService.handleConversation(body, reply, promptId, session?.user?.id),
     );
   }
 
@@ -140,6 +160,24 @@ export class ConversationController {
     @Res() reply: FastifyReply,
     @Session() session: AuthUserSession | undefined,
   ): Promise<void> {
-    await this.conversationService.continueRun(body, reply, traceId, session?.user?.id);
+    // Unknown until continueRun loads the run and re-points this at the run's
+    // original prompt id; until then nothing is attributed to any prompt.
+    const context: LlmUsageContext = { promptId: '', userId: session?.user?.id };
+    await this.trackRequest(context, () =>
+      this.conversationService.continueRun(body, reply, traceId, session?.user?.id),
+    );
+  }
+
+  private async trackRequest(context: LlmUsageContext, fn: () => Promise<void>): Promise<void> {
+    const startedAt = Date.now();
+    let error: string | undefined;
+    try {
+      await runWithLlmUsageContext(context, fn);
+    } catch (err: unknown) {
+      error = err instanceof Error ? err.message : String(err);
+      throw err;
+    } finally {
+      this.llmUsage?.endRequest(context, { durationMs: Date.now() - startedAt, error });
+    }
   }
 }

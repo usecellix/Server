@@ -8,6 +8,7 @@ import {
 import { InjectModel } from '@nestjs/mongoose';
 import { FastifyReply } from 'fastify';
 import { Model } from 'mongoose';
+import { updateLlmUsageContext } from '../../llm-usage/llm-usage.context';
 import { ConversationRequestDto } from '../dto/conversation-request.dto';
 import {
   CONVERSATION_TTL_MS,
@@ -498,6 +499,7 @@ export class ConversationService {
       request.workbookId,
       userId,
     );
+    updateLlmUsageContext({ conversationId: conversation.conversationId });
     const activeRequestRaw = await this.applyRefinementContext(request);
     let activeRequest: ConversationRequestDto = {
       ...activeRequestRaw,
@@ -3028,6 +3030,10 @@ export class ConversationService {
     userId?: string,
   ): Promise<void> {
     const run = await this.agentRunState.loadRunForUser(body.runId, userId);
+    updateLlmUsageContext({
+      promptId: run.traceId && run.traceId !== '-' ? run.traceId : run.runId,
+      conversationId: run.conversationId,
+    });
 
     initSseResponse(reply);
     const emit = (event: string, data: Record<string, unknown>) =>

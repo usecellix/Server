@@ -1,6 +1,4 @@
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit, Optional } from '@nestjs/common';
-import { InjectModel } from '@nestjs/mongoose';
-import { Model } from 'mongoose';
 import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
 import {
@@ -9,7 +7,6 @@ import {
   pruneFrontendLogLines,
   type FrontendLogEntry,
 } from './frontend-file-logger.util';
-import { FrontendLog } from './schemas/frontend-log.schema';
 import { WorkflowTraceService } from './workflow-trace.service';
 
 const DEFAULT_LOG_DIR = path.join(process.cwd(), 'logs');
@@ -26,11 +23,7 @@ export class FrontendFileLoggerService implements OnModuleInit, OnModuleDestroy 
   private pruneTimer: ReturnType<typeof setInterval> | null = null;
   private lastPruneAt = 0;
 
-  constructor(
-    @InjectModel(FrontendLog.name)
-    private readonly frontendLogModel: Model<FrontendLog>,
-    @Optional() private readonly workflowTrace?: WorkflowTraceService,
-  ) {
+  constructor(@Optional() private readonly workflowTrace?: WorkflowTraceService) {
     const dir = process.env.FRONTEND_LOG_DIR?.trim() || DEFAULT_LOG_DIR;
     const file = process.env.FRONTEND_LOG_FILE?.trim() || DEFAULT_LOG_FILE;
     this.filePath = path.isAbsolute(file) ? file : path.join(dir, file);
@@ -78,7 +71,6 @@ export class FrontendFileLoggerService implements OnModuleInit, OnModuleDestroy 
         await this.ensureLogDir();
         await fs.appendFile(this.filePath, formatFrontendLogLine(entry), 'utf8');
         await this.pruneIfDue(false);
-        await this.persistToDb(entry);
         this.mirrorWorkflowTerminal(entry);
       })
       .catch((err: unknown) => {
@@ -99,28 +91,6 @@ export class FrontendFileLoggerService implements OnModuleInit, OnModuleDestroy 
 
   getLogFilePath(): string {
     return this.filePath;
-  }
-
-  private async persistToDb(entry: FrontendLogEntry): Promise<void> {
-    try {
-      await this.frontendLogModel.create({
-        ts: new Date(entry.ts),
-        level: entry.level,
-        category: entry.category,
-        event: entry.event,
-        message: entry.message,
-        ...(entry.conversationId ? { conversationId: entry.conversationId } : {}),
-        ...(entry.changeSetId ? { changeSetId: entry.changeSetId } : {}),
-        ...(entry.sessionId ? { sessionId: entry.sessionId } : {}),
-        ...(entry.workbookKey ? { workbookKey: entry.workbookKey } : {}),
-        ...(entry.userAgent ? { userAgent: entry.userAgent } : {}),
-        ...(entry.pageUrl ? { pageUrl: entry.pageUrl } : {}),
-        ...(entry.details !== undefined ? { details: entry.details } : {}),
-      });
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      this.logger.warn(`Failed to persist frontend log to MongoDB: ${msg}`);
-    }
   }
 
   private mirrorWorkflowTerminal(entry: FrontendLogEntry): void {

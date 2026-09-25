@@ -1,6 +1,6 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { HydratedDocument, SchemaTypes, Types } from 'mongoose';
-import { LOG_TTL_SECONDS } from './request-log.schema';
+export const LOG_TTL_SECONDS = 3 * 24 * 60 * 60;
 
 export type WorkflowTraceDocument = HydratedDocument<WorkflowTrace>;
 

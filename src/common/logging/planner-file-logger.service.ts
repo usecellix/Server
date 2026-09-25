@@ -1,6 +1,4 @@
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
-import { InjectModel } from '@nestjs/mongoose';
-import { Model } from 'mongoose';
 import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
 import {
@@ -11,7 +9,6 @@ import {
   formatPlannerLogLine,
   type PlannerLogEntry,
 } from './planner-file-logger.util';
-import { PlannerLog } from './schemas/planner-log.schema';
 
 const DEFAULT_LOG_DIR = path.join(process.cwd(), 'logs');
 const DEFAULT_LOG_FILE = 'planner.log';
@@ -28,10 +25,7 @@ export class PlannerFileLoggerService implements OnModuleInit, OnModuleDestroy {
   private pruneTimer: ReturnType<typeof setInterval> | null = null;
   private lastPruneAt = 0;
 
-  constructor(
-    @InjectModel(PlannerLog.name)
-    private readonly plannerLogModel: Model<PlannerLog>,
-  ) {
+  constructor() {
     const dir = process.env.PLANNER_LOG_DIR?.trim() || process.env.REQUEST_LOG_DIR?.trim() || DEFAULT_LOG_DIR;
     const file = process.env.PLANNER_LOG_FILE?.trim() || DEFAULT_LOG_FILE;
     this.filePath = path.isAbsolute(file) ? file : path.join(dir, file);
@@ -76,7 +70,6 @@ export class PlannerFileLoggerService implements OnModuleInit, OnModuleDestroy {
         await this.ensureLogDir();
         await fs.appendFile(this.filePath, formatPlannerLogLine(entry), 'utf8');
         await this.pruneIfDue(false);
-        await this.persistToDb(entry);
       })
       .catch((err: unknown) => {
         const msg = err instanceof Error ? err.message : String(err);
@@ -96,24 +89,6 @@ export class PlannerFileLoggerService implements OnModuleInit, OnModuleDestroy {
   /** Exposed for tests. */
   async flush(): Promise<void> {
     await this.writeChain;
-  }
-
-  private async persistToDb(entry: PlannerLogEntry): Promise<void> {
-    try {
-      await this.plannerLogModel.create({
-        ts: new Date(entry.ts),
-        correlationId: entry.correlationId,
-        model: entry.model,
-        durationMs: entry.durationMs,
-        success: entry.success,
-        ...(entry.error ? { error: entry.error } : {}),
-        input: entry.input as unknown as Record<string, unknown>,
-        output: entry.output as unknown as Record<string, unknown>,
-      });
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      this.logger.warn(`Failed to persist planner log to MongoDB: ${msg}`);
-    }
   }
 
   private async ensureLogDir(): Promise<void> {

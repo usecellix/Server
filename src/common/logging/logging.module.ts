@@ -9,9 +9,6 @@ import { FrontendLogController } from './frontend-log.controller';
 import { LogTtlIndexService } from './log-ttl-index.service';
 import { PlannerFileLoggerService } from './planner-file-logger.service';
 import { RequestFileLoggerService } from './request-file-logger.service';
-import { FrontendLog, FrontendLogSchema } from './schemas/frontend-log.schema';
-import { PlannerLog, PlannerLogSchema } from './schemas/planner-log.schema';
-import { RequestLog, RequestLogSchema } from './schemas/request-log.schema';
 import {
   WorkflowTrace,
   WorkflowTraceSchema,
@@ -25,12 +22,7 @@ import { WorkflowTraceService } from './workflow-trace.service';
       inject: [AppConfigService],
       useFactory: (config: AppConfigService) => buildPinoParams(config.nodeEnv),
     }),
-    MongooseModule.forFeature([
-      { name: RequestLog.name, schema: RequestLogSchema },
-      { name: PlannerLog.name, schema: PlannerLogSchema },
-      { name: FrontendLog.name, schema: FrontendLogSchema },
-      { name: WorkflowTrace.name, schema: WorkflowTraceSchema },
-    ]),
+    MongooseModule.forFeature([{ name: WorkflowTrace.name, schema: WorkflowTraceSchema }]),
   ],
   controllers: [FrontendLogController],
   providers: [

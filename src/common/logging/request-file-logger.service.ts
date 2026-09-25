@@ -1,6 +1,4 @@
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
-import { InjectModel } from '@nestjs/mongoose';
-import { Model } from 'mongoose';
 import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
 import {
@@ -9,7 +7,6 @@ import {
   REQUEST_LOG_RETENTION_MS,
   type RequestLogEntry,
 } from './request-file-logger.util';
-import { RequestLog } from './schemas/request-log.schema';
 
 const DEFAULT_LOG_DIR = path.join(process.cwd(), 'logs');
 const DEFAULT_LOG_FILE = 'requests.log';
@@ -26,10 +23,7 @@ export class RequestFileLoggerService implements OnModuleInit, OnModuleDestroy {
   private pruneTimer: ReturnType<typeof setInterval> | null = null;
   private lastPruneAt = 0;
 
-  constructor(
-    @InjectModel(RequestLog.name)
-    private readonly requestLogModel: Model<RequestLog>,
-  ) {
+  constructor() {
     const dir = process.env.REQUEST_LOG_DIR?.trim() || DEFAULT_LOG_DIR;
     const file = process.env.REQUEST_LOG_FILE?.trim() || DEFAULT_LOG_FILE;
     this.filePath = path.isAbsolute(file) ? file : path.join(dir, file);
@@ -74,7 +68,6 @@ export class RequestFileLoggerService implements OnModuleInit, OnModuleDestroy {
         await this.ensureLogDir();
         await fs.appendFile(this.filePath, formatRequestLogLine(entry), 'utf8');
         await this.pruneIfDue(false);
-        await this.persistToDb(entry);
       })
       .catch((err: unknown) => {
         const msg = err instanceof Error ? err.message : String(err);
@@ -89,25 +82,6 @@ export class RequestFileLoggerService implements OnModuleInit, OnModuleDestroy {
   /** Exposed for tests. */
   async flush(): Promise<void> {
     await this.writeChain;
-  }
-
-  private async persistToDb(entry: RequestLogEntry): Promise<void> {
-    try {
-      await this.requestLogModel.create({
-        ts: new Date(entry.ts),
-        method: entry.method,
-        url: entry.url,
-        statusCode: entry.statusCode,
-        responseTimeMs: entry.responseTimeMs,
-        ...(entry.reqId ? { reqId: entry.reqId } : {}),
-        ...(entry.traceId ? { traceId: entry.traceId } : {}),
-        ...(entry.message ? { message: entry.message } : {}),
-        ...(entry.response !== undefined ? { response: entry.response } : {}),
-      });
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      this.logger.warn(`Failed to persist request log to MongoDB: ${msg}`);
-    }
   }
 
   private async ensureLogDir(): Promise<void> {
