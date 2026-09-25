@@ -10,12 +10,13 @@ import { Conversation, ConversationDocument } from '../excel-ai/schemas/conversa
  * preferable to editing the shared schema, which the Excel pipeline also uses.
  */
 type StoredConversation = ConversationDocument & { updatedAt?: Date };
+import { randomUUID } from 'node:crypto';
 import { OpenRouterService } from '../excel-ai/services/openrouter.service';
-import { CreditGateService } from '../credit/credit-gate.service';
-import { CreditLedgerService } from '../credit/credit-ledger.service';
+import { UsageBillingService } from '../credit/usage-billing.service';
 import { CreditActionType } from '../credit/types/credit.types';
 import { resolveCreditCost } from '../credit/credit-cost-catalog';
 import { InsufficientCreditError } from '../credit/errors/insufficient-credit.error';
+import { runWithLlmUsageContext, type LlmUsageContext } from '../llm-usage/llm-usage.context';
 import { WebChatAnswer, WebChatCitation, WebChatComplexity } from './web-chat.types';
 
 /**
@@ -66,8 +67,7 @@ export class WebChatService {
     @InjectModel(Conversation.name)
     private readonly conversationModel: Model<ConversationDocument>,
     private readonly openRouter: OpenRouterService,
-    private readonly creditGate: CreditGateService,
-    private readonly creditLedger: CreditLedgerService,
+    private readonly usageBilling: UsageBillingService,
   ) {}
 
   /**
@@ -91,7 +91,13 @@ export class WebChatService {
     return complexity === 'complex' ? 'FORMULA_QA_COMPLEX' : 'FORMULA_QA_SIMPLE';
   }
 
-  /** Pre-send estimate for the composer's "Using N credits" hint. */
+  /**
+   * Pre-send estimate for the composer's "~N credits" hint. Billing is now
+   * usage-based (TASKS.md #341/#343) — the real charge is the model's actual
+   * token cost, not a fixed catalog price — so this reuses the old
+   * FORMULA_QA_SIMPLE/COMPLEX prices only as a rough heads-up figure. `ask`
+   * does not read this value and can charge a different amount.
+   */
   estimateCost(question: string, scopedToOneConversation: boolean): {
     complexity: WebChatComplexity;
     credits: number;
@@ -103,11 +109,11 @@ export class WebChatService {
   /**
    * Answers `question` over the user's stored Excel conversations.
    *
-   * Ordering is deliberate and mirrors CREDIT_SYSTEM.md CD-3/CD-4: gate FIRST
-   * (before any LLM spend), debit LAST (only once an answer actually exists).
-   * A model/provider failure therefore costs the user nothing, which is the
-   * same rule the Excel pipeline follows — "a user is never charged for a run
-   * that produced nothing."
+   * Billing mirrors the Excel add-in path (TASKS.md #341): gate on balance >
+   * 0 before any LLM spend, then charge the real provider cost of the call
+   * once an answer exists. A model/provider failure therefore costs the user
+   * nothing — the gate never opens without an answer landing, and a thrown
+   * `complete()` never reaches the settle step below.
    */
   async ask(
     userId: string,
@@ -116,11 +122,9 @@ export class WebChatService {
   ): Promise<WebChatAnswer> {
     const scoped = Boolean(options.conversationId);
     const complexity = this.classify(question, scoped);
-    const actionType = this.actionTypeFor(complexity);
 
-    const gate = await this.creditGate.checkBalance(userId, actionType);
-    if (!gate.allowed) {
-      throw new InsufficientCreditError(userId, gate.requiredCredits ?? 0);
+    if (!(await this.usageBilling.canStart(userId))) {
+      throw new InsufficientCreditError(userId, 0);
     }
 
     const conversations = await this.loadContext(userId, options.conversationId);
@@ -129,41 +133,35 @@ export class WebChatService {
       title: conversation.title?.trim() || 'Untitled session',
     }));
 
-    const answer = await this.openRouter.complete({
-      systemPrompt: this.buildSystemPrompt(),
-      userMessage: this.buildUserMessage(question, conversations),
-      // Ask-mode Q&A over an existing transcript is comprehension, not
-      // planning or code generation — MEDIUM matches what the add-in's own
-      // read-only data-query lane uses for the same class of work.
-      tier: 'medium',
-      temperature: 0.2,
-      maxTokens: complexity === 'complex' ? 1200 : 700,
-    });
+    const context: LlmUsageContext = { promptId: randomUUID(), userId };
+    const answer = await runWithLlmUsageContext(context, () =>
+      this.openRouter.complete({
+        systemPrompt: this.buildSystemPrompt(),
+        userMessage: this.buildUserMessage(question, conversations),
+        // Ask-mode Q&A over an existing transcript is comprehension, not
+        // planning or code generation — MEDIUM matches what the add-in's own
+        // read-only data-query lane uses for the same class of work.
+        tier: 'medium',
+        temperature: 0.2,
+        maxTokens: complexity === 'complex' ? 1200 : 700,
+      }),
+    );
 
-    const debit = await this.creditLedger.debit(userId, actionType, 1, {
-      seatUserId: userId,
-    });
-
-    // A lost debit race (CD-6) means the balance went to zero between the gate
-    // check and here. The answer is already generated and paid for in real
-    // model cost, so it is returned rather than discarded — the NEXT request's
-    // gate is what blocks, per CD-4's "finish the current task, block the next."
-    if (!debit.debited) {
-      this.logger.warn(
-        `Web chat debit lost a race for user ${userId}; answer returned uncharged.`,
-      );
+    const settlement = await this.usageBilling.settle(context);
+    if (settlement && settlement.debited < settlement.requested) {
+      this.logger.warn(`Web chat usage debit short for user ${userId} — balance exhausted.`);
     }
 
-    const balances = debit.balances;
+    const balances = settlement?.balances;
     const newBalance = balances
       ? balances.planCredits + balances.purchasedCredits + balances.oneTimeCredits
-      : Math.max(0, (gate.availableBalance ?? 0) - resolveCreditCost(actionType));
+      : 0;
 
     return {
       answer: answer.trim(),
       citations,
       complexity,
-      creditsDeducted: debit.debited ? resolveCreditCost(actionType) : 0,
+      creditsDeducted: settlement?.debited ?? 0,
       newBalance,
     };
   }
