@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { Action, VerifierIssue } from '../types/agent.types';
+import { Action, isDeterministicStep, VerifierIssue } from '../types/agent.types';
 import { buildCheckerResult, CheckerResult, SubtaskActionSlice } from './checker.types';
 
 /**
@@ -115,7 +115,7 @@ export class ComputedColumnChecker {
       // subtask's job, one wave later. Grading this one against a rule meant
       // for a single subtask that does both would fail it by construction,
       // forever. TASKS.md #280.
-      if (state.subtask.isDeterministicHeaderStep) {
+      if (isDeterministicStep(state.subtask)) {
         return {
           subtaskId: state.subtask.id,
           passed: true,
@@ -124,7 +124,25 @@ export class ComputedColumnChecker {
         };
       }
 
-      const headers = collectWrittenHeaders(state.actions);
+      // Headers this subtask wrote itself, PLUS the header row a
+      // deterministic step built for it one wave earlier. TASKS.md #298:
+      // after Phase 1.5 split header-writing away from formula-writing, a
+      // "rest" step writes no headers at all, so `collectWrittenHeaders`
+      // returned nothing and this checker silently had no opinion on the
+      // very subtask whose job the formulas now are. A live run shipped
+      // April with validations, formats and widths but no formula at all,
+      // reporting `completed: true` — and every net in the pipeline passed
+      // it. The pinned row is the same information the header step used, so
+      // pairing it with this subtask’s target sheet restores the check
+      // the split removed, and does it in time to drive a retry.
+      const pinnedRow = state.subtask.resolvedHeaderRow ?? state.subtask.expectedHeaders ?? [];
+      const pinnedSheet = state.subtask.targetSheet?.trim() ?? '';
+      const headers = [
+        ...collectWrittenHeaders(state.actions),
+        ...(pinnedSheet
+          ? pinnedRow.map((label) => ({ sheetName: pinnedSheet, label: normalizeHeader(label) }))
+          : []),
+      ].filter((entry) => entry.label.length > 0);
       const formulaSheets = sheetsWithFormulas(state.actions);
 
       const issues: VerifierIssue[] = [];

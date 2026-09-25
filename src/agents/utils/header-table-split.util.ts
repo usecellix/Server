@@ -67,8 +67,21 @@ const HEADER_LIST_WITH_RANGE =
 /** WITHOUT a range hint — "headers in row 1 — a | b | c". */
 const HEADER_LIST_NO_RANGE = /headers?\b[^:=—\n]{0,40}?[:=—]\s*\[?([^.\n\]]+)\]?/i;
 
+/**
+ * Where a header list's clause ends: a ";" or an enumeration marker such as
+ * " (2)". Without this the last entry swallowed the rest of the sentence — live
+ * run_1790332994308_etr7oxl: "…| Bank Account; (2) create an Excel Table …"
+ * made the final header "Bank Account; (2) create …", the row failed its own
+ * check, and every month sheet was built 10 columns wide under a 13-column
+ * formula layout (Total Amount written into "source", Balance Due outside the
+ * table). TASKS.md #332.
+ */
+const LIST_CLAUSE_END = /;|\s\(\d+\)\s|\.\s/;
+
 /** Splits "a, b, c" / "a | b | c" into trimmed, non-empty entries. */
-function splitHeaderList(list: string): string[] {
+function splitHeaderList(rawList: string): string[] {
+  const end = rawList.search(LIST_CLAUSE_END);
+  const list = end >= 0 ? rawList.slice(0, end) : rawList;
   const delimiter = list.includes('|') ? '|' : ',';
   return list
     .split(delimiter)
@@ -188,7 +201,79 @@ export function resolveHeaderRow(subtask: SubTask): string[] {
   if (full && findHeaderMismatches(expected, full).length === 0) {
     return full;
   }
+  // Phrasing-independent fallback — TASKS.md #332. Five live phrasings have
+  // each needed their own parser fix (#283, #284, #289, #332…). Any
+  // "|"-separated list in the description that contains the user's columns,
+  // in order, and is WIDER than them is the planner's full layout, whatever
+  // words introduce it.
+  const scanned = findDelimitedListContaining(subtask.description, expected);
+  if (scanned) return scanned;
+  // Last resort — the planner never NAMED its extra columns, only used them
+  // (TASKS.md #336). Live run_1790338103271_z73lf81: the step's only list was
+  // the user's 10, yet it wrote F2 =E2-D2, H2 =F2*G2, L2 =H2-N(K2) and a
+  // dropdown in M, so the sheet came out without the Nights column the user
+  // then noticed missing ("rate per night is there but total days is not").
+  const canonical = inferLedgerLayoutFromReferences(subtask.description, expected);
+  if (canonical) return canonical;
   return expected;
+}
+
+const norm = (label: string) => label.trim().toLowerCase().replace(/\s+/g, ' ');
+
+/**
+ * The booking-ledger layout the planner's own rule 1a prescribes: Nights after
+ * Check Out, Amount Received and Balance Due after Payment Status. Applied ONLY
+ * when (a) the user's columns are that ledger and (b) the description
+ * references exactly as many columns as that layout has — so a step that
+ * genuinely meant the user's columns alone is never widened.
+ */
+export function inferLedgerLayoutFromReferences(description: string, userColumns: string[]): string[] | null {
+  const has = (name: string) => userColumns.some((c) => norm(c) === name);
+  if (!has('check in') || !has('check out') || !has('total amount')) return null;
+  if (userColumns.some((c) => /^(nights?|days|no\.? of nights)$/i.test(c.trim()))) return null;
+
+  const layout: string[] = [];
+  for (const column of userColumns) {
+    layout.push(column);
+    if (norm(column) === 'check out') layout.push('Nights');
+    if (norm(column) === 'payment status') layout.push('Amount Received', 'Balance Due');
+  }
+  if (layout.length === userColumns.length) return null;
+
+  return widestReferencedColumn(description) === layout.length ? layout : null;
+}
+
+/** The right-most column this sheet's own cell references reach (1-based). */
+function widestReferencedColumn(description: string): number {
+  // Other sheets' references (Lists!$B$3) say nothing about this sheet.
+  const local = description.replace(/'?[A-Za-z_][\w .]*'?!\$?[A-Z]{1,3}\$?\d+(?::\$?[A-Z]{1,3}\$?\d+)?/g, ' ');
+  let widest = 0;
+  for (const match of local.matchAll(/\b([A-Z]{1,2})\$?\d+\b/g)) {
+    widest = Math.max(widest, columnIndexFromLetter(match[1]));
+  }
+  return widest;
+}
+
+/**
+ * The widest "a | b | c" run in `text` that contains every `required` column
+ * in order. Pipe lists only: commas also separate ordinary prose, so a comma
+ * scan could stitch a header row out of a sentence.
+ */
+export function findDelimitedListContaining(text: string, required: string[]): string[] | null {
+  if (required.length < 2) return null;
+  let best: string[] | null = null;
+  const runs = text.match(/[^|:\n]+(?:\|[^|\n]+)+/g) ?? [];
+  for (const run of runs) {
+    // Drop the lead-in ("…columns A-M:", "like this =>") from the FIRST entry
+    // only — later entries may legitimately contain a colon.
+    const pipe = run.indexOf('|');
+    const firstEntry = run.slice(0, pipe).replace(/^.*[:=—>]\s*\[?/, '');
+    const entries = splitHeaderList(firstEntry + run.slice(pipe));
+    if (entries.length <= required.length) continue;
+    if (findHeaderMismatches(required, entries).length > 0) continue;
+    if (!best || entries.length > best.length) best = entries;
+  }
+  return best;
 }
 
 /** `tbl` + the sheet name with everything but letters/digits stripped, e.g. "tblJanuary". */
@@ -317,4 +402,86 @@ export function splitSpecPinnedSubtasks(subtasks: SubTask[]): SubTask[] {
     result.push(headerStep, restStep);
   }
   return result;
+}
+
+export interface DependencyRelaxation {
+  subtasks: SubTask[];
+  /** `consumerId -> { from, to }` edges rewritten, for the log. */
+  relaxed: Array<{ consumer: string; from: string; to: string }>;
+}
+
+/**
+ * A consolidation step should wait for the sheets it reads to EXIST, not for
+ * every optional detail on them. TASKS.md #309.
+ *
+ * This is the single most expensive failure shape in
+ * LONG_PROMPT_RELIABILITY_PLAN.md's live scoreboard. A dashboard subtask
+ * depends on all twelve month subtasks, and those month subtasks each carry
+ * the optional tail of the work — formulas, dropdowns, widths, fonts. When one
+ * of them fails to converge, the dashboard is gated off and never built, so a
+ * run that produced twelve perfectly good month sheets is delivered with no
+ * Main at all. Two of this session's four smoke runs ended exactly that way,
+ * and in the worse of them ALL twelve month tails failed on one cause (#302)
+ * and took the dashboard down with them.
+ *
+ * After Phase 1.5's split, the part the dashboard actually needs — the sheet,
+ * its header row and its table — belongs to the deterministic header step,
+ * which makes no model call and therefore cannot time out, drift or hit an
+ * iteration cap. Pointing the dashboard at THAT step is both more honest about
+ * what it needs and dramatically more robust: a month whose formulas failed
+ * still has a sheet and a table for the dashboard to reference.
+ *
+ * The cost is stated plainly: the dashboard may now be built before some
+ * month's formulas land, so a KPI can read a column that is still blank. That
+ * is a wrong NUMBER in a built dashboard, against no dashboard at all — and
+ * the missing formula is separately reported by reconciliation (#298/#300)
+ * rather than passing silently. A blank column the user can see beats a
+ * dashboard they never got.
+ *
+ * Deliberately narrow: only a dependency on a step that HAS a deterministic
+ * header step is relaxed, and only for a consumer targeting a different sheet.
+ * A step's dependency on its own sheet's header step is untouched, and so is
+ * every dependency that has nothing to do with the split.
+ */
+export function relaxConsolidationDependencies(subtasks: SubTask[]): DependencyRelaxation {
+  // rest-step id -> the header step that creates its sheet
+  const headerStepFor = new Map<string, string>();
+  for (const subtask of subtasks) {
+    if (!subtask.isDeterministicHeaderStep) continue;
+    for (const candidate of subtasks) {
+      if (candidate.isDeterministicHeaderStep) continue;
+      if (candidate.dependsOn.includes(subtask.id)) {
+        headerStepFor.set(candidate.id, subtask.id);
+      }
+    }
+  }
+  if (headerStepFor.size === 0) return { subtasks, relaxed: [] };
+
+  const sheetOf = new Map(subtasks.map((s) => [s.id, s.targetSheet?.trim().toLowerCase() ?? '']));
+  const relaxed: Array<{ consumer: string; from: string; to: string }> = [];
+
+  const result = subtasks.map((subtask) => {
+    if (subtask.isDeterministicHeaderStep) return subtask;
+
+    const ownSheet = subtask.targetSheet?.trim().toLowerCase() ?? '';
+    let changed = false;
+    const dependsOn = subtask.dependsOn.map((depId) => {
+      const headerStep = headerStepFor.get(depId);
+      if (!headerStep) return depId;
+      // A step depending on another step for its OWN sheet is sequencing its
+      // own work, not consolidating someone else's — leave it alone.
+      if (sheetOf.get(depId) === ownSheet) return depId;
+
+      changed = true;
+      relaxed.push({ consumer: subtask.id, from: depId, to: headerStep });
+      return headerStep;
+    });
+
+    if (!changed) return subtask;
+    // A consumer depending on several months collapses to the same header
+    // steps; de-duplicate so the graph stays readable.
+    return { ...subtask, dependsOn: [...new Set(dependsOn)] };
+  });
+
+  return { subtasks: result, relaxed };
 }

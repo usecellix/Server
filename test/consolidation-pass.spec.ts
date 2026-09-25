@@ -129,7 +129,18 @@ describe('consolidation pass — the formula', () => {
   it('keeps a row when ANY data column is filled, not just the first', () => {
     // The reported case: Guest and Guest Name filled, Unit No left empty. A
     // first-column test would have hidden that booking.
-    expect(formula).toContain('BYROW(DROP(rows,,1),LAMBDA(r,COUNTA(r)>0))');
+    expect(formula).toContain('BYROW(DROP(rows,,1),LAMBDA(r,IFERROR(SUM(LEN(r)),1)>0))');
+  });
+
+  /**
+   * TASKS.md #323 — the live Main: blanks stacked into an array become 0, and
+   * `COUNTA` counts 0, so every one of the 499 rows per month was kept and
+   * shown as "January 0 0 0 …". Blanks must be turned back into "" before the
+   * keep-test, and the keep-test must not count a "" as content.
+   */
+  it('does not keep empty rows: blanks become "" and the keep-test ignores ""', () => {
+    expect(formula).toContain('IF(January!A2:J500="","",January!A2:J500)');
+    expect(formula).not.toContain('COUNTA');
   });
 
   it('filters empty rows out and degrades to blank rather than an error', () => {

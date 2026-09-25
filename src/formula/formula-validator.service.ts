@@ -1,6 +1,10 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Action, WorkbookContext } from '../agents/types/agent.types';
-import { colIndexToLetter, letterToColIndex } from '../virtual/shadowWorkbook';
+import {
+  colIndexToLetter,
+  letterToColIndex,
+  shadowSheetToContext,
+} from '../virtual/shadowWorkbook';
 import { ShadowWorkbook } from '../virtual/shadowWorkbook.types';
 import { virtualApply } from '../virtual/virtualApply';
 import { FUNCTION_NAMES, parseFormula } from './formula.parser';
@@ -57,9 +61,19 @@ export class FormulaValidatorService {
       ? this.shadowAsContext(virtualApply(shadow, actions), context)
       : context;
 
+    // Sheets that did not exist before this batch. Their bounds are still
+    // being written, so a reference below the rows populated SO FAR is
+    // normal rather than wrong — the live Main subtask puts `=SUM(B5:B16)`
+    // in B2 and fills rows 5-16 afterwards. TASKS.md #296.
+    const beingBuilt = new Set(
+      referenceContext.sheets
+        .map((sheet) => sheet.name)
+        .filter((name) => !context.sheets.some((sheet) => sheet.name === name)),
+    );
+
     for (const entry of formulas) {
       issues.push(...this.validateSyntax(entry));
-      issues.push(...this.validateReferences(entry, referenceContext));
+      issues.push(...this.validateReferences(entry, referenceContext, beingBuilt));
       issues.push(...this.validateNamedRanges(entry, context));
     }
 
@@ -348,9 +362,18 @@ export class FormulaValidatorService {
     return issues;
   }
 
+  /**
+   * `beingBuilt` names the sheets this batch CREATES. Only pre-apply passes
+   * it: at that point such a sheet holds only the cells written so far, so a
+   * bounds error against it says nothing except "this sheet is not finished
+   * yet". Post-apply the sheet has its final shape and bounds are a real
+   * error again, so the post-apply callers pass nothing. An unknown SHEET is
+   * an error either way — that check is not relaxed here. TASKS.md #296.
+   */
   private validateReferences(
     entry: ExtractedFormula,
     context: WorkbookContext,
+    beingBuilt: ReadonlySet<string> = new Set<string>(),
   ): FormulaValidationIssue[] {
     const issues: FormulaValidationIssue[] = [];
     const parsed = parseFormula(entry.formula);
@@ -376,7 +399,7 @@ export class FormulaValidatorService {
       const rowIndex = ref.row - 1;
       if (rowIndex < 0 || rowIndex >= sheet.rowCount || colIndex < 0 || colIndex >= sheet.columnCount) {
         issues.push({
-          severity: 'error',
+          severity: beingBuilt.has(sheetName) ? 'warning' : 'error',
           code: 'REFERENCE',
           actionIndex: entry.actionIndex,
           formula: entry.formula,
@@ -415,7 +438,7 @@ export class FormulaValidatorService {
         endCol >= sheet.columnCount
       ) {
         issues.push({
-          severity: 'error',
+          severity: beingBuilt.has(sheetName) ? 'warning' : 'error',
           code: 'REFERENCE',
           actionIndex: entry.actionIndex,
           formula: entry.formula,
@@ -463,22 +486,47 @@ export class FormulaValidatorService {
     return issues;
   }
 
+  /**
+   * The simulated workbook, seen as a WorkbookContext.
+   *
+   * Sheets the batch CREATES must be carried across, not just the pre-batch
+   * ones with their bounds grown. TASKS.md #296: a subtask that emits
+   * `ADD_SHEET Main` alongside `=SUM(B5:B16)` had every one of its own
+   * formulas rejected with `points to unknown sheet "Main"` — `virtualApply`
+   * had created Main in the shadow exactly as it should, and this mapping
+   * then dropped it, because it only ever walked `base.sheets`. The subtask
+   * failed after two retries and the run ended with Main never built.
+   *
+   * This is the mirror of #294: there a checker read a merely-written-to
+   * sheet as created; here one read a genuinely-created sheet as absent.
+   */
   private shadowAsContext(
     shadow: ShadowWorkbook,
     base: WorkbookContext,
   ): WorkbookContext {
+    const carried = base.sheets.map((sheet) => {
+      const shadowSheet = shadow.sheets.get(sheet.name);
+      if (!shadowSheet) return sheet;
+      return {
+        ...sheet,
+        rowCount: Math.max(sheet.rowCount, shadowSheet.rowCount),
+        columnCount: Math.max(sheet.columnCount, shadowSheet.columnCount),
+      };
+    });
+
+    // Anything the batch itself brought into existence. Deliberately appended
+    // rather than merged into the map above, so a sheet that already existed
+    // keeps its real content and only its bounds grow — the #237 behaviour
+    // this method was written for stays exactly as it was.
+    const known = new Set(base.sheets.map((s) => s.name));
+    const created = [...shadow.sheets.entries()]
+      .filter(([name]) => !known.has(name))
+      .map(([, sheet]) => shadowSheetToContext(sheet));
+
     return {
       ...base,
       activeSheetName: shadow.activeSheetName,
-      sheets: base.sheets.map((sheet) => {
-        const shadowSheet = shadow.sheets.get(sheet.name);
-        if (!shadowSheet) return sheet;
-        return {
-          ...sheet,
-          rowCount: Math.max(sheet.rowCount, shadowSheet.rowCount),
-          columnCount: Math.max(sheet.columnCount, shadowSheet.columnCount),
-        };
-      }),
+      sheets: [...carried, ...created],
     };
   }
 }

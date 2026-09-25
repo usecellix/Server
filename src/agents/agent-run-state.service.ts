@@ -299,16 +299,41 @@ export class AgentRunStateService {
     await run.save();
   }
 
-  /** Subtasks the run never delivered, for an honest closing summary (SD-4). */
+  /**
+   * Subtasks the run never delivered, for an honest closing summary (SD-4).
+   *
+   * A subtask that failed INSIDE a wave the user accepted counts too — TASKS.md
+   * #314. The decision belongs to the wave, so it reads `accepted` even though
+   * this subtask built nothing. Filtering on the decision alone let a live run
+   * with 5 of Main's 7 subtasks failed (no totals, KPIs, consolidated view or
+   * chart) close with "All steps applied."
+   */
   summarizeSkipped(run: AgentRunDocument): Array<{ subtaskId: string; description: string; reason: string }> {
     const byId = new Map(run.subtasks.map((subtask) => [subtask.id, subtask]));
-    return run.subtaskStates
-      .filter((state) => state.decision === 'rejected' || state.decision === 'skipped')
-      .map((state) => ({
+    const undelivered = run.subtaskStates.filter(
+      (state) =>
+        state.decision === 'rejected' ||
+        state.decision === 'skipped' ||
+        (state.decision === 'accepted' && !state.completed),
+    );
+    const undeliveredIds = new Set(undelivered.map((state) => state.subtaskId));
+
+    return undelivered.map((state) => {
+      const blockedBy = (byId.get(state.subtaskId)?.dependsOn ?? []).filter((dep) =>
+        undeliveredIds.has(dep),
+      );
+      return {
         subtaskId: state.subtaskId,
         description: byId.get(state.subtaskId)?.description ?? state.subtaskId,
-        reason: state.failedReason ?? `Step was ${state.decision}`,
-      }));
+        reason:
+          state.failedReason ??
+          (state.decision !== 'accepted'
+            ? `Step was ${state.decision}`
+            : blockedBy.length > 0
+              ? `Depends on a step that did not complete (${blockedBy.join(', ')})`
+              : 'Did not complete'),
+      };
+    });
   }
 
   /**

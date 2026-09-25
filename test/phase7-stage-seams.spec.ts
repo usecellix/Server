@@ -9,6 +9,8 @@ import { checkPlanIntegrity } from '../src/agents/utils/plan-integrity.util';
 import { normalizeExecutorOutput } from '../src/agents/utils/normalize-executor-output.util';
 import { reconcileRun } from '../src/agents/utils/reconcile.util';
 import { Action, PlannerOutput, SubTask, WorkbookContext } from '../src/agents/types/agent.types';
+import { FormulaValidatorService } from '../src/formula/formula-validator.service';
+import { buildShadowWorkbook } from '../src/virtual/shadowWorkbook';
 
 /**
  * LONG_PROMPT_RELIABILITY_PLAN.md Phase 7 — the seams between stages.
@@ -219,5 +221,99 @@ describe('Phase 7 seam: applied actions -> reconciliation (#290)', () => {
 
     const { gaps } = reconcileRun({ subtasks: [main], appliedActions: applied });
     expect(gaps.filter((g) => g.kind === 'dangling-reference')).toEqual([]);
+  });
+});
+
+/**
+ * The seam this suite was supposed to cover and did not.
+ *
+ * #296, found by the smoke run after #294 shipped: the Main subtask emits its
+ * OWN create and its own formulas in one batch, and pre-apply formula
+ * validation refused every formula with `points to unknown sheet "Main"` —
+ * `virtualApply` created Main in the shadow, `shadowAsContext` dropped it
+ * again. Two retries, subtask failed, dependents gated off, run ended at wave
+ * 4 of 6 with Main never built.
+ *
+ * The seam is executor output -> formula pre-validation, and nothing here
+ * crossed it. Phase 7 asserted what the SPLIT owes the formula step; it never
+ * asserted that an emitted batch survives the validator standing between them.
+ */
+describe('Phase 7 seam: emitted actions -> formula pre-validation (#296)', () => {
+  const validator = new FormulaValidatorService();
+
+  /** The live Main subtask, reduced to the shape that failed. */
+  const mainActions: Action[] = [
+    { type: 'ADD_SHEET', name: 'Main', sheetName: 'Main' },
+    { type: 'SET_CELL', sheetName: 'Main', row: 0, col: 0, value: 'Payments Dashboard' },
+    { type: 'SET_FORMULA', sheetName: 'Main', row: 1, col: 1, formula: '=SUM(B5:B16)' },
+    { type: 'SET_FORMULA', sheetName: 'Main', row: 1, col: 3, formula: '=SUM(C5:C16)' },
+    { type: 'SET_FORMULA', sheetName: 'Main', row: 1, col: 5, formula: '=SUM(D5:D16)' },
+  ];
+
+  it('a subtask may reference the sheet it is itself creating (#296)', () => {
+    const result = validator.validatePreApply(
+      mainActions,
+      context,
+      'Main',
+      buildShadowWorkbook(context),
+    );
+    expect(
+      result.issues.filter((i) => i.severity === 'error').map((i) => i.message),
+    ).toEqual([]);
+    expect(result.passed).toBe(true);
+  });
+
+  it('a consolidation formula may reference month sheets the same run creates', () => {
+    // What the dashboard is ultimately for: Main reading the month sheets that
+    // the deterministic header steps built one wave earlier.
+    const { split } = runPipeline();
+    const january = split.find((s) => s.isDeterministicHeaderStep && s.targetSheet === 'January');
+    expect(january).toBeDefined();
+
+    const built = buildHeaderTableActions(january as SubTask);
+    const consolidation: Action[] = [
+      ...built,
+      { type: 'ADD_SHEET', name: 'Main', sheetName: 'Main' },
+      { type: 'SET_FORMULA', sheetName: 'Main', row: 4, col: 1, formula: "=SUM(January!H2:H100)" },
+    ];
+
+    const result = validator.validatePreApply(
+      consolidation,
+      context,
+      'Main',
+      buildShadowWorkbook(context),
+    );
+    expect(
+      result.issues.some((i) => i.severity === 'error' && i.message.includes('unknown sheet')),
+    ).toBe(false);
+  });
+
+  it('a reference to a sheet NOTHING in the run touches is still an error', () => {
+    // The relaxation must not hollow out the check it relaxes.
+    const result = validator.validatePreApply(
+      [
+        { type: 'ADD_SHEET', name: 'Main', sheetName: 'Main' },
+        { type: 'SET_FORMULA', sheetName: 'Main', row: 1, col: 1, formula: "=SUM(Quarter4!B5:B16)" },
+      ],
+      context,
+      'Main',
+      buildShadowWorkbook(context),
+    );
+    expect(result.passed).toBe(false);
+    expect(
+      result.issues.some((i) => i.message.includes('unknown sheet "Quarter4"')),
+    ).toBe(true);
+  });
+
+  it('bounds on a sheet that already exists are still a hard error', () => {
+    // Sheet1 is real and one row tall; nothing in this batch is building it,
+    // so a reference past its end is the genuine mistake the check exists for.
+    const result = validator.validatePreApply(
+      [{ type: 'SET_FORMULA', sheetName: 'Sheet1', row: 0, col: 1, formula: '=SUM(A50:A99)' }],
+      context,
+      'Sheet1',
+      buildShadowWorkbook(context),
+    );
+    expect(result.passed).toBe(false);
   });
 });

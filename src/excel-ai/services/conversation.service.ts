@@ -70,7 +70,11 @@ import {
 import { modeIsReadOnly, normalizeAssistantMode, stripWriteActions } from '../utils/mode-guard.util';
 import { PlannerOutput } from '../../agents/types/agent.types';
 import { buildStatusMessage } from '../utils/status-message.util';
-import { applyConsolidationPass } from '../utils/consolidation-pass.util';
+import {
+  buildConsolidationActions,
+  consolidationSpillRegion,
+  stripSpillCollisions,
+} from '../utils/consolidation-pass.util';
 import { SheetActionPayload } from '../types/sheet-actions.types';
 import { tryDeterministicTableCreate } from '../utils/table-request.util';
 import { routeShortcutAction, buildShortcutAnswer } from '../utils/shortcut-router.util';
@@ -110,6 +114,7 @@ import {
 import { StructuredLogger } from '../../agents/logging/structured-logger';
 import { WorkbookContext as AgentWorkbookContext } from '../../agents/types/agent.types';
 import { SheetAction } from '../types/sheet-actions.types';
+import { repairListValidationSources } from '../../agents/utils/list-validation-repair.util';
 import { isFindLookupMessage } from '../utils/find-query-parser.util';
 import {
   buildInternalDetails,
@@ -2575,6 +2580,98 @@ export class ConversationService {
   }
 
   /**
+   * TASKS.md #269 — make a consolidated table actually consolidate on the
+   * STEPWISE path too. Mutates `waveResult` in place.
+   *
+   * `applyConsolidationPass` (#142) only ever ran inside `finalizeActions`,
+   * which this path never calls, so every large build (the only kind that goes
+   * stepwise) shipped a consolidated header that stayed empty forever.
+   *
+   * It cannot run on this wave's actions alone: `planConsolidation` needs the
+   * month-sheet CREATEs and their header rows in the same batch as Main's
+   * consolidated header, and stepwise splits those across waves by
+   * construction. So it plans over the accumulated run — prior waves plus this
+   * one.
+   *
+   * Two things this must get right, both found in one live run (TASKS.md
+   * #311, #312):
+   *   - The added formula is attributed to a subtask of THIS wave, so it is
+   *     persisted with the run. Before, it went into the wave's flat action
+   *     list only, the "already written" check (which reads recorded subtask
+   *     actions) never saw it, and every later wave re-emitted it — the last
+   *     one straight onto its own `#SPILL!`, which the overwrite guard refused
+   *     on every Accept, stranding the run at step 8 of 8.
+   *   - Nothing else may write inside the formula's spill area. This wave's
+   *     writes there are stripped. Writes an EARLIER wave already applied cannot
+   *     be withdrawn, so then the formula is not emitted at all: a blank
+   *     consolidated table is honest, a `#SPILL!` is not.
+   */
+  private consolidateStepwiseWave(
+    run: AgentRunDocument,
+    waveIndex: number,
+    priorActions: Array<{ actions: SheetAction[] }>,
+    waveResult: Awaited<ReturnType<OrchestratorService['runStepwiseWave']>>,
+  ): void {
+    const prior = priorActions.flatMap((entry) => entry.actions) as SheetActionPayload[];
+    const accumulated = [...prior, ...(waveResult.actions as SheetActionPayload[])];
+    const dynamicArrays = run.excelCapabilities?.dynamicArrays;
+
+    const added = buildConsolidationActions(accumulated, { dynamicArrays }).filter(
+      (candidate) =>
+        !prior.some(
+          (existing) =>
+            existing.type === candidate.type &&
+            existing.sheetName === candidate.sheetName &&
+            existing.row === candidate.row &&
+            existing.col === candidate.col,
+        ),
+    );
+    if (added.length === 0) return;
+
+    if (dynamicArrays === true) {
+      const region = consolidationSpillRegion(accumulated);
+      if (region) {
+        if (stripSpillCollisions(prior, region).removed > 0) {
+          this.logger.warn(
+            `Stepwise run ${run.runId} wave ${waveIndex}: consolidation formula NOT added — an earlier ` +
+              `step already wrote inside its spill area on ${region.sheetName}, so it would #SPILL!.`,
+          );
+          return;
+        }
+
+        const stripped = stripSpillCollisions(waveResult.actions as SheetActionPayload[], region);
+        if (stripped.removed > 0) {
+          waveResult.actions = stripped.kept as typeof waveResult.actions;
+          for (const entry of waveResult.completedSubtasks) {
+            entry.actions = stripSpillCollisions(entry.actions as SheetActionPayload[], region)
+              .kept as typeof entry.actions;
+          }
+          this.logger.warn(
+            `Stepwise run ${run.runId} wave ${waveIndex}: removed ${stripped.removed} write(s) inside the ` +
+              `consolidation formula's spill area on ${region.sheetName} — they would have made it #SPILL!.`,
+          );
+        }
+      }
+    }
+
+    // Attribute to the subtask that built on the target sheet, so the formula is
+    // recorded with the run and every later wave sees it.
+    const targetSheet = String(added[0].sheetName ?? '').toLowerCase();
+    const owner =
+      waveResult.completedSubtasks.find((entry) =>
+        entry.actions.some((action) => String(action.sheetName ?? '').toLowerCase() === targetSheet),
+      ) ?? waveResult.completedSubtasks[0];
+    if (!owner) return;
+
+    owner.actions.push(...(added as typeof owner.actions));
+    waveResult.actions.push(...(added as typeof waveResult.actions));
+    this.logger.log(
+      `Stepwise run ${run.runId} wave ${waveIndex}: consolidation pass added ` +
+        `${added.length} action(s) so ${added[0].sheetName} reflects its source sheets.`,
+    );
+  }
+
+  /**
    * Runs the run's next executable wave, emits its Accept card, and ends the
    * stream with `wave_ready` — the event that distinguishes "paused, call
    * /continue" from "finished" (STEPWISE_EXECUTION.md §3).
@@ -2629,6 +2726,32 @@ export class ConversationService {
       sseEmitter,
       telemetry,
     );
+
+    // Before recording: the formula the consolidation pass adds must land in a
+    // subtask's recorded actions, or no later wave can see it (TASKS.md #312).
+    if (waveResult.actions.length > 0) {
+      this.consolidateStepwiseWave(run, next.waveIndex, priorActions, waveResult);
+      // Dropdowns point at the list their column is named for, read from the
+      // Lists layout this run actually wrote — not the one a step guessed.
+      // In place, so the recorded subtask actions carry it too. TASKS.md #334.
+      const context = [
+        ...priorActions.flatMap((entry) => entry.actions),
+        ...waveResult.actions,
+      ] as SheetAction[];
+      const repairs = repairListValidationSources(waveResult.actions as SheetAction[], context);
+      for (const entry of waveResult.completedSubtasks) {
+        repairListValidationSources(entry.actions as SheetAction[], context);
+      }
+      if (repairs.length > 0) {
+        this.logger.warn(
+          `Stepwise run ${run.runId} wave ${next.waveIndex}: re-pointed ${repairs.length} dropdown(s) ` +
+            `at their named list — ${repairs
+              .slice(0, 4)
+              .map((r) => `${r.sheet}!${r.range} ${r.from} -> ${r.to}`)
+              .join('; ')}`,
+        );
+      }
+    }
 
     await this.agentRunState.recordWaveResult(
       run,
@@ -2685,51 +2808,6 @@ export class ConversationService {
             ? `Note: 1 of ${next.subtasks.length} planned steps in this batch produced no changes — ${missing[0].reason.slice(0, 110)}`
             : `Note: ${missing.length} of ${next.subtasks.length} planned steps in this batch produced no changes (e.g. ${missing[0].reason.slice(0, 90)})`,
       });
-    }
-
-    // TASKS.md #269 — make a consolidated table actually consolidate on the
-    // STEPWISE path too.
-    //
-    // `applyConsolidationPass` (#142) exists precisely for the symptom a live
-    // user reported again here — "when i write the guest name and date ... it
-    // wont reflect in the main sheet" — but it only ever ran inside
-    // `finalizeActions`, which this path never calls: `executeStepwiseWave`
-    // hands its raw actions straight to `createPreview`. So every large build
-    // (the only kind that goes stepwise) shipped a consolidated header that
-    // stayed empty forever.
-    //
-    // It cannot run on this wave's actions alone: `planConsolidation` needs
-    // the month-sheet CREATEs and their header rows to be in the same batch as
-    // Main's consolidated header, and stepwise splits those across waves by
-    // construction. So it runs over the accumulated run — prior waves plus
-    // this one — and only the actions it APPENDS are added here (the pass is
-    // documented append-only, so anything past the input length is new).
-    const accumulated = [
-      ...priorActions.flatMap((entry) => entry.actions),
-      ...waveResult.actions,
-    ] as SheetActionPayload[];
-    const consolidationAppended = applyConsolidationPass(accumulated, {
-      dynamicArrays: run.excelCapabilities?.dynamicArrays,
-    }).slice(accumulated.length);
-    // Guard against re-emitting on every later wave once the pattern is
-    // detectable: if an earlier wave already wrote to the same target cell,
-    // this wave must not write it again.
-    const newConsolidation = consolidationAppended.filter(
-      (candidate) =>
-        !accumulated.some(
-          (existing) =>
-            existing.type === candidate.type &&
-            existing.sheetName === candidate.sheetName &&
-            existing.row === candidate.row &&
-            existing.col === candidate.col,
-        ),
-    );
-    if (newConsolidation.length > 0) {
-      waveResult.actions.push(...(newConsolidation as typeof waveResult.actions));
-      this.logger.log(
-        `Stepwise run ${run.runId} wave ${next.waveIndex}: consolidation pass appended ` +
-          `${newConsolidation.length} action(s) so Main reflects the month sheets.`,
-      );
     }
 
     const changeSet = await this.changeSetService.createPreview({

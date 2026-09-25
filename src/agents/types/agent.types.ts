@@ -120,6 +120,18 @@ export interface SubTask {
    * the table gets built narrower than the rest step was told it would be.
    */
   resolvedHeaderRow?: string[];
+  /**
+   * The complete, code-built actions for this step — no Executor/LLM call.
+   * Set at plan time (e.g. the ledger dashboard, `dashboard-builder.util.ts`,
+   * TASKS.md #327) and persisted with the run like the rest of the subtask;
+   * `agenticLoop.service.ts` applies them verbatim.
+   */
+  deterministicActions?: Action[];
+}
+
+/** A step whose actions are built by code rather than the Executor. */
+export function isDeterministicStep(subtask: SubTask): boolean {
+  return Boolean(subtask.isDeterministicHeaderStep || subtask.deterministicActions?.length);
 }
 
 export interface PlannerOutput {

@@ -606,12 +606,33 @@ export function normalizeSingleAction(
  */
 function hasRequiredFields(action: SheetActionPayload): boolean {
   if (action.type === 'BATCH_SET') {
-    return Array.isArray(action.operations) && action.operations.length > 0;
+    // Every operation must be an actual cell write. The model repeatedly emits
+    // `operations: [28]` — the COUNT of the writes it meant, not the writes —
+    // and a non-empty array passed this check: a live run marked Main's
+    // Monthly Totals header and January–June "completed" with nothing written,
+    // and the dashboard's KPIs and chart silently summed an empty table.
+    // Rejecting the whole action (not just the bad entries) sends it back
+    // through the scoped retry instead of half-applying it. TASKS.md #322.
+    return (
+      Array.isArray(action.operations) &&
+      action.operations.length > 0 &&
+      action.operations.every(isCellWriteOperation)
+    );
   }
   if (action.type === 'CONDITIONAL_FORMAT') {
     return Boolean(action.range && action.rule);
   }
   return true;
+}
+
+/** A BATCH_SET entry that names a cell (A1 address or row/col) and writes something to it. */
+function isCellWriteOperation(op: unknown): boolean {
+  if (!op || typeof op !== 'object' || Array.isArray(op)) return false;
+  const record = op as Record<string, unknown>;
+  const hasCell =
+    (typeof record.address === 'string' && record.address.trim() !== '') ||
+    (isValidIndex(record.row) && isValidIndex(record.col));
+  return hasCell && ('value' in record || 'formula' in record);
 }
 
 function isValidIndex(value: unknown): value is number {

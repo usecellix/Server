@@ -1,6 +1,7 @@
 import { SheetActionPayload } from '../types/sheet-actions.types';
 import { detectHeaderRuns, HeaderRun } from './presentation-pass.util';
 import { sheetsCreatedInBatch } from './sheet-header-state.util';
+import { parseA1Cell } from '../../agents/utils/range-merge.util';
 
 /**
  * Deterministic consolidation pass — TASKS.md #142.
@@ -97,16 +98,25 @@ export function buildConsolidationFormula(
   const firstLetter = columnIndexToLetter(startCol);
   const lastLetter = columnIndexToLetter(endCol);
 
+  // `IF(range="","",range)`: a blank cell stacked into an array becomes 0, not
+  // blank. With the old `COUNTA(r)>0` keep-test every stacked row therefore
+  // counted as filled, and a live Main showed all 499 rows of every month as
+  // "January 0 0 0 …" — the one real booking buried thousands of rows down.
+  // Blanks are turned back into "" here, and the keep-test measures text
+  // length, so both a truly empty cell and a table formula showing "" read as
+  // empty while any real entry (text, number, date) keeps its row. An error in
+  // a source cell counts as content rather than blanking the whole view.
+  // TASKS.md #323.
   const blocks = sourceSheets.map((sheet) => {
     const ref = formulaSheetRef(sheet);
     const range = `${ref}!${firstLetter}2:${lastLetter}${SOURCE_ROW_LIMIT}`;
     const label = sheet.replace(/"/g, '""');
-    return `HSTACK(EXPAND("${label}",ROWS(${range}),1,"${label}"),${range})`;
+    return `HSTACK(EXPAND("${label}",ROWS(${range}),1,"${label}"),IF(${range}="","",${range}))`;
   });
 
   return (
     `=LET(rows,VSTACK(${blocks.join(',')}),` +
-    `keep,BYROW(DROP(rows,,1),LAMBDA(r,COUNTA(r)>0)),` +
+    `keep,BYROW(DROP(rows,,1),LAMBDA(r,IFERROR(SUM(LEN(r)),1)>0)),` +
     `IFERROR(FILTER(rows,keep,""),""))`
   );
 }
@@ -249,6 +259,103 @@ export function planConsolidation(actions: SheetActionPayload[]): ConsolidationP
   return null;
 }
 
+/**
+ * The cells the consolidation formula spills into: every row from the formula's
+ * own row down, across the origin column plus the source schema's width.
+ */
+export interface ConsolidationSpillRegion {
+  sheetName: string;
+  /** 0-based anchor row (the formula cell). */
+  row: number;
+  col: number;
+  /** 0-based last column the spill covers, inclusive. */
+  lastCol: number;
+}
+
+export function consolidationSpillRegion(
+  actions: SheetActionPayload[],
+): ConsolidationSpillRegion | null {
+  const plan = planConsolidation(actions);
+  if (!plan) return null;
+  return {
+    sheetName: plan.targetSheet,
+    row: plan.row,
+    col: plan.col,
+    lastCol: plan.col + (plan.sourceEndCol - plan.sourceStartCol + 1),
+  };
+}
+
+function cellOf(action: {
+  row?: number;
+  col?: number;
+  address?: string;
+}): { row: number; col: number } | null {
+  if (typeof action.row === 'number' && typeof action.col === 'number') {
+    return { row: action.row, col: action.col };
+  }
+  if (typeof action.address === 'string') return parseA1Cell(action.address.replace(/\$/g, ''));
+  return null;
+}
+
+function insideRegion(cell: { row: number; col: number }, region: ConsolidationSpillRegion): boolean {
+  return cell.row >= region.row && cell.col >= region.col && cell.col <= region.lastCol;
+}
+
+/**
+ * Remove every value write that would land inside the consolidation formula's
+ * spill area — TASKS.md #311.
+ *
+ * Any value in those cells makes the formula `#SPILL!`, and the formula already
+ * fills every one of them, so a per-cell write there is redundant by
+ * construction. The live case: Main's header step, told "header row only",
+ * still wrote Nights / Total Amount / Balance Due formulas into row 19 — right
+ * under the header, inside the spill — and Main!A19 showed `#SPILL!`.
+ *
+ * Only value writes are removed. Formatting a spilled cell is harmless, and the
+ * formula anchor itself is left to the caller. A BATCH_SET loses only the
+ * operations inside the region; the rest of it survives.
+ */
+export function stripSpillCollisions(
+  actions: SheetActionPayload[],
+  region: ConsolidationSpillRegion,
+): { kept: SheetActionPayload[]; removed: number } {
+  let removed = 0;
+  const kept: SheetActionPayload[] = [];
+  const target = region.sheetName.toLowerCase();
+
+  for (const action of actions) {
+    if (String(action.sheetName ?? '').toLowerCase() !== target) {
+      kept.push(action);
+      continue;
+    }
+
+    if (action.type === 'SET_CELL' || action.type === 'SET_FORMULA') {
+      const cell = cellOf(action);
+      const isAnchor = cell?.row === region.row && cell?.col === region.col;
+      if (cell && !isAnchor && insideRegion(cell, region)) {
+        removed += 1;
+        continue;
+      }
+      kept.push(action);
+      continue;
+    }
+
+    if (action.type === 'BATCH_SET' && Array.isArray(action.operations)) {
+      const operations = action.operations.filter((op) => {
+        const cell = cellOf(op as { row?: number; col?: number; address?: string });
+        return !(cell && insideRegion(cell, region));
+      });
+      removed += action.operations.length - operations.length;
+      if (operations.length > 0) kept.push({ ...action, operations });
+      continue;
+    }
+
+    kept.push(action);
+  }
+
+  return { kept, removed };
+}
+
 function orderOfCreation(actions: SheetActionPayload[]): Map<string, number> {
   const order = new Map<string, number>();
   let index = 0;
@@ -261,15 +368,15 @@ function orderOfCreation(actions: SheetActionPayload[]): Map<string, number> {
 }
 
 /**
- * Append the consolidation formula when this batch builds a table that is
- * plainly meant to aggregate its sibling sheets. Append-only, one action.
+ * The action(s) that make this batch's consolidated table consolidate, or none
+ * when the batch builds no such table.
  */
-export function applyConsolidationPass(
+export function buildConsolidationActions(
   actions: SheetActionPayload[],
   options: { dynamicArrays?: boolean } = {},
 ): SheetActionPayload[] {
   const plan = planConsolidation(actions);
-  if (!plan) return actions;
+  if (!plan) return [];
 
   // Only take the dynamic-array path when the host has been PROVEN to support
   // it. `dynamicArrays === undefined` means the probe never ran (older add-in
@@ -277,14 +384,10 @@ export function applyConsolidationPass(
   // the compatible form, because a wrong guess here is a silent `#NAME?` and an
   // empty consolidated table. TASKS.md #152.
   if (options.dynamicArrays !== true) {
-    return [
-      ...actions,
-      ...buildLegacyConsolidationNote(plan.targetSheet, plan.row - 1, plan.col),
-    ];
+    return buildLegacyConsolidationNote(plan.targetSheet, plan.row - 1, plan.col);
   }
 
   return [
-    ...actions,
     {
       type: 'SET_FORMULA',
       sheetName: plan.targetSheet,
@@ -293,4 +396,22 @@ export function applyConsolidationPass(
       formula: plan.formula,
     },
   ];
+}
+
+/**
+ * Add the consolidation formula when this batch builds a table that is plainly
+ * meant to aggregate its sibling sheets, and clear its spill area of any other
+ * value write so it cannot `#SPILL!` (TASKS.md #311).
+ */
+export function applyConsolidationPass(
+  actions: SheetActionPayload[],
+  options: { dynamicArrays?: boolean } = {},
+): SheetActionPayload[] {
+  const added = buildConsolidationActions(actions, options);
+  if (added.length === 0) return actions;
+  if (options.dynamicArrays !== true) return [...actions, ...added];
+
+  const region = consolidationSpillRegion(actions);
+  const kept = region ? stripSpillCollisions(actions, region).kept : actions;
+  return [...kept, ...added];
 }
