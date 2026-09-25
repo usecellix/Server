@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { MongooseModule } from '@nestjs/mongoose';
 import { AppConfigModule } from '../config/app-config.module';
+import { ConcurrencyLimitModule } from '../common/guards/concurrency-limit.module';
 import { CreditModule } from '../credit/credit.module';
 import { LlmModule } from '../llm/llm.module';
 import { Conversation, ConversationSchema } from '../excel-ai/schemas/conversation.schema';
@@ -21,6 +22,7 @@ import { WebChatService } from './web-chat.service';
 @Module({
   imports: [
     AppConfigModule,
+    ConcurrencyLimitModule,
     CreditModule,
     LlmModule,
     MongooseModule.forFeature([{ name: Conversation.name, schema: ConversationSchema }]),

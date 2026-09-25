@@ -30,6 +30,7 @@ import { ToolResultDto } from './dto/tool-result.dto';
 import { ContinueRunDto } from './dto/continue-run.dto';
 import { ConversationService } from './services/conversation.service';
 import { UsageBillingService } from '../credit/usage-billing.service';
+import { ConcurrencyLimitService } from '../common/guards/concurrency-limit.service';
 import { AI_USAGE_ACTION_TYPE } from '../credit/types/credit.types';
 import { endSseResponse, initSseResponse, isSseResponse, writeSseEvent } from './utils/sse.util';
 
@@ -50,6 +51,7 @@ export class ConversationController {
   constructor(
     private readonly conversationService: ConversationService,
     private readonly usageBilling: UsageBillingService,
+    private readonly concurrencyLimit: ConcurrencyLimitService,
     @Optional() private readonly llmUsage?: LlmUsageService,
   ) {}
 
@@ -192,6 +194,23 @@ export class ConversationController {
       return;
     }
 
+    // TASKS.md #344 — caps how many of THIS user's requests can be in flight
+    // at once, independent of credit balance (a well-funded account could
+    // otherwise fire unlimited concurrent LLM calls). Checked after the
+    // credit gate so an already-blocked user sees the credit error, not a
+    // generic rate-limit one.
+    const acquired = context.userId ? this.concurrencyLimit.tryAcquire(context.userId) : true;
+    if (!acquired) {
+      initSseResponse(reply);
+      writeSseEvent(reply, 'error', {
+        message: 'You already have a request in progress. Wait for it to finish before sending another.',
+        code: 'TOO_MANY_CONCURRENT_REQUESTS',
+      });
+      endSseResponse(reply);
+      this.llmUsage?.endRequest(context, { durationMs: Date.now() - startedAt, error: 'too_many_concurrent_requests' });
+      return;
+    }
+
     this.settleBeforeStreamEnds(context, reply);
     try {
       await runWithLlmUsageContext(context, fn);
@@ -199,6 +218,7 @@ export class ConversationController {
       error = err instanceof Error ? err.message : String(err);
       throw err;
     } finally {
+      if (context.userId) this.concurrencyLimit.release(context.userId);
       // Catches cost from calls that finished after the stream closed (e.g. a
       // Stop mid-wave); a no-op when the stream-end settle already billed all of it.
       void this.usageBilling.settle(context);

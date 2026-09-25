@@ -1,6 +1,7 @@
 import { Body, Controller, HttpException, HttpStatus, Post, UseGuards } from '@nestjs/common';
 import { AuthGuard, AuthUserSession, Session } from '../auth/auth.guard';
 import { SkipEnvelope } from '../common/decorators/skip-envelope.decorator';
+import { ConcurrencyLimitService } from '../common/guards/concurrency-limit.service';
 import { InsufficientCreditError } from '../credit/errors/insufficient-credit.error';
 import { WebChatAskDto, WebChatEstimateDto } from './dto/web-chat-ask.dto';
 import { WebChatService } from './web-chat.service';
@@ -24,7 +25,10 @@ import { WebChatService } from './web-chat.service';
 @UseGuards(AuthGuard)
 @Controller('web-chat')
 export class WebChatController {
-  constructor(private readonly webChatService: WebChatService) {}
+  constructor(
+    private readonly webChatService: WebChatService,
+    private readonly concurrencyLimit: ConcurrencyLimitService,
+  ) {}
 
   /**
    * Pre-send price for the composer's "Using N credits" hint. Separate from
@@ -41,8 +45,22 @@ export class WebChatController {
   @Post('ask')
   @SkipEnvelope()
   async ask(@Session() session: AuthUserSession, @Body() body: WebChatAskDto) {
+    const userId = session.user.id;
+    // TASKS.md #344 — same per-user in-flight cap the Excel add-in's
+    // ConversationController applies, sharing ONE counter across both
+    // surfaces (ConcurrencyLimitModule) since both spend from the same
+    // credit account.
+    if (!this.concurrencyLimit.tryAcquire(userId)) {
+      throw new HttpException(
+        {
+          code: 'TOO_MANY_CONCURRENT_REQUESTS',
+          message: 'You already have a request in progress. Wait for it to finish before sending another.',
+        },
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
+    }
     try {
-      return await this.webChatService.ask(session.user.id, body.question, {
+      return await this.webChatService.ask(userId, body.question, {
         conversationId: body.conversationId,
       });
     } catch (error) {
@@ -60,6 +78,8 @@ export class WebChatController {
         );
       }
       throw error;
+    } finally {
+      this.concurrencyLimit.release(userId);
     }
   }
 }

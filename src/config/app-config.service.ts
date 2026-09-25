@@ -259,6 +259,12 @@ export class AppConfigService {
     return Number.isFinite(value) && value > 0 ? value : 600;
   }
 
+  /** TASKS.md #344 — how many LLM-spending requests one signed-in user may have in flight at once. */
+  get maxConcurrentRequestsPerUser(): number {
+    const value = Number(this.configService.get<number | string>('MAX_CONCURRENT_REQUESTS_PER_USER', 2));
+    return Number.isFinite(value) && value > 0 ? Math.trunc(value) : 2;
+  }
+
   get checkoutSuccessUrl(): string {
     return this.configService.get<string>('CHECKOUT_SUCCESS_URL', 'http://localhost:5173/checkout/success');
   }

@@ -3,6 +3,8 @@ import { ValidationPipe } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { NestFactory } from '@nestjs/core';
 import { FastifyAdapter, NestFastifyApplication } from '@nestjs/platform-fastify';
+import fastifyHelmet from '@fastify/helmet';
+import fastifyRateLimit from '@fastify/rate-limit';
 import { Logger } from 'nestjs-pino';
 import { AppModule } from './app.module';
 import { AppConfigService } from './config/app-config.service';
@@ -86,6 +88,39 @@ async function bootstrap(): Promise<void> {
   const requestFileLogger = app.get(RequestFileLoggerService);
 
   const fastify = app.getHttpAdapter().getInstance();
+
+  // `npm ls fastify` shows two distinct installed versions (5.8.4 nested
+  // under @nestjs/platform-fastify, 5.8.5 at top level, both real Fastify 5 —
+  // not a genuine incompatibility). Each plugin's .d.ts resolves `fastify`'s
+  // types against whichever copy its own node_modules sees, so
+  // NestFastifyApplication's FastifyInstance and each plugin's expected
+  // FastifyInstance are structurally close but nominally different types to
+  // tsc, even though they're the same object at runtime. `pluginFastify`
+  // narrows the cast to these two registrations only, rather than casting
+  // the shared `fastify` binding everywhere it's used below.
+  const pluginFastify = fastify as unknown as Parameters<typeof fastifyHelmet>[0] &
+    Parameters<typeof fastifyRateLimit>[0];
+
+  // TASKS.md #344 — this is a pure JSON/SSE API, never serves HTML, so a CSP
+  // (helmet's default) has nothing to constrain and only risks an unexpected
+  // interaction with the SSE response's manually-written headers
+  // (initSseResponse writes them straight to the raw Node response, bypassing
+  // Fastify's onSend hooks entirely — helmet cannot touch those either way,
+  // but leaving CSP off keeps the header set honest about what this API is).
+  // The other defaults (X-Content-Type-Options, X-Frame-Options, etc.) are
+  // still useful even for a JSON API against MIME-sniffing/embedding.
+  await pluginFastify.register(fastifyHelmet, { contentSecurityPolicy: false });
+
+  // Coarse, IP-keyed defense-in-depth against anonymous/pre-auth abuse
+  // (unauthenticated endpoints, credential stuffing on /auth/*, scripted
+  // scanning). Generous on purpose — the real per-user protection against
+  // unlimited concurrent LLM spend is ConcurrencyLimitService, applied only
+  // to the routes that actually spend credit and keyed by user, not IP,
+  // which this plugin cannot see until Nest's AuthGuard has run.
+  await pluginFastify.register(fastifyRateLimit, {
+    max: 300,
+    timeWindow: '1 minute',
+  });
 
   fastify.addHook('onResponse', (request, reply, done) => {
     const body = (request as { body?: { message?: unknown } }).body;
