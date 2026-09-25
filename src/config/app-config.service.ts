@@ -249,6 +249,16 @@ export class AppConfigService {
     return value?.trim() ? value.trim() : undefined;
   }
 
+  /**
+   * Credits charged per USD of real provider cost. 600 ≈ a 3x markup: top-up
+   * packs sell credits at ~₹0.36–0.40 (≈$0.0045), so $1 of model spend
+   * becomes ~$2.7–3 of credit.
+   */
+  get creditsPerUsd(): number {
+    const value = Number(this.configService.get<number | string>('CREDITS_PER_USD', 600));
+    return Number.isFinite(value) && value > 0 ? value : 600;
+  }
+
   get checkoutSuccessUrl(): string {
     return this.configService.get<string>('CHECKOUT_SUCCESS_URL', 'http://localhost:5173/checkout/success');
   }

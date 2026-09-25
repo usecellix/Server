@@ -147,8 +147,6 @@ describe('consolidation spill collisions — stepwise path (TASKS.md #311, #312)
       {} as never,
       {} as never,
       { appendNode: jest.fn(), setMeta: jest.fn() } as never,
-      {} as never,
-      { debit: jest.fn().mockResolvedValue({ debited: false }) } as never,
       agentRunState as never,
     );
     jest.spyOn(service as never, 'markCompleted' as never).mockResolvedValue(undefined as never);

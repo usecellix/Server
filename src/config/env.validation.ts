@@ -82,6 +82,8 @@ export const envValidationSchema = Joi.object({
   // RAZORPAY_PLAN_ID_* reference Plans created ahead of time via Razorpay's
   // dashboard/API (a one-time setup step outside this codebase, same
   // constraint Stripe Price IDs had) — Solo/Firm/Beta each need their own.
+  // Usage billing: credits charged per USD of real OpenRouter cost.
+  CREDITS_PER_USD: Joi.number().positive().default(600),
   RAZORPAY_KEY_ID: Joi.string().allow('').optional(),
   RAZORPAY_KEY_SECRET: Joi.string().allow('').optional(),
   RAZORPAY_WEBHOOK_SECRET: Joi.string().allow('').optional(),

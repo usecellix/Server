@@ -2,7 +2,14 @@ import { FastifyReply } from 'fastify';
 import { captureSseEvent } from '../../common/logging/request-response-capture.util';
 import { updateLlmUsageContext } from '../../llm-usage/llm-usage.context';
 
+const sseResponses = new WeakSet<object>();
+
+export function isSseResponse(reply: FastifyReply): boolean {
+  return sseResponses.has(reply.raw);
+}
+
 export function initSseResponse(reply: FastifyReply): void {
+  sseResponses.add(reply.raw);
   reply.raw.writeHead(200, {
     'Content-Type': 'text/event-stream; charset=utf-8',
     'Cache-Control': 'no-cache, no-transform',

@@ -84,6 +84,9 @@ export class LlmUsageService {
     const totalTokens = input.totalTokens ?? promptTokens + completionTokens;
 
     const promptId = context?.promptId || null;
+    if (context && input.costUsd > 0) {
+      context.costUsd = (context.costUsd ?? 0) + input.costUsd;
+    }
     void this.callModel
       .create({
         promptId,

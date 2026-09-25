@@ -18,6 +18,12 @@ export interface LlmUsageContext {
   tier?: number;
   /** Last error surfaced to the user in this request, thrown or sent as an SSE `error`. */
   error?: string;
+  /** Real provider cost of every LLM call made during THIS HTTP request (not the whole prompt). */
+  costUsd?: number;
+  /** Portion of `costUsd` already converted into a credit debit. */
+  billedCostUsd?: number;
+  /** Serializes settlements so the stream-end and request-end settles never double-charge. */
+  billing?: Promise<unknown>;
 }
 
 const storage = new AsyncLocalStorage<LlmUsageContext>();

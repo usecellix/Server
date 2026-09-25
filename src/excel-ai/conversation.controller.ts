@@ -29,6 +29,9 @@ import { RenameConversationDto } from './dto/rename-conversation.dto';
 import { ToolResultDto } from './dto/tool-result.dto';
 import { ContinueRunDto } from './dto/continue-run.dto';
 import { ConversationService } from './services/conversation.service';
+import { UsageBillingService } from '../credit/usage-billing.service';
+import { AI_USAGE_ACTION_TYPE } from '../credit/types/credit.types';
+import { endSseResponse, initSseResponse, isSseResponse, writeSseEvent } from './utils/sse.util';
 
 /**
  * Go-live gap (Aug 28, 2026): AuthGuard existed (Mongo-backed, OAuth wired) but was
@@ -46,6 +49,7 @@ import { ConversationService } from './services/conversation.service';
 export class ConversationController {
   constructor(
     private readonly conversationService: ConversationService,
+    private readonly usageBilling: UsageBillingService,
     @Optional() private readonly llmUsage?: LlmUsageService,
   ) {}
 
@@ -70,7 +74,7 @@ export class ConversationController {
       mode: body.mode,
       workbookId: body.workbookId,
     });
-    await this.trackRequest(context, () =>
+    await this.trackRequest(context, reply, () =>
       this.conversationService.handleConversation(body, reply, promptId, session?.user?.id),
     );
   }
@@ -163,21 +167,73 @@ export class ConversationController {
     // Unknown until continueRun loads the run and re-points this at the run's
     // original prompt id; until then nothing is attributed to any prompt.
     const context: LlmUsageContext = { promptId: '', userId: session?.user?.id };
-    await this.trackRequest(context, () =>
+    await this.trackRequest(context, reply, () =>
       this.conversationService.continueRun(body, reply, traceId, session?.user?.id),
     );
   }
 
-  private async trackRequest(context: LlmUsageContext, fn: () => Promise<void>): Promise<void> {
+  private async trackRequest(
+    context: LlmUsageContext,
+    reply: FastifyReply,
+    fn: () => Promise<void>,
+  ): Promise<void> {
     const startedAt = Date.now();
     let error: string | undefined;
+
+    if (context.userId && !(await this.usageBilling.canStart(context.userId))) {
+      initSseResponse(reply);
+      writeSseEvent(reply, 'error', {
+        message: 'You are out of credits.',
+        code: 'INSUFFICIENT_CREDIT',
+        availableBalance: 0,
+      });
+      endSseResponse(reply);
+      this.llmUsage?.endRequest(context, { durationMs: Date.now() - startedAt, error: 'insufficient_credit' });
+      return;
+    }
+
+    this.settleBeforeStreamEnds(context, reply);
     try {
       await runWithLlmUsageContext(context, fn);
     } catch (err: unknown) {
       error = err instanceof Error ? err.message : String(err);
       throw err;
     } finally {
+      // Catches cost from calls that finished after the stream closed (e.g. a
+      // Stop mid-wave); a no-op when the stream-end settle already billed all of it.
+      void this.usageBilling.settle(context);
       this.llmUsage?.endRequest(context, { durationMs: Date.now() - startedAt, error });
     }
+  }
+
+  /**
+   * ConversationService closes the SSE stream from ~70 places. Deferring the
+   * real `end()` until this request's usage is debited lets the resulting
+   * `credits` event reach the task pane, so its balance updates live.
+   */
+  private settleBeforeStreamEnds(context: LlmUsageContext, reply: FastifyReply): void {
+    const billing = this.usageBilling;
+    if (!context.userId) return;
+    const raw = reply.raw;
+    const end = raw.end.bind(raw) as (...args: unknown[]) => unknown;
+    let ending = false;
+    raw.end = ((...args: unknown[]) => {
+      if (ending) return raw;
+      ending = true;
+      void billing
+        .settle(context)
+        .then((settlement) => {
+          if (!settlement?.balances || raw.writableEnded || raw.destroyed || !isSseResponse(reply)) return;
+          writeSseEvent(reply, 'credits', {
+            ...settlement.balances,
+            debited: settlement.debited,
+            actionType: AI_USAGE_ACTION_TYPE,
+            ...(context.conversationId ? { conversationId: context.conversationId } : {}),
+          });
+        })
+        .catch(() => undefined)
+        .finally(() => end(...args));
+      return raw;
+    }) as typeof raw.end;
   }
 }

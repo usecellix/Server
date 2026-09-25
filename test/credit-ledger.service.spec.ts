@@ -19,25 +19,42 @@ function buildService(initial: Balances | null) {
     lean: () => Promise.resolve(stored ? { ...stored } : null),
   }));
 
-  const findOneAndUpdate = jest.fn((filter: { billingEntityId: string }, _pipeline: unknown) => {
-    if (!stored) return Promise.resolve(null);
-    const total = stored.planCredits + stored.purchasedCredits + stored.oneTimeCredits;
-    const cost = lastCost;
-    if (total < cost) return Promise.resolve(null);
+  /** Wraps a result so callers may either `await` it directly or chain `.lean()` first — matches real Mongoose. */
+  function queryResult<T>(value: T) {
+    return Object.assign(Promise.resolve(value), { lean: () => Promise.resolve(value) });
+  }
 
-    const planConsumed = Math.min(cost, stored.planCredits);
-    const afterPlan = cost - planConsumed;
-    const purchasedConsumed = Math.min(afterPlan, stored.purchasedCredits);
-    const afterPurchased = afterPlan - purchasedConsumed;
-    const oneTimeConsumed = Math.min(afterPurchased, stored.oneTimeCredits);
+  const findOneAndUpdate = jest.fn(
+    (_filter: { billingEntityId: string }, update: unknown, options?: { new?: boolean; upsert?: boolean }) => {
+      // grantPlanCredits: a plain `{ $set: { planCredits } }` reset, not the
+      // debit/debitUsage aggregation pipeline (an array) below.
+      if (!Array.isArray(update)) {
+        const before = stored ? { ...stored } : { planCredits: 0, purchasedCredits: 0, oneTimeCredits: 0 };
+        const set = (update as { $set?: Record<string, number> }).$set ?? {};
+        stored = { ...before, ...set };
+        return queryResult(options?.new === false ? before : { ...stored });
+      }
 
-    stored = {
-      planCredits: stored.planCredits - planConsumed,
-      purchasedCredits: stored.purchasedCredits - purchasedConsumed,
-      oneTimeCredits: stored.oneTimeCredits - oneTimeConsumed,
-    };
-    return Promise.resolve({ ...stored });
-  });
+      if (!stored) return queryResult(null);
+      const total = stored.planCredits + stored.purchasedCredits + stored.oneTimeCredits;
+      const cost = lastCost;
+      if (total < cost) return queryResult(null);
+
+      const planConsumed = Math.min(cost, stored.planCredits);
+      const afterPlan = cost - planConsumed;
+      const purchasedConsumed = Math.min(afterPlan, stored.purchasedCredits);
+      const afterPurchased = afterPlan - purchasedConsumed;
+      const oneTimeConsumed = Math.min(afterPurchased, stored.oneTimeCredits);
+
+      const before = { ...stored };
+      stored = {
+        planCredits: stored.planCredits - planConsumed,
+        purchasedCredits: stored.purchasedCredits - purchasedConsumed,
+        oneTimeCredits: stored.oneTimeCredits - oneTimeConsumed,
+      };
+      return queryResult(options?.new === false ? before : { ...stored });
+    },
+  );
 
   const updateOne = jest.fn((_filter: unknown, update: { $inc: Record<string, number> }) => {
     const [bucket, amount] = Object.entries(update.$inc)[0];
@@ -147,8 +164,8 @@ describe('CreditLedgerService.debit', () => {
 });
 
 describe('CreditLedgerService grants', () => {
-  it('grantPlanCredits increments planCredits and writes a grant ledger row', async () => {
-    const { service, insertedRows, grants } = buildService({
+  it('grantPlanCredits sets planCredits to the plan allotment from zero and writes a grant row, no expire row', async () => {
+    const { service, insertedRows, getStored } = buildService({
       planCredits: 0,
       purchasedCredits: 0,
       oneTimeCredits: 0,
@@ -156,10 +173,38 @@ describe('CreditLedgerService grants', () => {
 
     await service.grantPlanCredits('user-1', 500, 'evt_123');
 
-    expect(grants).toEqual([{ op: 'planCredits', amount: 500 }]);
+    expect(getStored()).toEqual({ planCredits: 500, purchasedCredits: 0, oneTimeCredits: 0 });
     expect(insertedRows).toEqual([
       expect.objectContaining({ entryType: 'grant', amount: 500, bucket: 'planCredits', paymentEventId: 'evt_123' }),
     ]);
+  });
+
+  it('RESETS planCredits on renewal instead of stacking (TASKS.md #342) — leftover is logged as expired, not compounded', async () => {
+    const { service, insertedRows, getStored } = buildService({
+      planCredits: 1800, // unused leftover from a prior cycle
+      purchasedCredits: 0,
+      oneTimeCredits: 0,
+    });
+
+    await service.grantPlanCredits('user-1', 3000, 'evt_renewal_1');
+
+    // Not 4800 — a renewal must not let unused credits compound indefinitely.
+    expect(getStored()).toEqual({ planCredits: 3000, purchasedCredits: 0, oneTimeCredits: 0 });
+    expect(insertedRows).toEqual([
+      expect.objectContaining({ entryType: 'grant', amount: 3000, bucket: 'planCredits', paymentEventId: 'evt_renewal_1' }),
+      expect.objectContaining({ entryType: 'expire', amount: -1800, bucket: 'planCredits' }),
+    ]);
+    // paymentEventId is a unique index — the real event id belongs on the
+    // grant row only, never duplicated onto the paired expire row.
+    expect(insertedRows[1].paymentEventId).toBeUndefined();
+  });
+
+  it('grantPlanCredits provisions the account when it does not exist yet (upsert)', async () => {
+    const { service, getStored } = buildService(null);
+
+    await service.grantPlanCredits('user-new', 3000, 'evt_1');
+
+    expect(getStored()).toEqual({ planCredits: 3000, purchasedCredits: 0, oneTimeCredits: 0 });
   });
 
   it('addPurchasedCredits increments purchasedCredits and writes a purchase ledger row', async () => {

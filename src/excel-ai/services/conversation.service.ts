@@ -52,9 +52,6 @@ import { ToolBridgeService } from '../../agents/tool-bridge.service';
 import { buildAgentWorkbookContext } from '../../agents/utils/workbook-context.builder';
 import { computeExecutionWaves } from '../../agents/utils/task-graph.util';
 import { WriteRouteNoActionError } from '../errors/write-route-no-action.error';
-import { CreditGateService } from '../../credit/credit-gate.service';
-import { CreditLedgerService } from '../../credit/credit-ledger.service';
-import { resolveCreditCost } from '../../credit/credit-cost-catalog';
 import { ChitchatService } from './chitchat.service';
 import { ConversationEngineService, EngineResponse, LlmRequestError } from './conversation-engine.service';
 import { DataQueryService } from './data-query.service';
@@ -190,8 +187,6 @@ export class ConversationService {
     private readonly tier2GenerateVerify: Tier2GenerateVerifyService,
     private readonly structuredLogger: StructuredLogger,
     private readonly workflowTrace: WorkflowTraceService,
-    private readonly creditGate: CreditGateService,
-    private readonly creditLedger: CreditLedgerService,
     private readonly agentRunState: AgentRunStateService,
   ) {}
 
@@ -735,14 +730,7 @@ export class ConversationService {
       }
 
       if (routerDecision.route === 'data') {
-        await this.handleDataQueryRoute(
-          routedRequest,
-          analysis,
-          conversationId,
-          traceId,
-          emit,
-          userId,
-        );
+        await this.handleSmartDataQuery(routedRequest, analysis, conversationId, emit, traceId);
         endSseResponse(reply);
         return;
       }
@@ -1136,66 +1124,6 @@ export class ConversationService {
     };
   }
 
-  /**
-   * Gate/debit wrapper around handleSmartDataQuery (CREDIT_SYSTEM.md CD-1/
-   * CD-4). Its own private method — not inlined into handleConversation's
-   * `route === 'data'` branch — for the same reason handleWriteRoute is
-   * separate: a direct-private-method-call test harness
-   * (credit-write-route-integration.spec.ts's pattern) needs a unit boundary
-   * narrower than the whole SSE entry point.
-   *
-   * Prices as FORMULA_QA_SIMPLE — this route is a read-only, single-
-   * active-sheet-scoped lookup ("find 310"), the same shape web-chat's
-   * WebChatService.ask treats as "simple" (scopedToOneConversation), and
-   * CD-1's own pricing table maps "Formula Q&A" to this action type.
-   */
-  private async handleDataQueryRoute(
-    request: ConversationRequestDto,
-    analysis: ReturnType<SheetAnalyzerService['analyze']>,
-    conversationId: string,
-    traceId: string,
-    emit: (event: string, data: Record<string, unknown>) => void,
-    userId?: string,
-  ): Promise<void> {
-    if (userId) {
-      const gateResult = await this.creditGate.checkBalance(userId, 'FORMULA_QA_SIMPLE');
-      if (!gateResult.allowed && gateResult.reason === 'insufficient_balance') {
-        emit('error', {
-          message: 'You are out of credits for this action.',
-          code: 'INSUFFICIENT_CREDIT',
-          availableBalance: gateResult.availableBalance,
-          requiredCredits: gateResult.requiredCredits,
-        });
-        await this.markCompleted(conversationId);
-        this.finalizeWorkflow(traceId, 'failed', {
-          route: 'data',
-          sseOutput: { error: 'insufficient_credit' },
-        });
-        return;
-      }
-    }
-
-    await this.handleSmartDataQuery(request, analysis, conversationId, emit, traceId);
-
-    if (userId) {
-      // Debit AFTER the answer exists (CD-3) — a lost race here (CD-6) means
-      // the answer is already generated and returned uncharged; the NEXT
-      // request's gate is what blocks, matching CD-4.
-      const debitResult = await this.creditLedger.debit(userId, 'FORMULA_QA_SIMPLE', 1, {
-        conversationId,
-      });
-      if (debitResult.debited && debitResult.balances) {
-        emit('credits', {
-          planCredits: debitResult.balances.planCredits,
-          purchasedCredits: debitResult.balances.purchasedCredits,
-          oneTimeCredits: debitResult.balances.oneTimeCredits,
-          debited: resolveCreditCost('FORMULA_QA_SIMPLE'),
-          actionType: 'FORMULA_QA_SIMPLE',
-        });
-      }
-    }
-  }
-
   private async handleSmartDataQuery(
     request: ConversationRequestDto,
     analysis: ReturnType<SheetAnalyzerService['analyze']>,
@@ -1574,31 +1502,6 @@ export class ConversationService {
         }
 
         if (actionHint) {
-          // CREDIT_SYSTEM.md CD-1/CD-4 — Tier 1 (one LLM call, writes to the
-          // workbook) prices as FORMULA_GENERATE_OR_FIX, same category and
-          // same price Tier 2's gate below checks — so a caller who fails
-          // this gate would fail Tier 2's identical gate too, making an
-          // early return here equivalent to falling through, just without
-          // the wasted LLM call Tier 1 would otherwise attempt first.
-          if (userId) {
-            const gateResult = await this.creditGate.checkBalance(userId, 'FORMULA_GENERATE_OR_FIX');
-            if (!gateResult.allowed && gateResult.reason === 'insufficient_balance') {
-              emit('error', {
-                message: 'You are out of credits for this action.',
-                code: 'INSUFFICIENT_CREDIT',
-                availableBalance: gateResult.availableBalance,
-                requiredCredits: gateResult.requiredCredits,
-              });
-              await this.markCompleted(conversationId);
-              this.finalizeWorkflow(traceId, 'failed', {
-                route: 'write',
-                tier: 1,
-                sseOutput: { error: 'insufficient_credit' },
-              });
-              endSseResponse(reply);
-              return;
-            }
-          }
           try {
             const tier1Result = await this.tier1SingleAction.execute(
               routedRequest.message,
@@ -1632,23 +1535,6 @@ export class ConversationService {
                 routerDecision.assumption,
                 emit,
               );
-              if (userId) {
-                // Debit AFTER the actions/ChangeSet already streamed (CD-3) —
-                // same "answer exists, now charge" rule Tier 2's debit below
-                // follows. Fires regardless of later Accept/Reject (CD-3).
-                const debitResult = await this.creditLedger.debit(userId, 'FORMULA_GENERATE_OR_FIX', 1, {
-                  conversationId,
-                });
-                if (debitResult.debited && debitResult.balances) {
-                  emit('credits', {
-                    planCredits: debitResult.balances.planCredits,
-                    purchasedCredits: debitResult.balances.purchasedCredits,
-                    oneTimeCredits: debitResult.balances.oneTimeCredits,
-                    debited: resolveCreditCost('FORMULA_GENERATE_OR_FIX'),
-                    actionType: 'FORMULA_GENERATE_OR_FIX',
-                  });
-                }
-              }
               endSseResponse(reply);
               return;
             }
@@ -1666,30 +1552,6 @@ export class ConversationService {
           }
         }
       } else if (complexity === 2 && actionHint) {
-        // CREDIT_SYSTEM.md CD-4 — pre-flight gate before the LLM call, not after.
-        // userId is only absent for the eval-bypass auth path (auth.guard.ts) or
-        // a session with no user id; skip the gate rather than block a caller
-        // this codebase doesn't yet have an identity to charge.
-        if (userId) {
-          const gateResult = await this.creditGate.checkBalance(userId, 'FORMULA_GENERATE_OR_FIX');
-          if (!gateResult.allowed && gateResult.reason === 'insufficient_balance') {
-            emit('error', {
-              message: 'You are out of credits for this action.',
-              code: 'INSUFFICIENT_CREDIT',
-              availableBalance: gateResult.availableBalance,
-              requiredCredits: gateResult.requiredCredits,
-            });
-            await this.markCompleted(conversationId);
-            this.finalizeWorkflow(traceId, 'failed', {
-              route: 'write',
-              tier: 2,
-              sseOutput: { error: 'insufficient_credit' },
-            });
-            endSseResponse(reply);
-            return;
-          }
-        }
-
         const basePrompt =
           routedRequest.promptContext ?? richWorkbookContext.prompt_context ?? undefined;
         const { enrichedContext } = this.enrichAgentContext(
@@ -1743,31 +1605,6 @@ export class ConversationService {
 
       outcome.tier = 3;
       outcome.llmCallCount = 3;
-
-      // CREDIT_SYSTEM.md CD-4 — pre-flight gate before the Planner ever
-      // runs, mirroring Tier 2's gate above. Uses hasAnyBalance rather than
-      // checkBalance: a Tier 3 request's real cost (TIER3_AGENTIC_BUILD is
-      // priced per DELIVERED subtask) isn't known until the plan exists and
-      // the build finishes, so only a coarse "can they afford anything at
-      // all" check is possible here — the real floor is enforced at the
-      // completion-time debit in streamWithOrchestrator/finishStepwiseRun.
-      if (userId) {
-        const hasBalance = await this.creditGate.hasAnyBalance(userId);
-        if (!hasBalance) {
-          emit('error', {
-            message: 'You are out of credits for this action.',
-            code: 'INSUFFICIENT_CREDIT',
-          });
-          await this.markCompleted(conversationId);
-          this.finalizeWorkflow(traceId, 'failed', {
-            route: 'write',
-            tier: 3,
-            sseOutput: { error: 'insufficient_credit' },
-          });
-          endSseResponse(reply);
-          return;
-        }
-      }
 
       // Over-sorting is only visible if lane 3's OWN action count is recorded:
       // a three-minute pipeline that produced two actions was the wrong lane.
@@ -2259,28 +2096,6 @@ export class ConversationService {
     });
     emit('conversation_end', { summary: 'Review changes and accept or reject.', tier: 2 });
     await this.markCompleted(conversationId);
-    if (userId) {
-      // CREDIT_SYSTEM.md CD-3 — debit once, at turn completion, now that a real
-      // ChangeSet exists. Rejection later is a workbook-state decision, not a
-      // billing one (CD-3) — this fires regardless of whether the user accepts.
-      const debitResult = await this.creditLedger.debit(userId, 'FORMULA_GENERATE_OR_FIX', 1, {
-        conversationId,
-        changeSetId: changeSet.changeSetId,
-      });
-      if (debitResult.debited && debitResult.balances) {
-        emit('credits', {
-          planCredits: debitResult.balances.planCredits,
-          purchasedCredits: debitResult.balances.purchasedCredits,
-          oneTimeCredits: debitResult.balances.oneTimeCredits,
-          debited: resolveCreditCost('FORMULA_GENERATE_OR_FIX'),
-          actionType: 'FORMULA_GENERATE_OR_FIX',
-        });
-      }
-      // debitResult.debited === false here means the balance was consumed by a
-      // race since the pre-flight gate check (CD-6) — CD-4 treats this as an
-      // accepted, rare timing artifact, not a reason to fail an already-verified
-      // turn or withhold the ChangeSet the user is about to see.
-    }
     this.logWorkflowChangeSet(traceId, changeSet.changeSetId, actions, changeSet.changes.length);
     this.finalizeWorkflow(traceId, 'awaiting_accept', {
       changeSetId: changeSet.changeSetId,
@@ -2447,30 +2262,6 @@ export class ConversationService {
      */
     declinedPlan?: { value?: PlannerOutput };
   }): Promise<boolean> {
-    // CREDIT_SYSTEM.md CD-4 — pre-flight gate before the Planner even runs,
-    // mirroring the one-shot Tier 3 path's gate. Placed here rather than
-    // only right before createRun below, so a user with zero balance doesn't
-    // burn a real Planner LLM call before being blocked. hasAnyBalance, not
-    // checkBalance: TIER3_AGENTIC_BUILD is priced per delivered subtask, and
-    // the real subtask count isn't known until this very plan exists.
-    if (opts.userId) {
-      const hasBalance = await this.creditGate.hasAnyBalance(opts.userId);
-      if (!hasBalance) {
-        opts.emit('error', {
-          message: 'You are out of credits for this action.',
-          code: 'INSUFFICIENT_CREDIT',
-        });
-        await this.markCompleted(opts.conversationId);
-        this.finalizeWorkflow(opts.traceId, 'failed', {
-          route: 'write',
-          tier: 3,
-          sseOutput: { error: 'insufficient_credit' },
-        });
-        endSseResponse(opts.reply);
-        return true;
-      }
-    }
-
     const { plan, openQuestions, mustAsk } = await this.orchestrator.planForStepwiseRun(
       {
         prompt: opts.request.message,
@@ -3034,36 +2825,6 @@ export class ConversationService {
           ? `Done — 1 step was not applied: ${skipped[0].description}`
           : `Done — ${skipped.length} steps were not applied (e.g. ${skipped[0].description})`;
     const summary = gapNote ? `${baseSummary} ${gapNote}` : baseSummary;
-
-    if (run.userId) {
-      // CREDIT_SYSTEM.md CD-3 — debit ONCE for the whole run, here, since
-      // this is the single place a stepwise run's completion is known —
-      // finishStepwiseRun fires exactly once, when nextExecutableWave(run)
-      // has returned null (checked by executeStepwiseWave before calling
-      // this). Debiting per-wave instead would double-charge, since a run
-      // spans several /continue round-trips for what the user experiences
-      // as ONE request. Quantity is every subtask across every wave that
-      // actually delivered actions — the real total, not the plan's own
-      // subtask count (which can exceed delivery when a subtask was
-      // skipped/rejected, per `skipped` above).
-      const subtaskCount = run.subtaskStates.filter((state) => state.completed).length;
-      const debitResult = await this.creditLedger.debit(run.userId, 'TIER3_AGENTIC_BUILD', subtaskCount, {
-        conversationId: run.conversationId,
-      });
-      if (debitResult.debited && debitResult.balances) {
-        emit('credits', {
-          planCredits: debitResult.balances.planCredits,
-          purchasedCredits: debitResult.balances.purchasedCredits,
-          oneTimeCredits: debitResult.balances.oneTimeCredits,
-          debited: resolveCreditCost('TIER3_AGENTIC_BUILD', subtaskCount),
-          actionType: 'TIER3_AGENTIC_BUILD',
-        });
-      }
-      // debitResult.debited === false here means the balance was consumed by
-      // a race since the pre-flight gate check (CD-6) — CD-4 treats this as
-      // an accepted, rare timing artifact, not a reason to withhold the
-      // already-applied build from the user.
-    }
 
     // TASKS.md #267 — closes out the run's history the same way the one-shot
     // path's final answer message does; without this the reloaded thread
@@ -3752,35 +3513,6 @@ export class ConversationService {
 
         this.logWorkflowChangeSet(traceId, changeSet.changeSetId, wave.actions, changeSet.changes.length);
         previousChangeSetId = changeSet.changeSetId;
-      }
-
-      if (userId) {
-        // CREDIT_SYSTEM.md CD-3 — debit once, at turn completion, now that
-        // the full build is known to have verified. TIER3_AGENTIC_BUILD is
-        // priced per DELIVERED subtask (credit-cost-catalog.ts), so the
-        // quantity is orchestratorResult.completedSubtasks.length — the real
-        // number of subtasks the Executor actually produced actions for, not
-        // the plan's own subtask count (which can exceed delivery, per
-        // TASKS.md #155's undeliveredSubtasks tracking above).
-        const subtaskCount = orchestratorResult.completedSubtasks.length;
-        const debitResult = await this.creditLedger.debit(userId, 'TIER3_AGENTIC_BUILD', subtaskCount, {
-          conversationId,
-          changeSetId: lastChangeSet.changeSetId,
-        });
-        if (debitResult.debited && debitResult.balances) {
-          emit('credits', {
-            planCredits: debitResult.balances.planCredits,
-            purchasedCredits: debitResult.balances.purchasedCredits,
-            oneTimeCredits: debitResult.balances.oneTimeCredits,
-            debited: resolveCreditCost('TIER3_AGENTIC_BUILD', subtaskCount),
-            actionType: 'TIER3_AGENTIC_BUILD',
-          });
-        }
-        // debitResult.debited === false here means the balance was consumed
-        // by a race since the pre-flight gate check (CD-6) — CD-4 treats
-        // this as an accepted, rare timing artifact, not a reason to fail an
-        // already-verified turn or withhold the ChangeSet the user is about
-        // to see.
       }
 
       emit('conversation_end', { summary: 'Review changes and accept or reject.', tier: 3 });

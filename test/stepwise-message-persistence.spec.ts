@@ -27,7 +27,6 @@ describe('ConversationService — stepwise message persistence (TASKS.md #267)',
   };
   let orchestrator: { runStepwiseWave: jest.Mock };
   let changeSetService: { createPreview: jest.Mock };
-  let creditLedger: { debit: jest.Mock };
   const emittedEvents: Array<{ event: string; data: Record<string, unknown> }> = [];
 
   const reply = {} as FastifyReply;
@@ -43,7 +42,6 @@ describe('ConversationService — stepwise message persistence (TASKS.md #267)',
     };
     orchestrator = { runStepwiseWave: jest.fn() };
     changeSetService = { createPreview: jest.fn() };
-    creditLedger = { debit: jest.fn().mockResolvedValue({ debited: false }) };
 
     service = new ConversationService(
       conversationModel as never, // 1 conversationModel
@@ -66,9 +64,7 @@ describe('ConversationService — stepwise message persistence (TASKS.md #267)',
       {} as never, // 18 tier2GenerateVerify
       {} as never, // 19 structuredLogger
       { appendNode: jest.fn(), setMeta: jest.fn() } as never, // 20 workflowTrace
-      {} as never, // 21 creditGate
-      creditLedger as never, // 22 creditLedger
-      agentRunState as never, // 23 agentRunState
+      agentRunState as never, // 21 agentRunState
     );
 
     jest.spyOn(service as never, 'markCompleted' as never).mockResolvedValue(undefined as never);
