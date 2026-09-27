@@ -18,6 +18,7 @@ import { OverwriteOccupancyChecker } from './checkers/overwrite-occupancy.checke
 import { StructuralIntentChecker } from './checkers/structural-intent.checker';
 import { ComputedColumnChecker } from './checkers/computed-column.checker';
 import { SpecConformanceChecker } from './checkers/spec-conformance.checker';
+import { FormulaConformanceChecker } from './checkers/formula-conformance.checker';
 import { SpecExtractorAgent } from './spec-extractor.agent';
 import { ToolBridgeService } from './tool-bridge.service';
 import { StructuredLogger } from './logging/structured-logger';
@@ -46,6 +47,7 @@ import { StructuredLogger } from './logging/structured-logger';
     StructuralIntentChecker,
     ComputedColumnChecker,
     SpecConformanceChecker,
+    FormulaConformanceChecker,
     SpecExtractorAgent,
   ],
   exports: [
