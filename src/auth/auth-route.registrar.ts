@@ -19,9 +19,11 @@ export class AuthRouteRegistrar implements OnModuleInit {
     instance.route({
       method: ['GET', 'POST'],
       url: '/api/auth/*',
-      config: {
-        rawBody: true,
-      },
+      // request.rawBody below comes from Nest's app-level `rawBody: true`
+      // option (main.ts), not from any per-route Fastify config — `config:
+      // { rawBody: true }` used to sit here but is not a real Fastify route
+      // option (nothing reads route.config for this), and FastifyContextConfig
+      // doesn't declare it, which is what made this a standing tsc error.
       handler: async (request: FastifyRequest, reply: FastifyReply) => {
         // Prefer proxy headers from Vite HTTPS; fall back to BETTER_AUTH_URL scheme.
         const configured = process.env.BETTER_AUTH_URL || 'https://localhost:3000';
