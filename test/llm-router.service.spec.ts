@@ -31,6 +31,57 @@ describe('LlmRouterService.classifyIntent (CHITCHAT route)', () => {
     },
   );
 
+  it('requests text (not JSON) mode — the default json_object mode is what made this classifier dead in production (TASKS.md #228)', async () => {
+    openRouter.complete.mockResolvedValue('CHITCHAT');
+
+    await service.classifyIntent('hi');
+
+    expect(openRouter.complete).toHaveBeenCalledWith(
+      expect.objectContaining({ responseFormat: 'text' }),
+    );
+  });
+
+  it.each([
+    ['{"label":"TASK"}', 'TASK'],
+    ['{"label": "CHITCHAT"}', 'CHITCHAT'],
+    ['```\nTASK\n```', 'TASK'],
+    ['Label: CHITCHAT.', 'CHITCHAT'],
+  ] as const)(
+    'still classifies correctly when the model wraps the label as %s (regression for the JSON-wrapped dead-classifier bug)',
+    async (raw, expected) => {
+      openRouter.complete.mockResolvedValue(raw);
+
+      const label = await service.classifyIntent('some message');
+
+      expect(label).toBe(expected);
+    },
+  );
+
+  it('does NOT skip reasoning.effort for a model that requires it (regression for the guaranteed-failing effort:none attempt)', async () => {
+    const glmConfig = { openRouterModelLow: 'z-ai/glm-5.3-flash' };
+    const glmService = new LlmRouterService(
+      openRouter as unknown as OpenRouterService,
+      glmConfig as AppConfigService,
+    );
+    openRouter.complete.mockResolvedValue('CHITCHAT');
+
+    await glmService.classifyIntent('hi');
+
+    expect(openRouter.complete).toHaveBeenCalledWith(
+      expect.objectContaining({ reasoningEffort: 'low' }),
+    );
+  });
+
+  it('still sends effort:none for a model that has no reasoning-mandatory quirk', async () => {
+    openRouter.complete.mockResolvedValue('CHITCHAT');
+
+    await service.classifyIntent('hi');
+
+    expect(openRouter.complete).toHaveBeenCalledWith(
+      expect.objectContaining({ reasoningEffort: 'none' }),
+    );
+  });
+
   it.each(['add a column', 'sort by date'])(
     'classifies "%s" as TASK and leaves existing tier logic unaffected',
     async (message) => {

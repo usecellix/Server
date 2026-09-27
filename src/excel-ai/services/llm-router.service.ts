@@ -12,6 +12,7 @@ import { RouterDecision, RouterInput } from '../types/router.types';
 import { classifyComplexity } from '../utils/complexity-classifier.util';
 import { resolveLocalFindRoute } from '../utils/find-query-parser.util';
 import { hasWriteIntent, isWorkbookScaffoldIntent } from '../utils/write-intent-guard.util';
+import { minReasoningEffort } from '../utils/reasoning-budget.util';
 import { OpenRouterService } from './openrouter.service';
 
 // Regex fast lane — these NEVER go to the LLM router.
@@ -84,17 +85,34 @@ export class LlmRouterService {
    */
   async classifyIntent(message: string): Promise<'CHITCHAT' | 'TASK'> {
     try {
+      // TASKS.md #228 — z-ai/glm-5.3-flash (the configured LOW-tier model)
+      // rejects reasoning.effort: 'none' outright on every call; sending it
+      // anyway just pays a guaranteed-failing round trip before the
+      // effort:'low' retry that always follows it. minReasoningEffort skips
+      // straight to the value that actually works for whatever model this
+      // resolves to, and is a no-op ('none') for any model without that quirk.
+      const model = this.config.openRouterModelLow;
       const raw = await this.openRouter.complete({
         systemPrompt: CHITCHAT_CLASSIFIER_SYSTEM_PROMPT,
         userMessage: buildChitchatClassifierUserMessage(message),
-        model: this.config.openRouterModelLow,
+        model,
         tier: 'low',
         temperature: 0,
         maxTokens: 8,
-        reasoningEffort: 'none',
+        reasoningEffort: minReasoningEffort(model),
+        // TASKS.md #228 — the prompt asks for a bare label ("Respond with
+        // only the label, nothing else"), but `complete()` defaults
+        // responseFormat to 'json_object'. Without this override the model
+        // wraps its answer as JSON (e.g. `{"label":"TASK"}`), which the
+        // startsWith checks below never match — chitchat detection was
+        // silently dead (fail-open to TASK) on every real call. The existing
+        // unit tests never caught this because they mock `complete` to
+        // return the bare string directly, not what the real API sends back
+        // under the default JSON mode.
+        responseFormat: 'text',
       });
 
-      const label = raw.trim().toUpperCase();
+      const label = extractLabelFromClassifierResponse(raw);
       if (label.startsWith('CHITCHAT')) return 'CHITCHAT';
       if (label.startsWith('TASK')) return 'TASK';
 
@@ -326,6 +344,12 @@ export class LlmRouterService {
     );
 
     try {
+      // TASKS.md #228 — same reasoning-mandatory quirk as classifyIntent
+      // above: if OPENROUTER_MODEL_ROUTER is unset, this falls back to
+      // openRouterModelLow (the GLM model confirmed to reject 'none' on
+      // every call); minReasoningEffort is a no-op for mercury/any model
+      // without the quirk, so this is safe regardless of which one resolves.
+      const model = this.config.openRouterModelRouter;
       const raw = await this.openRouter.complete({
         systemPrompt: ROUTER_SYSTEM_PROMPT,
         userMessage,
@@ -334,11 +358,11 @@ export class LlmRouterService {
         // move multi-sheet.service.ts's summary or ambiguity clarification.
         // Defaults to openRouterModelLow: unset OPENROUTER_MODEL_ROUTER is a
         // no-op, identical behavior to before this override existed.
-        model: this.config.openRouterModelRouter,
+        model,
         tier: 'low',
         temperature: 0,
         maxTokens: 256,
-        reasoningEffort: 'none',
+        reasoningEffort: minReasoningEffort(model),
       });
 
       const parsed = parseAgentJson<RouterDecision>(raw);
@@ -373,4 +397,20 @@ export class LlmRouterService {
       reasoning: 'LLM Router fallback — regex heuristic',
     };
   }
+}
+
+/**
+ * classifyIntent's response is supposed to be the bare word "CHITCHAT" or
+ * "TASK" (see CHITCHAT_CLASSIFIER_SYSTEM_PROMPT). Defensive against a model
+ * still wrapping it despite `responseFormat: 'text'` — e.g. `{"label":
+ * "TASK"}`, a fenced code block, or trailing punctuation — by pulling out the
+ * first bare occurrence of either label rather than requiring the whole
+ * trimmed string to equal one exactly.
+ */
+function extractLabelFromClassifierResponse(raw: string): string {
+  const upper = raw.trim().toUpperCase();
+  if (upper.startsWith('CHITCHAT') || upper.startsWith('TASK')) return upper;
+
+  const match = /\b(CHITCHAT|TASK)\b/.exec(upper);
+  return match ? match[1] : upper;
 }

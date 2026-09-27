@@ -11,6 +11,7 @@ import {
   computeReasoningMaxTokens,
   ensureBudgetForReasoning,
   escalatedRetryBudget,
+  minReasoningEffort,
 } from '../utils/reasoning-budget.util';
 import {
   backoffDelayMs,
@@ -344,15 +345,18 @@ export class OpenRouterService {
         appTitle: 'Cellix',
       });
 
+      // TASKS.md #228 — openRouterModelLow is the confirmed reasoning-mandatory
+      // GLM model; minReasoningEffort skips the guaranteed-failing 'none' attempt.
+      const quickCallModel = this.config.openRouterModelLow;
       const response = await this.requestChatCompletion(client, {
-        model: this.config.openRouterModelLow,
+        model: quickCallModel,
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userMessage },
         ],
         temperature: 0,
         maxCompletionTokens: 512,
-        reasoningEffort: 'none',
+        reasoningEffort: minReasoningEffort(quickCallModel),
         responseFormat: 'json_object',
       }, meta);
 
