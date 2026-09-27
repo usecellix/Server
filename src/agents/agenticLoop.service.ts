@@ -32,6 +32,7 @@ import { OverwriteOccupancyChecker } from './checkers/overwrite-occupancy.checke
 import { StructuralIntentChecker } from './checkers/structural-intent.checker';
 import { ComputedColumnChecker } from './checkers/computed-column.checker';
 import { SpecConformanceChecker } from './checkers/spec-conformance.checker';
+import { FormulaConformanceChecker } from './checkers/formula-conformance.checker';
 import { CheckerResult, mergeCheckerResults } from './checkers/checker.types';
 import { buildDeterministicSubtaskActions } from './utils/compound-action.util';
 import { StepRetryExhaustedError } from './errors';
@@ -207,6 +208,7 @@ export class AgenticLoopService {
     private readonly structuralIntentChecker: StructuralIntentChecker = new StructuralIntentChecker(),
     private readonly computedColumnChecker: ComputedColumnChecker = new ComputedColumnChecker(),
     private readonly specConformanceChecker: SpecConformanceChecker = new SpecConformanceChecker(),
+    private readonly formulaConformanceChecker: FormulaConformanceChecker = new FormulaConformanceChecker(),
   ) {}
 
   async run(
@@ -1310,6 +1312,10 @@ export class AgenticLoopService {
     const computedColumn = this.computedColumnChecker.check(subtaskStates);
     // LONG_PROMPT_RELIABILITY_PLAN.md Phase 1 — header row must match the user's column list.
     const specConformance = this.specConformanceChecker.check(subtaskStates);
+    // TASKS.md #328 — a written formula must match what the subtask's own
+    // description spelled out, not just exist (computedColumn) or satisfy a
+    // rule derived from the user's prompt (semantic).
+    const formulaConformance = this.formulaConformanceChecker.check(subtaskStates);
     const merged = mergeCheckerResults([
       completeness,
       formatting,
@@ -1318,6 +1324,7 @@ export class AgenticLoopService {
       structuralIntent,
       computedColumn,
       specConformance,
+      formulaConformance,
     ]);
 
     const needsSemanticReview =
