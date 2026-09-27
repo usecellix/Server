@@ -308,7 +308,9 @@ export class AgentRunStateService {
    * with 5 of Main's 7 subtasks failed (no totals, KPIs, consolidated view or
    * chart) close with "All steps applied."
    */
-  summarizeSkipped(run: AgentRunDocument): Array<{ subtaskId: string; description: string; reason: string }> {
+  summarizeSkipped(
+    run: AgentRunDocument,
+  ): Array<{ subtaskId: string; description: string; label: string; reason: string }> {
     const byId = new Map(run.subtasks.map((subtask) => [subtask.id, subtask]));
     const undelivered = run.subtaskStates.filter(
       (state) =>
@@ -319,12 +321,18 @@ export class AgentRunStateService {
     const undeliveredIds = new Set(undelivered.map((state) => state.subtaskId));
 
     return undelivered.map((state) => {
-      const blockedBy = (byId.get(state.subtaskId)?.dependsOn ?? []).filter((dep) =>
-        undeliveredIds.has(dep),
-      );
+      const subtask = byId.get(state.subtaskId);
+      const blockedBy = (subtask?.dependsOn ?? []).filter((dep) => undeliveredIds.has(dep));
       return {
         subtaskId: state.subtaskId,
-        description: byId.get(state.subtaskId)?.description ?? state.subtaskId,
+        // Raw planner/Executor instruction text — logs and debugging only.
+        // TASKS.md #320: this used to also be shown to the user directly,
+        // which read as internal jargon ("Write the title and KPI band on
+        // Main rows 1-2, with each label directly above its value in the
+        // SAME column..."). `label` below is what a user-facing summary
+        // should use instead.
+        description: subtask?.description ?? state.subtaskId,
+        label: describeSkippedSubtaskForUser(subtask, state.subtaskId),
         reason:
           state.failedReason ??
           (state.decision !== 'accepted'
@@ -358,3 +366,36 @@ export class AgentRunStateService {
     return downstream;
   }
 }
+
+/**
+ * Short, user-facing label for a skipped/failed subtask — TASKS.md #320.
+ * Built from `targetSheet` (required on every `SubTask`, always structured
+ * text) and, when present, a plain-English gloss of `suggestedActionType`.
+ * Deliberately does not touch `description`, which is planner/Executor
+ * instruction prose meant for the model, not a user ("Write the title and
+ * KPI band on Main rows 1-2, with each label directly above its value in the
+ * SAME column: A1=…" is unreadable as a chat message).
+ */
+export function describeSkippedSubtaskForUser(
+  subtask: Pick<SubTask, 'targetSheet' | 'suggestedActionType'> | undefined,
+  subtaskId: string,
+): string {
+  if (!subtask) return `a step (${subtaskId})`;
+  const action = SKIPPED_ACTION_LABELS[subtask.suggestedActionType ?? ''];
+  return action ? `${action} on ${subtask.targetSheet}` : `a step on ${subtask.targetSheet}`;
+}
+
+const SKIPPED_ACTION_LABELS: Record<string, string> = {
+  ADD_SHEET: 'creating a sheet',
+  CREATE_SHEET: 'creating a sheet',
+  COPY_SHEET: 'copying a sheet',
+  CREATE_CHART: 'creating a chart',
+  UPDATE_CHART: 'updating a chart',
+  CONDITIONAL_FORMAT: 'formatting',
+  AGGREGATE_TABLE: 'building a summary',
+  COPY_FILTERED_RANGE: 'copying data',
+  MOVE_RANGE: 'moving data',
+  FORMAT_MATCHING_ROWS: 'formatting',
+  SET_MATCHING_ROWS: 'updating data',
+  DELETE_COLUMN: 'removing a column',
+};

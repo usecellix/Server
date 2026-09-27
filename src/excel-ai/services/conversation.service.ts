@@ -40,7 +40,11 @@ import { ActionWave, splitIntoActionWaves } from '../utils/action-wave.util';
 import { classifyIntent, detectAmbiguity } from '../llm/ambiguity-detector';
 import { LLMTier, SheetSnapshot } from '../../types/cellix.types';
 import { OrchestratorService } from '../../agents/orchestrator.service';
-import { AgentRunStateService, WaveDecision } from '../../agents/agent-run-state.service';
+import {
+  AgentRunStateService,
+  WaveDecision,
+  describeSkippedSubtaskForUser,
+} from '../../agents/agent-run-state.service';
 import { AgentRunDocument } from '../../agents/schemas/agent-run.schema';
 import { ContinueRunDto } from '../dto/continue-run.dto';
 import {
@@ -2818,12 +2822,16 @@ export class ConversationService {
     // An incomplete build reported as complete is the false-completeness
     // failure CODEBASE_ANALYSIS.md §3.7 keeps re-teaching — say what was left.
     const gapNote = describeReconcileGaps(reconciliation.gaps);
+    // TASKS.md #320 — `label` is a short, structured phrase ("a step on
+    // Main"), never the raw planner/Executor instruction text `description`
+    // carries (that's logs-only prose meant for the model, not a chat
+    // message). See `describeSkippedSubtaskForUser` in agent-run-state.service.ts.
     const baseSummary =
       skipped.length === 0
         ? 'All steps applied.'
         : skipped.length === 1
-          ? `Done — 1 step was not applied: ${skipped[0].description}`
-          : `Done — ${skipped.length} steps were not applied (e.g. ${skipped[0].description})`;
+          ? `Done — 1 step was not applied: ${skipped[0].label}`
+          : `Done — ${skipped.length} steps were not applied (e.g. ${skipped[0].label})`;
     const summary = gapNote ? `${baseSummary} ${gapNote}` : baseSummary;
 
     // TASKS.md #267 — closes out the run's history the same way the one-shot
@@ -3421,11 +3429,15 @@ export class ConversationService {
           `Plan/delivery gap: ${missing.length} planned subtask(s) produced no actions — ` +
             missing.map((m) => `${m.id} (${m.targetSheet})`).join(', '),
         );
+        // TASKS.md #320 — same fix as the stepwise path's finishStepwiseRun:
+        // `description` is raw planner instruction prose, not something a
+        // user should read verbatim (truncating it mid-sentence at 110 chars
+        // doesn't fix that, it just cuts the jargon off awkwardly).
         emit('status', {
           message:
             missing.length === 1
-              ? `Note: 1 planned step produced no changes — ${missing[0].description.slice(0, 110)}`
-              : `Note: ${missing.length} planned steps produced no changes (e.g. ${missing[0].description.slice(0, 90)})`,
+              ? `Note: 1 planned step produced no changes — ${describeSkippedSubtaskForUser(missing[0], missing[0].id)}`
+              : `Note: ${missing.length} planned steps produced no changes (e.g. ${describeSkippedSubtaskForUser(missing[0], missing[0].id)})`,
         });
       }
 

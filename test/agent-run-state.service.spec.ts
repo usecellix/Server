@@ -1,4 +1,4 @@
-import { AgentRunStateService } from '../src/agents/agent-run-state.service';
+import { AgentRunStateService, describeSkippedSubtaskForUser } from '../src/agents/agent-run-state.service';
 import { AgentRunDocument } from '../src/agents/schemas/agent-run.schema';
 import { SubTask } from '../src/agents/types/agent.types';
 
@@ -194,6 +194,39 @@ describe('AgentRunStateService — decisions and cascade skipping', () => {
     expect(skipped[0].description).toBe('subtask s2');
   });
 
+  // TASKS.md #320 — live run_1790326084342_hctud2t's closing summary quoted the
+  // planner's raw instruction prose verbatim to the user ("Write the title and
+  // KPI band on Main rows 1-2, with each label directly above its value in the
+  // SAME column: A1=…"). `label` must stay short and structured even when
+  // `description` is long, jargon-heavy Executor instruction text.
+  it('gives skipped subtasks a short, user-facing label distinct from the raw planner description', () => {
+    const verbose: SubTask = {
+      ...subtask('s1'),
+      description:
+        'Write the title and KPI band on Main rows 1-2, with each label directly above its value in the SAME column: A1=… The KPI cells sum the Monthly Totals table\'s own columns — do not re-derive cross-sheet formulas here.',
+      targetSheet: 'Main',
+    };
+    const run = makeRun([verbose], [['s1']], -1);
+    run.subtaskStates.find((s) => s.subtaskId === 's1')!.decision = 'skipped';
+
+    const skipped = service.summarizeSkipped(run);
+
+    expect(skipped[0].label).toBe('a step on Main');
+    expect(skipped[0].label.length).toBeLessThan(30);
+    // description is kept as-is for logs — this test only asserts label diverges from it.
+    expect(skipped[0].description).toBe(verbose.description);
+  });
+
+  it('names the action type in the label when the subtask suggested one', () => {
+    const withHint: SubTask = { ...subtask('s1'), targetSheet: 'Main', suggestedActionType: 'CREATE_CHART' };
+    const run = makeRun([withHint], [['s1']], -1);
+    run.subtaskStates.find((s) => s.subtaskId === 's1')!.decision = 'skipped';
+
+    const skipped = service.summarizeSkipped(run);
+
+    expect(skipped[0].label).toBe('creating a chart on Main');
+  });
+
   // TASKS.md #314 — live run_1790319451898_zyshq7v closed "All steps applied."
   // with 5 of Main's 7 subtasks built nothing: each sat in an ACCEPTED wave.
   it('counts a subtask that failed inside an accepted wave, and names what blocked its dependents', () => {
@@ -212,5 +245,30 @@ describe('AgentRunStateService — decisions and cascade skipping', () => {
     expect(skipped.map((s) => s.subtaskId)).toEqual(['s2', 's3']);
     expect(skipped[0].reason).toBe('hit max iterations (10)');
     expect(skipped[1].reason).toContain('s2');
+  });
+});
+
+// TASKS.md #320 — the ONE-SHOT (non-stepwise) path's `undeliveredSubtasks`
+// status message hit the same raw-description leak; its items are a narrower
+// shape (`{ id, description, targetSheet }`, no `suggestedActionType`) than a
+// full SubTask, which is why this takes a `Pick<...>` rather than `SubTask`.
+describe('describeSkippedSubtaskForUser', () => {
+  it('falls back to "a step" naming just the id when no subtask is found', () => {
+    expect(describeSkippedSubtaskForUser(undefined, 's9')).toBe('a step (s9)');
+  });
+
+  it('works against the narrower shape the one-shot path\'s undeliveredSubtasks carries (no suggestedActionType field at all)', () => {
+    const narrow: { id: string; description: string; targetSheet: string } = {
+      id: 's1',
+      description: 'Write a very long internal instruction the user should never see verbatim.',
+      targetSheet: 'January',
+    };
+    expect(describeSkippedSubtaskForUser(narrow, narrow.id)).toBe('a step on January');
+  });
+
+  it('uses the generic label when suggestedActionType has no known gloss', () => {
+    expect(
+      describeSkippedSubtaskForUser({ targetSheet: 'Main', suggestedActionType: 'SOME_UNMAPPED_TYPE' }, 's1'),
+    ).toBe('a step on Main');
   });
 });
