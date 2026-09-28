@@ -95,6 +95,54 @@ describe('diff.engine — structural inverse: ADD_SHEET / DELETE_SHEET (TASKS.md
 
 });
 
+describe('diff.engine — structural inverse: RENAME_SHEET (TASKS.md #255)', () => {
+  it('reverting a RENAME_SHEET renames it back, with cell values/formulas untouched', () => {
+    const before = buildShadowWorkbook(baseContext);
+    const withFormula = virtualApply(before, [
+      { type: 'SET_CELL', sheetName: 'Sheet1', row: 1, col: 2, value: 0.15, format: { numberFormat: '0.00%' } },
+    ] as never);
+
+    const { after, restored, structuralOps } = revertRoundTrip(withFormula, [
+      { type: 'RENAME_SHEET', sheetName: 'Sheet1', newSheetName: 'Apr 2024 Data' },
+    ]);
+
+    expect(after.sheets.has('Apr 2024 Data')).toBe(true);
+    expect(after.sheets.has('Sheet1')).toBe(false);
+    expect(structuralOps).toEqual([
+      expect.objectContaining({
+        opType: 'RENAME_SHEET',
+        sheetName: 'Apr 2024 Data',
+        params: { oldName: 'Sheet1' },
+      }),
+    ]);
+
+    expect(restored.sheets.has('Apr 2024 Data')).toBe(false);
+    const restoredSheet = restored.sheets.get('Sheet1');
+    expect(restoredSheet).toBeDefined();
+    expect(restoredSheet?.cells.get('A1')?.value).toBe('Item');
+    expect(restoredSheet?.cells.get('C2')?.value).toBe(0.15);
+    expect(restoredSheet?.cells.get('C2')?.numberFormat).toBe('0.00%');
+  });
+
+  it('also resolves the client wire-shape (oldName/newName fields, no sheetName/newSheetName)', () => {
+    const before = buildShadowWorkbook(baseContext);
+    const { after, restored } = revertRoundTrip(before, [
+      { type: 'RENAME_SHEET', oldName: 'Sheet1', newName: 'Ledger' },
+    ]);
+
+    expect(after.sheets.has('Ledger')).toBe(true);
+    expect(restored.sheets.has('Sheet1')).toBe(true);
+    expect(restored.sheets.has('Ledger')).toBe(false);
+  });
+
+  it('produces no structural op when oldName or newName is missing', () => {
+    const before = buildShadowWorkbook(baseContext);
+    const after = virtualApply(before, [{ type: 'RENAME_SHEET', sheetName: 'Sheet1' }] as never);
+    const ops = captureStructuralOps(before, after, [{ type: 'RENAME_SHEET', sheetName: 'Sheet1' }] as never);
+    expect(ops).toEqual([]);
+  });
+});
+
 describe('diff.engine — structural inverse: INSERT_COLUMN / DELETE_COLUMN (TASKS.md #13)', () => {
   it('reverting an INSERT_COLUMN removes the inserted column and leaves original columns/data untouched (spec-14 repro)', () => {
     const before = buildShadowWorkbook(baseContext);

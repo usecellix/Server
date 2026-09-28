@@ -50,12 +50,18 @@ export const VIRTUAL_APPLY_CATALOG: Record<SheetActionType, VirtualApplyCatalogE
   CREATE_SHEET: { simulated: true },
   RENAME_SHEET: { simulated: true },
   COPY_SHEET: { simulated: true },
+  MOVE_SHEET: {
+    simulated: false,
+    reason:
+      'Tab ORDER only — no cell value, formula or structure the shadow workbook diffs changes, and every checker resolves sheets by name rather than position. TASKS.md #212.',
+  },
   DELETE_SHEET: { simulated: true },
   FILL_DOWN: { simulated: true },
   FILL_RIGHT: { simulated: true },
   CLEAR_CONTENT: { simulated: true },
   CLEAR_ALL: { simulated: true },
   SET_MATCHING_ROWS: { simulated: true },
+  DELETE_MATCHING_ROWS: { simulated: true },
   MERGE_CELLS: { simulated: true },
   // Presence-only (sheet/range/rule-kind), not a fill simulation — TASKS.md #39.
   CONDITIONAL_FORMAT: { simulated: true },

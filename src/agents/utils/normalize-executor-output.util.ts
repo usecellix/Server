@@ -10,6 +10,7 @@ import { annotateClearIntentOverwrite } from './clear-intent-overwrite.util';
 import { stripSheetPrefix } from './range-address.util';
 import { parseA1Cell, parseA1Range } from './range-merge.util';
 import { normalizeChartColorScheme } from './chart-color-scheme.util';
+import { resolveColumnWidthToPoints } from '../../excel-ai/utils/column-width.util';
 
 /** Action types that sanitizeAction requires integer row/col for. */
 const INDEX_RANGE_ACTION_TYPES = new Set<SheetActionType>([
@@ -139,6 +140,23 @@ export function normalizeSingleAction(
   if (typeof record.oldName === 'string') action.oldName = record.oldName;
   if (typeof record.newName === 'string') action.newName = record.newName;
   if (typeof record.name === 'string') action.name = record.name;
+  // TASKS.md #279 — ADD_SHEET/CREATE_SHEET's real field for the NEW sheet's
+  // name is `name` (client/src/engine/handlers/sheet.handler.ts reads only
+  // that), but line 110 above sets `sheetName` on every action unconditionally
+  // and this prompt's own generic "Set sheetName on actions" guidance points
+  // the model at exactly that field. A model that follows the generic
+  // guidance instead of ADD_SHEET's own schema emits `sheetName` with no
+  // `name` at all, and the client throws Office.js's generic "argument is
+  // invalid or missing" — a real live symptom, not hypothetical (frontend.log:
+  // 5 ADD_SHEET failures in one changeset, identical message). Only fills the
+  // gap; a model that DID emit `name` is untouched.
+  if (
+    (type === 'ADD_SHEET' || type === 'CREATE_SHEET') &&
+    !action.name &&
+    typeof action.sheetName === 'string'
+  ) {
+    action.name = action.sheetName;
+  }
   if (typeof record.tableName === 'string') action.tableName = record.tableName;
   if (typeof record.question === 'string') action.question = record.question;
   if (Array.isArray(record.options)) action.options = record.options.map(String);
@@ -167,6 +185,9 @@ export function normalizeSingleAction(
   if (typeof record.sourceName === 'string') action.sourceName = record.sourceName;
   if (typeof record.copyFrom === 'string') action.copyFrom = record.copyFrom;
   if (typeof record.newSheetName === 'string') action.newSheetName = record.newSheetName;
+  // MOVE_SHEET neighbours — TASKS.md #212.
+  if (typeof record.beforeSheet === 'string') action.beforeSheet = record.beforeSheet;
+  if (typeof record.afterSheet === 'string') action.afterSheet = record.afterSheet;
   // DELETE_CONDITIONAL_FORMAT — revert-only, not advertised to the Executor (TASKS.md #40).
   if (typeof record.ruleId === 'string') action.ruleId = record.ruleId;
   // DELETE_CHART — revert-only, not advertised to the Executor (TASKS.md #15).
@@ -236,6 +257,11 @@ export function normalizeSingleAction(
     if (typeof tableName === 'string') action.tableName = tableName.trim();
     action.hasHeaders =
       record.hasHeaders === undefined ? true : Boolean(record.hasHeaders);
+    // Unlike hasHeaders, this one must NOT be defaulted — an absent value has
+    // to reach the client absent so Excel keeps its own default. TASKS.md #268.
+    if (record.showFilterButton !== undefined) {
+      action.showFilterButton = Boolean(record.showFilterButton);
+    }
   }
 
   if (type === 'SORT_RANGE') {
@@ -392,6 +418,54 @@ export function normalizeSingleAction(
     }
   }
 
+  // Filter was previously not copied for AUTO_FILTER at all — a plain object
+  // field, unlike `range`/`sheetName`, which the generic copies above already
+  // handle. Without this, "show only rows where X" always arrived as bare
+  // dropdown arrows with every row still visible. TASKS.md #221.
+  if (type === 'AUTO_FILTER') {
+    action.hasHeaders = record.hasHeaders === undefined ? true : Boolean(record.hasHeaders);
+    if (record.filter && typeof record.filter === 'object') {
+      const filter = record.filter as Record<string, unknown>;
+      if (
+        (typeof filter.column === 'string' || typeof filter.column === 'number') &&
+        typeof filter.operator === 'string' &&
+        (typeof filter.value === 'string' || typeof filter.value === 'number')
+      ) {
+        action.filter = {
+          column: String(filter.column),
+          operator: filter.operator as NonNullable<SheetActionPayload['filter']>['operator'],
+          value: filter.value,
+        };
+      }
+    }
+  }
+
+  // Same range/filter shape as SET_MATCHING_ROWS, minus the target column —
+  // an omitted filter is meaningful here ("rows where every cell is empty").
+  // TASKS.md #238.
+  if (type === 'DELETE_MATCHING_ROWS') {
+    if (typeof record.sheetName === 'string') action.sheetName = record.sheetName;
+    if (typeof record.range === 'string') action.range = stripSheetPrefix(record.range);
+    else if (typeof record.sourceRange === 'string') {
+      action.range = stripSheetPrefix(record.sourceRange);
+    }
+    action.hasHeaders = record.hasHeaders === undefined ? true : Boolean(record.hasHeaders);
+    if (record.filter && typeof record.filter === 'object') {
+      const filter = record.filter as Record<string, unknown>;
+      if (
+        (typeof filter.column === 'string' || typeof filter.column === 'number') &&
+        typeof filter.operator === 'string' &&
+        (typeof filter.value === 'string' || typeof filter.value === 'number')
+      ) {
+        action.filter = {
+          column: String(filter.column),
+          operator: filter.operator as NonNullable<SheetActionPayload['filter']>['operator'],
+          value: filter.value,
+        };
+      }
+    }
+  }
+
   if (type === 'SET_MATCHING_ROWS') {
     if (typeof record.sheetName === 'string') action.sheetName = record.sheetName;
     if (typeof record.range === 'string') action.range = stripSheetPrefix(record.range);
@@ -499,6 +573,18 @@ export function normalizeSingleAction(
   if (INDEX_CELL_ACTION_TYPES.has(type)) {
     expandCellAddressToIndices(action);
   }
+  // Comments are single-cell but live in INDEX_RANGE_ACTION_TYPES, so only the
+  // `range` conversion ran for them — an ADD_COMMENT addressed the documented
+  // way (`address: "E9"`, which is what executor.prompt.ts now shows) still
+  // reached sanitizeAction without row/col and was dropped. TASKS.md #215.
+  if (type === 'ADD_COMMENT' || type === 'DELETE_COMMENT') {
+    expandCellAddressToIndices(action);
+  }
+  expandColumnLettersToIndices(action, record);
+
+  if (type === 'SET_COLUMN_WIDTH') {
+    clampColumnWidth(action);
+  }
 
   if (!hasRequiredFields(action)) return null;
 
@@ -520,7 +606,18 @@ export function normalizeSingleAction(
  */
 function hasRequiredFields(action: SheetActionPayload): boolean {
   if (action.type === 'BATCH_SET') {
-    return Array.isArray(action.operations) && action.operations.length > 0;
+    // Every operation must be an actual cell write. The model repeatedly emits
+    // `operations: [28]` — the COUNT of the writes it meant, not the writes —
+    // and a non-empty array passed this check: a live run marked Main's
+    // Monthly Totals header and January–June "completed" with nothing written,
+    // and the dashboard's KPIs and chart silently summed an empty table.
+    // Rejecting the whole action (not just the bad entries) sends it back
+    // through the scoped retry instead of half-applying it. TASKS.md #322.
+    return (
+      Array.isArray(action.operations) &&
+      action.operations.length > 0 &&
+      action.operations.every(isCellWriteOperation)
+    );
   }
   if (action.type === 'CONDITIONAL_FORMAT') {
     return Boolean(action.range && action.rule);
@@ -528,8 +625,66 @@ function hasRequiredFields(action: SheetActionPayload): boolean {
   return true;
 }
 
+/** A BATCH_SET entry that names a cell (A1 address or row/col) and writes something to it. */
+function isCellWriteOperation(op: unknown): boolean {
+  if (!op || typeof op !== 'object' || Array.isArray(op)) return false;
+  const record = op as Record<string, unknown>;
+  const hasCell =
+    (typeof record.address === 'string' && record.address.trim() !== '') ||
+    (isValidIndex(record.row) && isValidIndex(record.col));
+  return hasCell && ('value' in record || 'formula' in record);
+}
+
 function isValidIndex(value: unknown): value is number {
   return typeof value === 'number' && Number.isInteger(value) && value >= 0;
+}
+
+const COLUMN_ACTION_TYPES = new Set<SheetActionType>([
+  'HIDE_COLUMN',
+  'UNHIDE_COLUMN',
+  'SHOW_COLUMN',
+  'SET_COLUMN_WIDTH',
+  'DELETE_COLUMN',
+]);
+
+function columnLetterToIndex(letters: string): number | null {
+  const upper = letters.trim().toUpperCase();
+  if (!/^[A-Z]{1,3}$/.test(upper)) return null;
+  let index = 0;
+  for (let i = 0; i < upper.length; i += 1) {
+    index = index * 26 + (upper.charCodeAt(i) - 64);
+  }
+  const zeroBased = index - 1;
+  return zeroBased <= 16383 ? zeroBased : null;
+}
+
+/**
+ * Column actions addressed the way models like to write them — `columns:
+ * ["I"]`, `column: "C"`, `columnLetter: "B"` — instead of the 0-based `col`
+ * the schema wants. Same failure shape as the A1-address conversions above
+ * (#183): it verifies clean, then sanitizeAction drops it for want of `col`
+ * and the user is told to rephrase. Convert rather than discard. TASKS.md #215.
+ */
+function expandColumnLettersToIndices(
+  action: SheetActionPayload,
+  /** The raw model output — singular `column`/`columnLetter` are never copied onto the action. */
+  record: Record<string, unknown>,
+): void {
+  if (!COLUMN_ACTION_TYPES.has(action.type) || isValidIndex(action.col)) return;
+
+  const raw = record.columns ?? record.column ?? record.columnLetter ?? record.columnLetters;
+  const letters = Array.isArray(raw) ? raw : raw === undefined ? [] : [raw];
+  const indices = letters
+    .filter((value): value is string => typeof value === 'string')
+    .map((value) => columnLetterToIndex(value))
+    .filter((value): value is number => value !== null)
+    .sort((a, b) => a - b);
+
+  if (indices.length === 0) return;
+  action.col = indices[0];
+  if (!isValidIndex(action.colCount)) {
+    action.colCount = indices[indices.length - 1] - indices[0] + 1;
+  }
 }
 
 /**
@@ -563,6 +718,44 @@ function expandRangeStringToIndices(action: SheetActionPayload): void {
  * address ("A1:B2") on a single-cell action resolves to its top-left, which is
  * the only cell such an action can mean.
  */
+/**
+ * TASKS.md #265 — `Range.format.columnWidth` (what the client's
+ * `handleWorksheetAction` writes SET_COLUMN_WIDTH's `width` into) is in
+ * POINTS, Excel's own unit, where the default column is ~48pt. The Executor
+ * prompt's schema examples disagreed with each other on this — one used 130
+ * (plausible points), the other 20 (a "character count" a literal user
+ * request happened to say) — with no unit stated either place. Live, the
+ * model reached for small numbers (12-22) styling a dashboard, which at 22pt
+ * is under half the DEFAULT column width: "Guest Name", "Rate Per Night" etc.
+ * all clipped down to a couple of characters, reading as broken/blank sheets.
+ *
+ * The first cut of this was a FLOOR (raise anything under 40 to 40) and that
+ * was not enough — TASKS.md #273. Telling the model to use points did not
+ * stop it reaching for character counts: a later live run emitted a sub-40
+ * value for all thirteen columns, so every one was floored to exactly 40 and
+ * the sheet came out uniformly cramped. A floor destroys the one thing the
+ * model got RIGHT — the relative sizing, a wide "Guest Name" against a narrow
+ * "Unit No" — by flattening every column to the same minimum.
+ *
+ * So convert rather than clamp. Excel's own character-width unit maps to
+ * pixels as `chars * MaxDigitWidth + 5` (MaxDigitWidth is 7px for the default
+ * Calibri 11), and pixels to points as `px * 0.75`. That round-trips the
+ * known default exactly: 8.43 chars -> 64px -> 48pt.
+ *
+ * Which unit a number is in is decided by the same boundary the floor used,
+ * and for the same reason: under ~40 POINTS is narrower than half a default
+ * column and unusable for real text, so such a value is far more likely a
+ * character count than a deliberate choice. Above it, the number is taken at
+ * its word. A deliberate sub-40pt spacer column is the one case this gets
+ * wrong — it would be widened — but the previous behaviour got that case
+ * wrong too (flattened to 40), and the common case is now right instead of
+ * merely legible.
+ */
+function clampColumnWidth(action: SheetActionPayload): void {
+  if (typeof action.width !== 'number') return;
+  action.width = resolveColumnWidthToPoints(action.width);
+}
+
 function expandCellAddressToIndices(action: SheetActionPayload): void {
   if (isValidIndex(action.row) && isValidIndex(action.col)) {
     return;

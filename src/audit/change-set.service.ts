@@ -84,7 +84,30 @@ export class ChangeSetService {
     const rawChanges = generateDiff(beforeShadow, afterShadow);
     // Cells a structural column op's own inverse already fully restores via its shift —
     // the generic per-cell inverse must not also touch them (see TASKS.md #13).
-    const baseChanges = excludeStructurallyOwnedChanges(rawChanges, structuralOps);
+    const structurallyFiltered = excludeStructurallyOwnedChanges(rawChanges, structuralOps);
+    // COPY_SHEET / ADD_SHEET{copyFrom} clone the SOURCE sheet's shadow cells so
+    // agenticLoop.service.ts's own later virtualApply() calls (replaying a
+    // turn's own subtasks before anything touches real Excel) see the copy's
+    // content — necessary and correct there. But THIS diff compares the shadow
+    // against what will actually land in Excel, and a live-tested COPY_SHEET
+    // run showed exactly why that's unreliable for a copy specifically: the
+    // shadow's source-sheet data can itself be an incomplete/stale sample (a
+    // 61-row sheet with cell data for only ~11 rows, one of them wrong), so
+    // the cloned destination inherited the same gaps and produced a
+    // confidently wrong "38 cells do not match" alarm on a copy Office.js
+    // performed correctly. Excluding the destination sheet's cells from THIS
+    // diff (not from the shared shadow simulation) fixes the false alarm
+    // without touching agenticLoop.service.ts's legitimate use of the same
+    // cloning behavior. TASKS.md #246 follow-up.
+    const copiedDestSheets = new Set(
+      input.actions
+        .filter((a) => a.type === 'COPY_SHEET' || (a.type === 'ADD_SHEET' && a.copyFrom))
+        .map((a) => a.newSheetName ?? a.newName ?? a.sheetName ?? a.name)
+        .filter((name): name is string => Boolean(name)),
+    );
+    const baseChanges = copiedDestSheets.size
+      ? structurallyFiltered.filter((c) => !copiedDestSheets.has(c.sheet))
+      : structurallyFiltered;
     const changes = this.attachProvenance(baseChanges, input.provenance);
     // Full action objects, not just .type — TASKS.md #40's CONDITIONAL_FORMAT special case
     // needs to see `existingRuleId` to distinguish a revertible create from an unrevertible modify.

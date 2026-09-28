@@ -28,7 +28,16 @@ import {
 import { parseAgentJson } from './utils/parse-agent-json.util';
 import { buildCompoundFallbackSubtasks } from './utils/compound-action.util';
 import { ensureNumberFormatPlanSafety } from './utils/preserve-number-format.util';
-import { ensureReferencedSheetsPlanned, ensureRepeatForCoverage } from './utils/plan-coverage.util';
+import {
+  ensureReferencedSheetsPlanned,
+  ensureRepeatForCoverage,
+  ensureTargetSheetsCreated,
+  ensureWritersDependOnCreator,
+  dropElidedRepeatEntries,
+  isElidedBatch,
+  isElidedDescription,
+  synthesizeSubtasksForEmptyPhase,
+} from './utils/plan-coverage.util';
 import {
   PLANNER_LAST_RESORT_MAX_TOKENS,
   PLANNER_REASONING_MAX_TOKENS,
@@ -100,6 +109,17 @@ function needsTwoPassPlanning(prompt: string): boolean {
 /** Coarse-pass budget — a phase list is 5-8 short entries, nowhere near this. */
 const COARSE_PLAN_MAX_TOKENS = 2048;
 
+/**
+ * Re-ask for a phase whose expansion came back as stubs — TASKS.md #325. The
+ * model elides when the phase feels too big for its budget, so say plainly
+ * that fewer subtasks is the fix, never shorter words.
+ */
+const ELIDED_PHASE_RETRY_INSTRUCTION =
+  "IMPORTANT: your previous answer for this phase shortened subtask descriptions into stubs ending in \"...\" " +
+  "(e.g. \"Create sheet...\"). A stub cannot be executed — the builder has no schema, range or formula to work from. " +
+  "Write EVERY description in full: the sheet, the exact column list, and every formula spelled out. " +
+  "If that is too long, emit FEWER subtasks (fold a sheet's work into ONE subtask); never shorten the words.";
+
 /** Per-phase expansion budget — one phase's worth of subtasks, not the whole plan. */
 const PHASE_EXPANSION_MAX_TOKENS = 4096;
 
@@ -133,6 +153,25 @@ export class PlannerAgent {
      *  one call and has nothing incremental to report. */
     onProgress?: PlannerProgressCallback,
   ): Promise<PlannerOutput> {
+    // TASKS.md #282 — a turn resuming after a clarifying question sends only
+    // the short reply ("dd-mm-yyyy") as `prompt`; the actual 12-month/Main/
+    // dashboard request lives in `history`. A live run showed exactly what
+    // happens without this: `needsTwoPassPlanning("dd-mm-yyyy")` and
+    // `resolveTier3ComplexityScore("dd-mm-yyyy")` both score a 10-character
+    // string with no object keywords in it — single-pass mode, minimum token
+    // budget — even though the model (reading `history` in the real planning
+    // call below, unaffected by this) correctly understood the full scope and
+    // tried to plan it anyway. The result was a plan silently shrunk to Main +
+    // Lists + ONE month, not truncated/elided (so #271's guard never caught
+    // it) — it never had the two-pass budget a compound build like this needs
+    // to describe all twelve. `sizingPrompt` is used ONLY for the two
+    // decisions that size the call (two-pass or not, how many tokens) — never
+    // for what the model is actually told, which already gets full `history`
+    // either way.
+    const sizingPrompt = [...history.filter((h) => h.role === 'user').map((h) => h.content), prompt].join(
+      '\n',
+    );
+
     // Two-pass planning (TASKS.md #191) — a single-pass plan for a large
     // compound build (12 month sheets + a multi-section dashboard) has to
     // describe everything in one JSON response and repeatedly truncates even
@@ -142,7 +181,7 @@ export class PlannerAgent {
     // object-count alone. Only Tier 3 (or unclassified, which defaults to
     // Tier 3 sizing) is ever large enough to need this; Tier 0-2 requests are
     // structurally too small to trigger either signal.
-    if ((complexity === undefined || complexity === 3) && needsTwoPassPlanning(prompt)) {
+    if ((complexity === undefined || complexity === 3) && needsTwoPassPlanning(sizingPrompt)) {
       return this.planTwoPass(
         prompt,
         context,
@@ -170,7 +209,7 @@ export class PlannerAgent {
       userMessage = `[Router assumption: ${routerAssumption}]\n\n${userMessage}`;
     }
 
-    const maxTokens = resolvePlannerMaxTokens(complexity, prompt);
+    const maxTokens = resolvePlannerMaxTokens(complexity, sizingPrompt);
 
     // Spec 16 fix #4: refuse the call up front if it would exceed the shared
     // per-call cost cap, rather than never checking at all (PlannerAgent
@@ -299,6 +338,10 @@ export class PlannerAgent {
       this.logger.log(
         `Planner produced ${parsed.subtasks.length} subtasks, confidence: ${parsed.confidence}`,
       );
+      // TASKS.md #271 — before any coverage net runs, refuse a plan whose
+      // descriptions were elided; the nets below would faithfully clone and
+      // wire up subtasks that cannot be executed.
+      this.assertDescriptionsNotElided(parsed, prompt);
       const covered = this.pruneUnsatisfiableSubtasks(
         this.planReferencedSheets(
           ensureNumberFormatPlanSafety(prompt, this.ensureMultiClauseCoverage(prompt, parsed)),
@@ -511,6 +554,8 @@ export class PlannerAgent {
     const subtasksByPhase = new Map<string, SubTask[]>();
     const allSubtasks: SubTask[] = [];
     const clarifications: string[] = [...coarse.clarificationsNeeded];
+    /** Phases whose expansion came back empty — TASKS.md #285. */
+    const emptyPhaseIds: string[] = [];
     let phaseIndex = 0;
 
     for (const phase of ordered) {
@@ -523,7 +568,7 @@ export class PlannerAgent {
         (depPhaseId) => subtasksByPhase.get(depPhaseId) ?? [],
       ).map((s) => s.id);
 
-      const expansion = await this.expandPhase(
+      let expansion = await this.expandPhase(
         prompt,
         context,
         history,
@@ -535,11 +580,79 @@ export class PlannerAgent {
         usageTotals,
       );
 
+      // TASKS.md #325 — one phase coming back as stubs ("Create sheet...")
+      // used to reach the plan-wide check below and throw away the WHOLE plan:
+      // a live build stopped after 14s with "Planner returned 12 elided subtask
+      // descriptions out of 20" and nothing built. Re-ask for just this phase
+      // once, saying what went wrong, before anything else gives up on it.
+      if (isElidedBatch(expansion.subtasks)) {
+        const stubCount = expansion.subtasks.filter((s) => isElidedDescription(s.description)).length;
+        this.logger.warn(
+          `Two-pass planning: phase "${phase.id}" came back with ${stubCount} of ` +
+            `${expansion.subtasks.length} description(s) elided — re-expanding it once.`,
+        );
+        const retried = await this.expandPhase(
+          prompt,
+          context,
+          history,
+          promptContext,
+          correlationId,
+          phase,
+          dependencySubtaskIds,
+          model,
+          usageTotals,
+          ELIDED_PHASE_RETRY_INSTRUCTION,
+        );
+        const retriedStubs = retried.subtasks.filter((s) => isElidedDescription(s.description)).length;
+        if (retried.subtasks.length > 0 && retriedStubs < stubCount) expansion = retried;
+      }
+
+      // TASKS.md #285 — a phase whose expansion produced NOTHING must not
+      // silently drop out of the plan. `ensureRepeatForCoverage` below clones
+      // a sibling subtask and so cannot help when there is no sibling at all;
+      // a live run lost all 12 month sheets exactly this way, and shipped
+      // "Step 1 of 3 ✓ Applied" with the dashboard summing sheets that were
+      // never created. The coarse phase still knows what it wanted built.
+      let phaseSubtasks = expansion.subtasks;
+      let recoveredFromEmpty = false;
+      if (phaseSubtasks.length === 0) {
+        phaseSubtasks = synthesizeSubtasksForEmptyPhase(phase);
+        recoveredFromEmpty = phaseSubtasks.length > 0;
+        if (recoveredFromEmpty) {
+          this.logger.error(
+            `Two-pass planning: phase "${phase.id}" (${phase.kind}) expanded to ZERO subtasks — ` +
+              `synthesized ${phaseSubtasks.length} from the phase itself rather than dropping it ` +
+              `(${phaseSubtasks.map((s) => s.targetSheet).join(', ')}).`,
+          );
+        } else {
+          // Nothing to synthesize from either (no repeatFor, no targetSheet) —
+          // the only honest outcome left is to stop claiming this plan is
+          // complete, which drops confidence and makes the caller ASK.
+          emptyPhaseIds.push(phase.id);
+          this.logger.error(
+            `Two-pass planning: phase "${phase.id}" (${phase.kind}) expanded to ZERO subtasks and ` +
+              `carries nothing to synthesize from — the plan is incomplete.`,
+          );
+        }
+      }
+
       // TASKS.md #229 — a repeatFor phase must cover EVERY entry; the expansion
       // prompt asking for it is not enough (live: 12 months planned, only
       // January expanded). Done before stitching so dependent phases see all
       // entries' real subtask ids.
-      const repeatCoverage = ensureRepeatForCoverage(phase, expansion.subtasks);
+      // Any entry of a repeated phase still left as stubs is rebuilt from a
+      // sibling that came back whole (TASKS.md #325), via the same cloning
+      // that fills entries the expansion skipped outright.
+      const elidedRepeat = dropElidedRepeatEntries(phase, phaseSubtasks);
+      if (elidedRepeat.dropped.length > 0) {
+        this.logger.warn(
+          `Two-pass planning: phase "${phase.id}" — rebuilding ${elidedRepeat.dropped.length} elided ` +
+            `entr${elidedRepeat.dropped.length === 1 ? 'y' : 'ies'} from a whole sibling: ` +
+            `${elidedRepeat.dropped.join(', ')}.`,
+        );
+        phaseSubtasks = elidedRepeat.subtasks;
+      }
+      const repeatCoverage = ensureRepeatForCoverage(phase, phaseSubtasks);
       if (repeatCoverage.filled.length > 0) {
         this.logger.warn(
           `Two-pass planning: phase "${phase.id}" expanded only part of its repeatFor — cloned ` +
@@ -563,16 +676,31 @@ export class PlannerAgent {
 
       subtasksByPhase.set(phase.id, stitched);
       allSubtasks.push(...stitched);
-      clarifications.push(...expansion.clarificationsNeeded);
+      // A recovered phase's own "I could not plan this part" note is no longer
+      // true — synthesis covered it — and surfacing it would tell the user to
+      // ask for work the plan now actually contains. TASKS.md #285.
+      if (!recoveredFromEmpty) {
+        clarifications.push(...expansion.clarificationsNeeded);
+      }
     }
 
     const merged: PlannerOutput = {
       subtasks: allSubtasks,
       clarificationsNeeded: clarifications,
-      confidence: coarse.confidence,
+      // TASKS.md #285 — a phase that expanded to nothing was recovered by
+      // synthesis above, but the plan is no longer as trustworthy as the
+      // coarse pass believed. Reporting `coarse.confidence` unchanged is what
+      // let the failed phase pass as a confident plan; the synthesized
+      // subtasks are plain text, so say so rather than overstate them.
+      confidence: emptyPhaseIds.length > 0 ? 'low' : coarse.confidence,
       reasoning: coarse.reasoning,
     };
 
+    // TASKS.md #271 — two-pass is where the live elided plan came from: the
+    // per-phase expansion calls shortened their descriptions to fit, and
+    // `ensureRepeatForCoverage` then cloned the stub template across all 12
+    // months, multiplying one unusable subtask into 84.
+    this.assertDescriptionsNotElided(merged, prompt);
     const covered = this.pruneUnsatisfiableSubtasks(
       this.planReferencedSheets(
         ensureNumberFormatPlanSafety(prompt, this.ensureMultiClauseCoverage(prompt, merged)),
@@ -638,10 +766,19 @@ export class PlannerAgent {
     });
     addUsage(usageTotals, outcome.usage);
 
-    let parsed = outcome.truncated ? null : this.tryParseCoarsePlan(raw, correlationId, model);
+    // TASKS.md #335 — a coarse plan with no phases AND no question is not a
+    // plan. Live: the model answered `{"phases":[]}` in 940ms; it was accepted
+    // as "Planned 0 steps", every check "passed" an empty build, and the user
+    // got "Something went wrong applying this change — try rephrasing".
+    // Treated exactly like an unparseable answer: retry, then the one-phase
+    // fallback below.
+    const usable = (plan: CoarsePlanOutput | null): CoarsePlanOutput | null =>
+      plan && (plan.phases.length > 0 || plan.clarificationsNeeded.length > 0) ? plan : null;
+
+    let parsed = outcome.truncated ? null : usable(this.tryParseCoarsePlan(raw, correlationId, model));
     if (!parsed) {
       this.logger.warn(
-        `Two-pass planning: coarse pass ${outcome.truncated ? 'truncated' : 'unparseable'} — retrying once.`,
+        `Two-pass planning: coarse pass ${outcome.truncated ? 'truncated' : 'unparseable or empty'} — retrying once.`,
       );
       const retryOutcome: LlmCompletionOutcome = {};
       raw = await this.llm.complete({
@@ -655,7 +792,7 @@ export class PlannerAgent {
         outcome: retryOutcome,
       });
       addUsage(usageTotals, retryOutcome.usage);
-      parsed = retryOutcome.truncated ? null : this.tryParseCoarsePlan(raw, correlationId, model);
+      parsed = retryOutcome.truncated ? null : usable(this.tryParseCoarsePlan(raw, correlationId, model));
     }
 
     if (parsed) return parsed;
@@ -688,22 +825,29 @@ export class PlannerAgent {
     dependencySubtaskIds: string[],
     model: string,
     usageTotals: UsageTotals | undefined,
+    /** Appended to the user message — used to re-ask after an elided expansion (#325). */
+    extraInstruction?: string,
   ): Promise<PlannerOutput> {
     const systemPrompt = buildPhaseExpansionSystemPrompt(PLANNER_RULES_BODY + PLANNER_RULES_ADDITION);
-    const userMessage = buildPhaseExpansionUserMessage({
-      originalPrompt,
-      context,
-      history,
-      promptContext,
-      phase,
-      dependencySubtaskIds,
-    });
+    const userMessage =
+      buildPhaseExpansionUserMessage({
+        originalPrompt,
+        context,
+        history,
+        promptContext,
+        phase,
+        dependencySubtaskIds,
+      }) + (extraInstruction ? `\n\n${extraInstruction}` : '');
 
     const outcome: LlmCompletionOutcome = {};
     let raw = await this.llm.complete({
       systemPrompt,
       model,
-      maxTokens: PHASE_EXPANSION_MAX_TOKENS,
+      // An elision re-ask gets room to write in full — shortening was the
+      // model fitting a budget it felt too small (TASKS.md #325).
+      maxTokens: extraInstruction
+        ? Math.min(PHASE_EXPANSION_MAX_TOKENS * 2, PLANNER_LAST_RESORT_MAX_TOKENS)
+        : PHASE_EXPANSION_MAX_TOKENS,
       reasoningEffort: 'high',
       reasoningMaxTokens: PLANNER_REASONING_MAX_TOKENS,
       userMessage,
@@ -1179,6 +1323,61 @@ export class PlannerAgent {
    * time, is the CODEBASE_ANALYSIS.md §3.7 rule: partial-and-honest beats
    * complete-looking-and-wrong.
    */
+  /**
+   * A plan whose descriptions were elided into stubs — TASKS.md #271.
+   *
+   * Live failure: a 95-subtask plan (each month split seven ways) blew the
+   * completion budget, and the model coped by shortening every description
+   * rather than emitting fewer subtasks — "Write headers... ", "Set
+   * formulas... ", median 20 characters. Those parse perfectly and carry real
+   * ids and dependsOn, so every existing guard passed them. The Executor then
+   * had nothing to work from and invented schemas out of the prompt's own
+   * worked examples: GST purchase registers on some month sheets, a
+   * four-column expense log on another, no header row at all on five more.
+   *
+   * A description this short cannot name a schema, a range or a formula, so
+   * it cannot be executed faithfully no matter how good the Executor is.
+   * Detecting it is the only way to tell an elided plan from a terse-but-whole
+   * one, and shipping a workbook of confidently wrong sheets is the
+   * false-completeness shape CODEBASE_ANALYSIS.md §3.7 keeps re-teaching —
+   * better to fail loudly and let the retry produce a real plan.
+   */
+  private assertDescriptionsNotElided(output: PlannerOutput, originalMessage: string): void {
+    // Keyed on the ELISION MARKER, not on shortness alone. Every stub in the
+    // live plan ended in an ellipsis ("Write headers... ", "Set formulas... "),
+    // which is the model explicitly signalling omitted content. A merely terse
+    // description can still be complete — "Hide the Lists sheet" and "Create
+    // January" say everything they need to — and refusing those would reject
+    // perfectly good plans, so length alone is not the test.
+    const isStub = isElidedDescription;
+
+    const stubs = output.subtasks.filter((subtask) => isStub(subtask.description));
+    if (stubs.length === 0) return;
+
+    // One terse subtask among many is fine ("Hide the Lists sheet" is a
+    // complete instruction at 20 characters). A PLAN-WIDE pattern is the
+    // truncation signal — that is what distinguishes the two.
+    const ratio = stubs.length / output.subtasks.length;
+    if (stubs.length < 3 || ratio < 0.3) {
+      this.logger.warn(
+        `Planner produced ${stubs.length} very short subtask description(s) — allowed, ` +
+          `below the elided-plan threshold: [${stubs.slice(0, 3).map((s) => s.id).join(', ')}]`,
+      );
+      return;
+    }
+
+    this.logger.error(
+      `Planner elided ${stubs.length} of ${output.subtasks.length} subtask descriptions into stubs ` +
+        `(e.g. "${stubs[0].description.trim()}") — the plan parses but cannot be executed faithfully, ` +
+        `so the Executor would invent schemas for them. Refusing it. This means the plan was split too ` +
+        `finely for its budget; fold each sheet's work into ONE subtask rather than shortening the words.`,
+    );
+    throw new PlannerExhaustedError(
+      `Planner returned ${stubs.length} elided subtask descriptions out of ${output.subtasks.length}`,
+      { originalMessage },
+    );
+  }
+
   private pruneUnsatisfiableSubtasks(output: PlannerOutput): PlannerOutput {
     const validIds = new Set(output.subtasks.map((s) => s.id));
     const unsatisfiable = new Set<string>();
@@ -1247,7 +1446,31 @@ export class PlannerAgent {
         `Planner plan referenced sheet(s) no subtask creates — added create subtask(s) for: ${added.join(', ')}.`,
       );
     }
-    return plan;
+
+    // TASKS.md #262 — and the same must hold for a sheet subtasks TARGET.
+    // Runs second so the creates added just above already count as creates.
+    const targeted = ensureTargetSheetsCreated(plan, context);
+    if (targeted.added.length > 0) {
+      this.logger.warn(
+        `Planner plan targets sheet(s) no subtask creates — added create subtask(s) for: ${targeted.added.join(', ')}.`,
+      );
+    }
+
+    // TASKS.md #299 — a sheet can be created by one subtask and written to
+    // by several others. `computeExecutionWaves` orders purely on dependsOn,
+    // so without an edge from each writer to the creator a write can be
+    // emitted before the create it needs. Runs last, once every create
+    // subtask the nets above may have added is in the plan.
+    const ordered = ensureWritersDependOnCreator(targeted.plan, context);
+    if (ordered.added.length > 0) {
+      this.logger.warn(
+        `Planner plan had writer(s) not ordered after the subtask creating their sheet — added ` +
+          `dependencies: ${ordered.added
+            .map((e) => `${e.writer} -> ${e.creator} (${e.sheet})`)
+            .join(', ')}.`,
+      );
+    }
+    return ordered.plan;
   }
 
   /** Exposed for unit tests. */

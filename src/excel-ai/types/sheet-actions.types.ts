@@ -80,6 +80,8 @@ export type SheetActionType =
   | 'DELETE_SHEET'
   | 'RENAME_SHEET'
   | 'COPY_SHEET'
+  | 'MOVE_SHEET'
+  | 'DELETE_MATCHING_ROWS'
   | 'HIDE_SHEET'
   | 'SHOW_SHEET'
   | 'SET_SHEET_COLOR'
@@ -254,6 +256,9 @@ export interface SheetActionPayload {
   endCol?: number;
   sheetName?: string;
   newSheetName?: string;
+  /** MOVE_SHEET neighbours — the sheet lands immediately before/after these. TASKS.md #212. */
+  beforeSheet?: string;
+  afterSheet?: string;
   relativeTo?: string;
   comment?: string;
   headers?: string[];
@@ -276,6 +281,8 @@ export interface SheetActionPayload {
   name?: string;
   tableName?: string;
   hasHeaders?: boolean;
+  /** CREATE_TABLE: false hides the per-header filter dropdowns — TASKS.md #268. */
+  showFilterButton?: boolean;
   style?: string;
   sourceSheetName?: string;
   chartType?: string;

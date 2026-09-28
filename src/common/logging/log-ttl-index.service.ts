@@ -1,10 +1,10 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { InjectConnection } from '@nestjs/mongoose';
 import { Connection } from 'mongoose';
-import { LOG_TTL_SECONDS } from './schemas/request-log.schema';
+import { LOG_TTL_SECONDS } from './schemas/workflow-trace.schema';
 
 /**
- * Ensures Mongo TTL indexes exist on request_logs / planner_logs.
+ * Ensures the Mongo TTL index exists on workflow_traces.
  * Drops a conflicting non-TTL `ts_1` index if present so expireAfterSeconds can be applied.
  */
 @Injectable()
@@ -14,9 +14,6 @@ export class LogTtlIndexService implements OnModuleInit {
   constructor(@InjectConnection() private readonly connection: Connection) {}
 
   async onModuleInit(): Promise<void> {
-    await this.ensureTtl('request_logs');
-    await this.ensureTtl('planner_logs');
-    await this.ensureTtl('frontend_logs');
     await this.ensureTtl('workflow_traces');
   }
 

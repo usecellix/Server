@@ -57,6 +57,16 @@ export function detectSheetDataGenerationIntent(message: string): boolean {
   return hasDataKeyword && hasCreateKeyword;
 }
 
+/** Asking for made-up rows, as opposed to work on data the sheet already has. */
+const EXPLICIT_SYNTHETIC_DATA = /\b(dummy|sample|placeholder|mock|test)\s+(?:data|rows?|values?|entries)\b/i;
+
+/**
+ * Phrases that mean "act on the data already in this sheet". A WRITE_TABLE of
+ * invented rows is never the right answer to one of these.
+ */
+const OPERATES_ON_EXISTING_DATA =
+  /\b(in\s+it|into\s+it|existing|already|each\s+row|every\s+row|per\s+row|calculates?|calculated|computes?|computed|formula|times|multiplied?|divided?|based\s+on|serial\s+numbers?|from\s+the\s+(?:existing|current)|this\s+(?:sheet|column|table|data)|the\s+(?:existing|current))\b/i;
+
 export function parseTableCreateRequest(message: string): TablePlan | null {
   const lower = message.toLowerCase();
   const isCreate =
@@ -66,8 +76,25 @@ export function parseTableCreateRequest(message: string): TablePlan | null {
 
   if (!isCreate) return null;
 
+  // "Insert a column at the start and fill serial numbers 1 to 30 in it" used to
+  // parse as headers ["at the start", "fill serial numbers 1 to 30 in it"], and
+  // "Add a column that calculates the GST inclusive amount" fell through to
+  // DEFAULT_GST_HEADERS — both answered a request about real data with five
+  // rows of "Value 1" / "Sample Person 1". Work on existing data is never a
+  // synthetic table unless the user actually asked for dummy rows. TASKS.md #210.
+  if (OPERATES_ON_EXISTING_DATA.test(message) && !EXPLICIT_SYNTHETIC_DATA.test(message)) {
+    return null;
+  }
+
   let headers = extractHeaders(message);
-  if (headers.length < 2 && /\bgst\b/i.test(message)) {
+  // The GST fallback is for "make me a GST table/sheet", not for any message
+  // that happens to mention GST while modifying the sheet in front of the user.
+  if (
+    headers.length < 2 &&
+    /\bgst\b/i.test(message) &&
+    /\b(table|sheet)\b/i.test(message) &&
+    !/\b(add|insert)\s+(?:a\s+|one\s+)?(?:new\s+)?column\b/i.test(message)
+  ) {
     headers = [...DEFAULT_GST_HEADERS];
   }
   if (headers.length < 2) return null;
@@ -196,12 +223,17 @@ function extractHeaders(message: string): string[] {
     /\bheaders?\s*:\s*(.+?)(?=\s+and\s+\d|\s*,?\s*(?:give|for)\b|$)/i,
     /\bheaders?\s+(?!row\b)(.+?)(?=\s+and\s+\d|\s*,?\s*(?:give|and\s+give|for\s+this)\b|$)/i,
     /\bcolumns?\s+(?:named|called)\s+(.+?)(?=\s+and\s+\d|\s*,?\s*(?:give|for)\b|$)/i,
+    // Bare "columns X, Y, Z" — only a real comma-separated list, enforced below.
+    // Without that, "Insert a column at the start and fill serial numbers 1 to
+    // 30 in it" split on "and" into two pseudo-headers. TASKS.md #210.
     /\bcolumns?\s+(?:as\s+)?(.+?)(?=\s+and\s+\d|\s*,?\s*(?:give|for)\b|$)/i,
   ];
+  const requiresCommaList = patterns.length - 1;
 
-  for (const pattern of patterns) {
+  for (const [index, pattern] of patterns.entries()) {
     const match = pattern.exec(message);
     if (!match) continue;
+    if (index === requiresCommaList && !match[1].includes(',')) continue;
     const parsed = splitHeaderList(match[1]);
     if (parsed.length >= 2) return parsed;
   }
@@ -227,7 +259,15 @@ function splitHeaderList(raw: string): string[] {
         part.length > 0 &&
         part.length < 40 &&
         !/^\d+\s*(rows?|dummy|sample)/i.test(part) &&
-        !/^(?:dummy|sample)\s+rows?$/i.test(part),
+        !/^(?:dummy|sample)\s+rows?$/i.test(part) &&
+        // A header is a noun phrase, not an instruction: "at the start" and
+        // "fill serial numbers 1 to 30 in it" are neither short nor noun-like.
+        // TASKS.md #210.
+        part.split(/\s+/).length <= 4 &&
+        !/^(?:at|in|on|to|from|with|into|the|a|an)\b/i.test(part) &&
+        !/\b(?:fill|calculate|compute|insert|delete|remove|sort|filter|format|apply|make|set)\b/i.test(
+          part,
+        ),
     );
 }
 

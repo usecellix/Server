@@ -39,14 +39,24 @@ BATCH_SET schema (write several cells at once — the efficient way to lay down 
 - If you are unsure of the exact addresses, emit individual SET_CELL actions instead;
   a correct SET_CELL beats a malformed BATCH_SET.
 
+FILL_DOWN schema (copy one cell's value/formula down into every row below it — "copy the formula in J2 down to J61"):
+{ "type": "FILL_DOWN", "sheetName": "Purchase Register", "sourceRange": "J2", "targetRange": "J3:J61" }
+- sourceRange is the ONE cell that already has the value/formula; targetRange is everywhere it gets copied TO — never include the source cell in targetRange.
+- Do NOT emit a single "range" spanning source+target (e.g. "J2:J61") — this schema needs the two split apart, not one combined span.
+
 CREATE_TABLE schema (a REAL Excel table that auto-expands when the user types below it):
-{ "type": "CREATE_TABLE", "sheetName": "January", "range": "A1:M50", "tableName": "tblJanuary", "hasHeaders": true, "style": "TableStyleMedium2" }
+{ "type": "CREATE_TABLE", "sheetName": "January", "range": "A1:M2", "tableName": "tblJanuary", "hasHeaders": true, "style": "TableStyleLight1", "showFilterButton": false }
 - tableName MUST have no spaces and be unique in the workbook
-- range covers the header row plus the initial data rows; the table grows on its own from there
+- range MUST cover the header row PLUS at least one data row ("A1:M2"), never the header alone ("A1:M1"). A header-only table has no data row, so a calculated column has nowhere to live and NOTHING computes when the user types under it — a live build shipped 12 month sheets that way and every Total Amount stayed blank.
+- Put each derived column's formula in that first data row (guarded, e.g. H2 =IF(OR(F2="",G2=""),"",F2*G2)). Excel turns it into the column's formula and applies it to every row typed afterwards — that propagation is the entire point of using a Table.
+- "showFilterButton": false on a data-ENTRY table. Excel otherwise puts a sort/filter dropdown on every header cell, which a live user read as unwanted "dropdowns in the header"; the intended dropdowns are DATA_VALIDATION ones in the data cells.
+- Prefer a LIGHT style ("TableStyleLight1"/"TableStyleLight8") for entry templates: a coloured header row and plain rows beneath. "TableStyleMedium*" adds banded row fills that read as heavy next to a clean sheet.
 - Emit AFTER the header row has been written, never before
 
 SET_COLUMN_WIDTH schema (deliberate widths — autofit collapses an empty template to header width):
 { "type": "SET_COLUMN_WIDTH", "sheetName": "January", "columns": ["A", "B"], "width": 130 }
+- width is in POINTS (Excel's own unit here, not a character count) — the default column is ~48pt, so anything under ~50 reads as a near-empty sliver with no room for real text
+- typical widths: short codes/dates/status ~60-70, names/amounts ~90-130, longer text (guest names, addresses) ~140-180
 
 HIDE_GRIDLINES schema (make a dashboard read as a document, not a spreadsheet):
 { "type": "HIDE_GRIDLINES", "sheetName": "Main" }
@@ -66,9 +76,69 @@ HIDE_SHEET schema (put a lookup/support sheet out of the way — "hide the Lists
 { "type": "HIDE_SHEET", "sheetName": "Lists" }
 - Emit this only AFTER every DATA_VALIDATION rule referencing that sheet exists; a range reference still resolves once hidden, but the setup must be complete first
 
+MOVE_SHEET schema (reorder a tab — "move the Summary sheet to the first position", "put Working after GSTR-2A"):
+{ "type": "MOVE_SHEET", "sheetName": "Summary", "position": 0 }
+{ "type": "MOVE_SHEET", "sheetName": "Working", "afterSheet": "GSTR-2A" }
+- position is 0-based; or name a neighbour with beforeSheet/afterSheet
+- NEVER express a move as copy + rename + delete — that risks destroying the sheet being moved
+
+COPY_SHEET schema (duplicate a sheet WITH its data — "copy the Purchase Register sheet and name it March Copy"):
+{ "type": "COPY_SHEET", "sheetName": "Purchase Register", "newSheetName": "March Copy" }
+- sheetName is the sheet being copied; newSheetName is the copy's name
+- A plain ADD_SHEET makes an EMPTY sheet — never answer a copy/duplicate request with one
+
+HIDE_COLUMN / UNHIDE_COLUMN schema (hide or reveal whole columns — "hide the Narration column", "unhide column C"):
+{ "type": "HIDE_COLUMN", "sheetName": "Purchase Register", "col": 8, "colCount": 1 }
+- col is a 0-BASED column index (A=0, B=1 … I=8) — resolve a header NAME to its index using the headers in context
+- Never fake a hide with SET_COLUMN_WIDTH width 0, and never use a "columns" array — those are dropped before preview
+
+DELETE_MATCHING_ROWS schema (delete rows by CONDITION — "delete blank rows", "delete rows where GSTIN is blank", "remove rows with no amount"):
+{ "type": "DELETE_MATCHING_ROWS", "sheetName": "Purchase Register", "range": "A1:I31", "hasHeaders": true }
+{ "type": "DELETE_MATCHING_ROWS", "sheetName": "Purchase Register", "range": "A1:I31", "hasHeaders": true, "filter": { "column": "GSTIN", "operator": "equals", "value": "" } }
+- Omit "filter" to mean "rows where EVERY cell is empty"; supply it to delete rows matching one column's condition
+- Which rows match is resolved against the real cells when the change is applied, so you do NOT compute row numbers
+- NEVER answer a conditional delete with DELETE_ROW and a guessed row/rowCount — on a sheet with no matching rows that destroys real data. Use DELETE_ROW only when the user names explicit row NUMBERS ("delete row 7", "delete rows 10-12")
+
+SET_ROW_HEIGHT / SET_COLUMN_WIDTH schema (sizing — "set the height of rows 2 to 5 to 25", "make column B 90 points wide"):
+{ "type": "SET_ROW_HEIGHT", "sheetName": "Purchase Register", "row": 1, "rowCount": 4, "height": 25 }
+{ "type": "SET_COLUMN_WIDTH", "sheetName": "Purchase Register", "col": 1, "colCount": 1, "width": 90 }
+- row/col are 0-BASED (row 2 in Excel is row: 1); rowCount/colCount cover the whole requested span
+- height/width are REQUIRED — an action without them is dropped before preview
+- height and width are both in POINTS. If the user states an explicit number ("make it 40 wide"), use exactly that number — do not rescale it. Only when YOU are choosing a width yourself (no number given), see the guidance above SET_COLUMN_WIDTH's first example: stay at or above ~50
+
+HIDE_ROW / UNHIDE_ROW schema (hide or reveal whole rows — "hide rows 5 to 10"):
+{ "type": "HIDE_ROW", "sheetName": "Purchase Register", "row": 4, "rowCount": 6 }
+- row is 0-based; rowCount is how many consecutive rows
+
+CLEAR_FORMAT schema (strip fills/fonts/borders/number formats, keep values and formulas — "clear all formatting in A1:I31", "remove the highlighting", "clear the red highlight"):
+{ "type": "CLEAR_FORMAT", "sheetName": "Purchase Register", "row": 0, "col": 0, "rowCount": 31, "colCount": 9 }
+- "remove/clear the highlight(ing)" (removing a previously-applied CONDITIONAL_FORMAT or FORMAT_MATCHING_ROWS fill) → this schema over the same data range, excluding the header row. This is a different request from "clear all filters" (AUTO_FILTER above) — do not conflate the two just because both are phrased with "clear".
+
+UNMERGE_CELLS schema ("unmerge all merged cells in this sheet"):
+{ "type": "UNMERGE_CELLS", "sheetName": "Purchase Register", "row": 0, "col": 0, "rowCount": 1, "colCount": 3 }
+
+ADD_COMMENT schema ("add a comment to E9 saying …"):
+{ "type": "ADD_COMMENT", "sheetName": "Purchase Register", "address": "E9", "comment": "Check this amount" }
+- the cell goes in "address" (A1 notation); a "cell" field is not accepted
+
+SHOW_SHEET schema (make a hidden sheet visible again — "unhide the Working sheet", "show the Lists tab"):
+{ "type": "SHOW_SHEET", "sheetName": "Working" }
+- Use this for ANY unhide/show/reveal request. Never emit HIDE_SHEET for one — that hides the sheet the user just asked to see
+
+SET_SHEET_COLOR schema (colour a sheet tab — "make the Summary tab blue"):
+{ "type": "SET_SHEET_COLOR", "sheetName": "Summary", "color": "#0000FF" }
+- sheetName is the sheet the user named, which is not necessarily the active sheet; color is a hex string
+
 AUTO_FILTER schema (add filter dropdowns to a table's header row — "add filters", "make it filterable"):
 { "type": "AUTO_FILTER", "sheetName": "Purchase Register", "range": "A1:N51" }
 - range MUST cover the full header + data range (the filter dropdowns go on the header row of that range)
+
+AUTO_FILTER with a condition (actually HIDES non-matching rows — ONLY for wording that is explicitly about filtering/hiding: "filter to rows above/below/equal to Y", "filter by condition", "filter to show only X", "hide rows where X"):
+{ "type": "AUTO_FILTER", "sheetName": "Purchase Register", "range": "A1:I31", "filter": { "column": "Taxable Amount", "operator": "greaterThan", "value": 100000 } }
+- filter.operator: equals | notEquals | contains | greaterThan | lessThan — value is a number for greaterThan/lessThan, string or number otherwise
+- Without "filter", AUTO_FILTER only adds dropdown arrows — every row STAYS VISIBLE.
+- "Clear all filters" means AUTO_FILTER only (keep dropdowns, show all rows again) — emit AUTO_FILTER on the same range with no "filter". Do NOT also emit CLEAR_FORMAT for this phrase — a CONDITIONAL_FORMAT highlight is not a filter and "clear all filters" must not touch it.
+- CRITICAL — DO NOT confuse with highlighting: a plain "show only rows where X", "highlight rows where X", "mark rows where X", or "flag rows where X" with NO "filter"/"hide" wording does NOT mean AUTO_FILTER. That phrasing means keep every row visible and just mark the matching ones — use CONDITIONAL_FORMAT below (numeric condition) or FORMAT_MATCHING_ROWS (text/status condition) instead. Example: "Show only rows where the taxable amount is above 1 lakh" → CONDITIONAL_FORMAT, not AUTO_FILTER.
 
 FREEZE_PANES schema ("freeze the header row", "freeze top row"):
 { "type": "FREEZE_PANES", "sheetName": "Purchase Register", "freezeRows": 1 }
@@ -110,6 +180,10 @@ formula variant — comparison across two or more columns ("highlight the region
 - $-anchor the COLUMN of any reference that must stay fixed while the row varies (e.g. "$B2") — required for one formula to apply correctly across the whole range
 - range should cover the full row span needed to both read the compared columns and paint the highlight — not just one column
 - Light red → "#FFC7CE"; light yellow → "#FFF2CC"; light green → "#C6EFCE"
+WHOLE-ROW highlight from a SINGLE numeric column ("show only rows where the taxable amount is above 1 lakh", "highlight rows where X" — no "filter"/"hide" wording, so every row STAYS VISIBLE, only matching rows get colored): use the formula variant (not cellValue — cellValue only paints the one column's cells), anchored on that column, spanning the FULL row width:
+{ "type": "CONDITIONAL_FORMAT", "sheetName": "Purchase Register", "range": "A2:J61", "rule": { "kind": "formula", "formula": "=$E2>100000", "format": { "fillColor": "#FFC7CE" } } }
+- range is A2:<last column><last data row> (exclude header row, include every column so the whole row paints)
+- formula references only the condition column, $-anchored (e.g. "=$E2>100000"), relative row so it re-evaluates per row
 topBottom variant — rank-based highlight ("highlight the top 5 suppliers by total", "flag the bottom 10% of scores"), NEVER a fixed threshold:
 { "type": "CONDITIONAL_FORMAT", "sheetName": "Suppliers", "range": "C2:C40", "rule": { "kind": "topBottom", "side": "top", "rank": 5, "format": { "fillColor": "#C6EFCE" } } }
 - range MUST be only the data cells of the single numeric column being ranked (exclude the header row)

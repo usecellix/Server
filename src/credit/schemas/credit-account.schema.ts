@@ -20,7 +20,13 @@ export class CreditAccount {
   @Prop({ type: String, required: true, enum: ['free', 'beta', 'solo', 'firm', 'enterprise'], index: true })
   planTier!: 'free' | 'beta' | 'solo' | 'firm' | 'enterprise';
 
-  /** Resets to the plan's monthly allotment each cycle. Does not roll over. */
+  /**
+   * Resets to the plan's monthly allotment each cycle. Does not roll over —
+   * enforced by `CreditLedgerService.grantPlanCredits` (TASKS.md #342), which
+   * `$set`s this field rather than `$inc`s it, so an under-used month's
+   * leftover is logged as an `expire` ledger row instead of compounding into
+   * the next cycle's balance.
+   */
   @Prop({ type: Number, required: true, default: 0 })
   planCredits!: number;
 

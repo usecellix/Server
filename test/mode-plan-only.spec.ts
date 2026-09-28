@@ -94,8 +94,6 @@ describe('ConversationService plan mode (streamPlanOnly)', () => {
       structuredLogger as unknown as StructuredLogger,
       workflowTrace as never,
       {} as never,
-      {} as never,
-      {} as never,
     );
 
     jest.spyOn(service as never, 'saveMessage' as never).mockResolvedValue(undefined as never);

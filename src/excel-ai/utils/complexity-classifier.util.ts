@@ -88,6 +88,65 @@ const COMPOUND_SIGNALS =
     'i',
   );
 
+/**
+ * TASKS.md #238 — narrow carve-out from COMPOUND_SIGNALS, not a replacement
+ * for it. A SHORT, single-sentence prompt whose only "compound" signal is a
+ * bare "then"/"and" connecting two ordinary steps on one sheet (e.g. "write a
+ * header row, then a formula for it") does not need a planner — but a long or
+ * multi-sentence prompt naming several distinct features (the purchase-
+ * register shape: "Add columns for X. Add formulas for Y. Add filters,
+ * freeze row, and create a summary...") still does, even though its trigger
+ * is also a bare "then"/"and". Distinguishing those by REMOVING the generic
+ * trigger broke real multi-feature builds (confirmed: 7 tests, including the
+ * purchase-register bug prompt itself) — so instead this only suppresses the
+ * escalation when the prompt is short AND single-sentence, which the small
+ * "write X, then set a formula for it" shape always is and a real multi-
+ * feature build essentially never is.
+ */
+const SHORT_SEQUENTIAL_MAX_LENGTH = 140;
+
+function isShortSingleSentenceSequential(message: string): boolean {
+  if (message.length > SHORT_SEQUENTIAL_MAX_LENGTH) return false;
+  // More than one sentence-ending punctuation mark means more than one
+  // instruction unit — treat as potentially multi-feature, not this carve-out.
+  const sentenceEnders = message.match(/[.!?]+(?:\s|$)/g);
+  if (sentenceEnders && sentenceEnders.length > 1) return false;
+  return true;
+}
+
+/**
+ * True when the ONLY reason `COMPOUND_SIGNALS` matched is a bare "then"/"and"
+ * connective on an otherwise short, single-sentence, single-target prompt —
+ * the shape that should NOT escalate to Tier 3. False for anything with a
+ * more specific compound signal (a named second sheet, "for each", etc.) or
+ * for a long/multi-sentence prompt, both of which still escalate normally.
+ */
+function isNarrowSequentialCarveOut(message: string): boolean {
+  if (!COMPOUND_SIGNALS.test(message)) return false;
+  if (!isShortSingleSentenceSequential(message)) return false;
+
+  const SPECIFIC_COMPOUND_SIGNALS = new RegExp(
+    [
+      '\\bfor each\\b',
+      '\\bfor every\\b',
+      '\\bacross (all|every|each)\\b',
+      '\\b(one|a|separate|individual)\\s+(sheet|tab|worksheet)s?\\s+(per|for)\\b',
+      '\\b(sheets?|tabs?|worksheets?)\\s+for\\s+(all|each|every)\\b',
+      '\\bmultiple\\s+(sheets?|tabs?|worksheets?)\\b',
+      '\\b(summary|main|master|overview|consolidat\\w*)\\s+(sheet|tab|page)\\b',
+      '\\bas well as\\b',
+      '\\balong with\\b',
+      '\\bplus\\s+(a|an|the)\\b',
+    ].join('|'),
+    'i',
+  );
+  // A more specific signal is present too (e.g. "bold A1 and add a summary
+  // sheet") — that names a real second object, so still escalate.
+  if (SPECIFIC_COMPOUND_SIGNALS.test(message)) return false;
+
+  return true;
+}
+
 /** True when the message has multi-clause/compound phrasing implying more than one requested feature. */
 export function hasCompoundSignals(message: string): boolean {
   return COMPOUND_SIGNALS.test(message);
@@ -178,7 +237,7 @@ export function classifyComplexity(
 ): ComplexityClassifierResult {
   const singleActionMatch = findPatternMatch(message);
 
-  if (COMPOUND_SIGNALS.test(message)) {
+  if (COMPOUND_SIGNALS.test(message) && !isNarrowSequentialCarveOut(message)) {
     // No single-action pattern matched, so there is nothing to escalate FROM.
     // Returning null hands the decision to the LLM router, which reads a vague
     // sentence far better than any regex can and already defaults to 3 when

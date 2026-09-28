@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, ServiceUnavailableException } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger, ServiceUnavailableException } from '@nestjs/common';
 import Razorpay from 'razorpay';
 import { AppConfigService } from '../config/app-config.service';
 import { CreditGateService } from './credit-gate.service';
@@ -23,6 +23,7 @@ export type CheckoutPlanTier = 'solo' | 'firm' | 'beta';
  */
 @Injectable()
 export class RazorpayCheckoutService {
+  private readonly logger = new Logger('RazorpayCheckout');
   private razorpayClient: Razorpay | undefined;
 
   constructor(
@@ -67,6 +68,19 @@ export class RazorpayCheckoutService {
    * `total_count: 120` (10 years of monthly cycles) is a practical stand-in
    * for "renews until cancelled" — Razorpay Subscriptions require a finite
    * cycle count, unlike Stripe's open-ended subscription objects.
+   *
+   * Unlike Payment Links, Razorpay's Subscriptions API has no `callback_url`
+   * — a `callback_url`/`callback_method` field on `subscriptions.create()`
+   * is rejected by Razorpay's API (confirmed against the SDK's own type
+   * definitions, which list no such field on the create body), which is why
+   * this previously 500/503'd for every signed-in subscriber while guest
+   * checkout (which never set that field) succeeded. Without it, the
+   * customer lands on Razorpay's own post-payment confirmation screen
+   * instead of back on /app — the "always redirect to dashboard" behavior
+   * has to be configured from the Razorpay Dashboard itself (Settings →
+   * Subscriptions → redirect/return URL) rather than per-API-call; see
+   * RAZORPAY_SETUP.md. The webhook remains the source of truth for granting
+   * credits regardless of what page the customer ends up on.
    */
   async createSubscriptionSession(
     billingEntityId: string,
@@ -78,17 +92,36 @@ export class RazorpayCheckoutService {
     }
     await this.creditGate.ensureAccount(billingEntityId);
 
-    const subscription = await this.razorpay.subscriptions.create({
-      plan_id: this.planIdFor(planTier),
-      total_count: 120,
-      customer_notify: 1,
-      notes: { billingEntityId, planTier, email: email ?? '' },
-    });
+    try {
+      const planId = this.planIdFor(planTier);
+      this.logger.log(`Creating subscription: planTier=${planTier}, planId=${planId}, billingEntityId=${billingEntityId}`);
 
-    if (!subscription.short_url) {
-      throw new ServiceUnavailableException('RAZORPAY_SUBSCRIPTION_NO_URL');
+      const subscription = await this.razorpay.subscriptions.create({
+        plan_id: planId,
+        total_count: 120,
+        customer_notify: 1,
+        notes: { billingEntityId, planTier, email: email ?? '' },
+      });
+
+      if (!subscription.short_url) {
+        this.logger.error(`Razorpay subscription created but no short_url: ${JSON.stringify(subscription)}`);
+        throw new ServiceUnavailableException('RAZORPAY_SUBSCRIPTION_NO_URL');
+      }
+      this.logger.log(`Subscription created successfully: url=${subscription.short_url}`);
+      return { url: subscription.short_url };
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      const errorBody = (error as any)?.response?.body || (error as any)?.body || {};
+      this.logger.error(`Failed to create subscription: ${errorMsg}`, {
+        errorMsg,
+        errorCode: (error as any)?.code,
+        errorBody,
+        fullError: error,
+      });
+      throw new ServiceUnavailableException(
+        `Razorpay API error: ${errorMsg}. Check that RAZORPAY_PLAN_ID_${planTier.toUpperCase()} is correct and exists in your test account.`
+      );
     }
-    return { url: subscription.short_url };
   }
 
   /**
@@ -127,21 +160,39 @@ export class RazorpayCheckoutService {
     }
     await this.creditGate.ensureAccount(billingEntityId);
 
-    const paymentLink = await this.razorpay.paymentLink.create({
-      amount: pack.priceInr * 100,
-      currency: 'INR',
-      description: `${pack.credits} Cellix credits`,
-      customer: email ? { email } : {},
-      notify: { email: Boolean(email), sms: false },
-      notes: { billingEntityId, packId, credits: pack.credits },
-      callback_url: this.config.checkoutSuccessUrl,
-      callback_method: 'get',
-    });
+    try {
+      this.logger.log(`Creating topup: packId=${packId}, credits=${pack.credits}, priceInr=${pack.priceInr}, billingEntityId=${billingEntityId}`);
 
-    if (!paymentLink.short_url) {
-      throw new ServiceUnavailableException('RAZORPAY_PAYMENT_LINK_NO_URL');
+      const paymentLink = await this.razorpay.paymentLink.create({
+        amount: pack.priceInr * 100,
+        currency: 'INR',
+        description: `${pack.credits} Cellix credits`,
+        customer: email ? { email } : {},
+        notify: { email: Boolean(email), sms: false },
+        notes: { billingEntityId, packId, credits: pack.credits },
+        callback_url: this.config.checkoutSuccessUrl,
+        callback_method: 'get',
+      });
+
+      if (!paymentLink.short_url) {
+        this.logger.error(`Razorpay payment link created but no short_url: ${JSON.stringify(paymentLink)}`);
+        throw new ServiceUnavailableException('RAZORPAY_PAYMENT_LINK_NO_URL');
+      }
+      this.logger.log(`Payment link created successfully: url=${paymentLink.short_url}`);
+      return { url: paymentLink.short_url };
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      const errorBody = (error as any)?.response?.body || (error as any)?.body || {};
+      this.logger.error(`Failed to create topup: ${errorMsg}`, {
+        errorMsg,
+        errorCode: (error as any)?.code,
+        errorBody,
+        fullError: error,
+      });
+      throw new ServiceUnavailableException(
+        `Razorpay API error: ${errorMsg}. Check that your Razorpay credentials are correct.`
+      );
     }
-    return { url: paymentLink.short_url };
   }
 }
 

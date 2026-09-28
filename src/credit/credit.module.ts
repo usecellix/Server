@@ -14,6 +14,8 @@ import { CreditLedgerService } from './credit-ledger.service';
 import { CreditAccountQueryService } from './credit-account-query.service';
 import { RazorpayCheckoutService } from './razorpay-checkout.service';
 import { RazorpayWebhookService } from './razorpay-webhook.service';
+import { SubscriptionIndexMigrationService } from './subscription-index-migration.service';
+import { UsageBillingService } from './usage-billing.service';
 import { BillingController, PublicBillingController, RazorpayWebhookController } from './billing.controller';
 
 @Module({
@@ -32,8 +34,10 @@ import { BillingController, PublicBillingController, RazorpayWebhookController }
     CreditAccountQueryService,
     RazorpayCheckoutService,
     RazorpayWebhookService,
+    SubscriptionIndexMigrationService,
+    UsageBillingService,
   ],
   controllers: [BillingController, PublicBillingController, RazorpayWebhookController],
-  exports: [CreditGateService, CreditLedgerService, CreditAccountQueryService],
+  exports: [CreditGateService, CreditLedgerService, CreditAccountQueryService, UsageBillingService],
 })
 export class CreditModule {}

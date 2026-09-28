@@ -5,6 +5,8 @@ import { RazorpayWebhookService } from '../src/credit/razorpay-webhook.service';
 function buildService(options: {
   existingEvent?: { paymentEventId: string } | null;
   razorpayWebhookSecret?: string;
+  invoicesFetchImpl?: (...args: unknown[]) => unknown;
+  subscriptionsFetchImpl?: (...args: unknown[]) => unknown;
 } = {}) {
   const insertedEvents: Record<string, unknown>[] = [];
   const processedEventModel = {
@@ -38,6 +40,8 @@ function buildService(options: {
 
   const config = {
     razorpayWebhookSecret: options.razorpayWebhookSecret ?? 'whsec_x',
+    razorpayKeyId: 'rzp_test_key',
+    razorpayKeySecret: 'rzp_test_secret',
   };
 
   const service = new RazorpayWebhookService(
@@ -49,6 +53,33 @@ function buildService(options: {
     creditLedger as never,
   );
 
+  // Same pattern as razorpay-checkout.service.spec.ts: bypass the lazy
+  // `razorpay` getter by injecting the client directly, since handlePaymentCredited
+  // (the payment.captured fallback) is the only path here that calls the real SDK.
+  const invoicesFetch = jest.fn(
+    options.invoicesFetchImpl ?? (() => Promise.resolve({ subscription_id: 'sub_from_invoice' })),
+  );
+  const subscriptionsFetch = jest.fn(
+    options.subscriptionsFetchImpl ??
+      (() =>
+        Promise.resolve({
+          id: 'sub_from_invoice',
+          status: 'active',
+          customer_id: 'cust_1',
+          current_start: 1700000000,
+          current_end: 1702592000,
+          notes: { billingEntityId: 'user-1', planTier: 'beta' },
+        })),
+  );
+  (
+    service as unknown as {
+      razorpayClient?: { invoices: { fetch: unknown }; subscriptions: { fetch: unknown } };
+    }
+  ).razorpayClient = {
+    invoices: { fetch: invoicesFetch },
+    subscriptions: { fetch: subscriptionsFetch },
+  } as never;
+
   return {
     service,
     insertedEvents,
@@ -57,6 +88,8 @@ function buildService(options: {
     creditGate,
     grantPlanCredits,
     addPurchasedCredits,
+    invoicesFetch,
+    subscriptionsFetch,
   };
 }
 
@@ -352,6 +385,136 @@ describe('RazorpayWebhookService.handleVerifiedEvent — payment_link.paid (top-
     });
 
     expect(addPurchasedCredits).not.toHaveBeenCalled();
+  });
+});
+
+describe('RazorpayWebhookService.handleVerifiedEvent — payment.captured (subscription.activated fallback)', () => {
+  // Reproduces a real bug: a test-mode Beta subscription paid by UPI intent
+  // flow delivered payment.authorized + payment.captured but NEVER
+  // subscription.activated, even on retry — so payment.captured has to be
+  // able to grant credits on its own by resolving back to the subscription
+  // via the payment's invoice_id.
+  it('grants credits by resolving invoice_id -> subscription_id -> subscription.notes', async () => {
+    const { service, grantPlanCredits, creditGate, invoicesFetch, subscriptionsFetch } = buildService();
+
+    const result = await service.handleVerifiedEvent({
+      event: 'payment.captured',
+      payload: {
+        payment: {
+          entity: {
+            id: 'pay_1',
+            status: 'captured',
+            order_id: 'order_1',
+            invoice_id: 'inv_1',
+            notes: [], // Razorpay sends an empty array here, not an object with billingEntityId
+          },
+        },
+      },
+    });
+
+    expect(invoicesFetch).toHaveBeenCalledWith('inv_1');
+    expect(subscriptionsFetch).toHaveBeenCalledWith('sub_from_invoice');
+    expect(creditGate.ensureAccount).toHaveBeenCalledWith('user-1');
+    expect(grantPlanCredits).toHaveBeenCalledWith('user-1', 500, 'payment.captured:pay_1');
+    expect(result).toEqual({ alreadyProcessed: false });
+  });
+
+  it('is a no-op for a duplicate delivery of the same payment id', async () => {
+    const { service, grantPlanCredits } = buildService({
+      existingEvent: { paymentEventId: 'payment.captured:pay_1' },
+    });
+
+    const result = await service.handleVerifiedEvent({
+      event: 'payment.captured',
+      payload: { payment: { entity: { id: 'pay_1', status: 'captured', invoice_id: 'inv_1' } } },
+    });
+
+    expect(result).toEqual({ alreadyProcessed: true });
+    expect(grantPlanCredits).not.toHaveBeenCalled();
+  });
+
+  it('does nothing for a payment with no invoice_id (an ordinary one-off payment, not a subscription charge)', async () => {
+    const { service, grantPlanCredits, invoicesFetch } = buildService();
+
+    const result = await service.handleVerifiedEvent({
+      event: 'payment.captured',
+      payload: { payment: { entity: { id: 'pay_2', status: 'captured' } } },
+    });
+
+    expect(invoicesFetch).not.toHaveBeenCalled();
+    expect(grantPlanCredits).not.toHaveBeenCalled();
+    expect(result).toEqual({ alreadyProcessed: false });
+  });
+
+  it('does nothing when the invoice exists but has no subscription_id', async () => {
+    const { service, grantPlanCredits, subscriptionsFetch } = buildService({
+      invoicesFetchImpl: () => Promise.resolve({ subscription_id: undefined }),
+    });
+
+    await service.handleVerifiedEvent({
+      event: 'payment.captured',
+      payload: { payment: { entity: { id: 'pay_3', status: 'captured', invoice_id: 'inv_3' } } },
+    });
+
+    expect(subscriptionsFetch).not.toHaveBeenCalled();
+    expect(grantPlanCredits).not.toHaveBeenCalled();
+  });
+
+  it('does not throw when the invoice lookup itself fails — logs and returns instead', async () => {
+    const { service, grantPlanCredits } = buildService({
+      invoicesFetchImpl: () => Promise.reject(new Error('Razorpay API down')),
+    });
+
+    const result = await service.handleVerifiedEvent({
+      event: 'payment.captured',
+      payload: { payment: { entity: { id: 'pay_4', status: 'captured', invoice_id: 'inv_4' } } },
+    });
+
+    expect(grantPlanCredits).not.toHaveBeenCalled();
+    // Still marked processed — a failed API call on redelivery is Razorpay's
+    // retry mechanism's job, not something this idempotency layer re-litigates.
+    expect(result).toEqual({ alreadyProcessed: false });
+  });
+
+  it('does not throw when the subscription lookup itself fails — logs and returns instead', async () => {
+    const { service, grantPlanCredits } = buildService({
+      subscriptionsFetchImpl: () => Promise.reject(new Error('Razorpay API down')),
+    });
+
+    const result = await service.handleVerifiedEvent({
+      event: 'payment.captured',
+      payload: { payment: { entity: { id: 'pay_5', status: 'captured', invoice_id: 'inv_5' } } },
+    });
+
+    expect(grantPlanCredits).not.toHaveBeenCalled();
+    expect(result).toEqual({ alreadyProcessed: false });
+  });
+
+  it('does not grant credits when the resolved subscription has no billingEntityId/planTier in notes', async () => {
+    const { service, grantPlanCredits } = buildService({
+      subscriptionsFetchImpl: () =>
+        Promise.resolve({ id: 'sub_from_invoice', status: 'active', customer_id: null, notes: {} }),
+    });
+
+    await service.handleVerifiedEvent({
+      event: 'payment.captured',
+      payload: { payment: { entity: { id: 'pay_6', status: 'captured', invoice_id: 'inv_6' } } },
+    });
+
+    expect(grantPlanCredits).not.toHaveBeenCalled();
+  });
+
+  it('payment.authorized is NOT granted — only payment.captured (real settled funds)', async () => {
+    const { service, grantPlanCredits, invoicesFetch } = buildService();
+
+    const result = await service.handleVerifiedEvent({
+      event: 'payment.authorized',
+      payload: { payment: { entity: { id: 'pay_7', status: 'authorized', invoice_id: 'inv_7' } } },
+    });
+
+    expect(invoicesFetch).not.toHaveBeenCalled();
+    expect(grantPlanCredits).not.toHaveBeenCalled();
+    expect(result).toEqual({ alreadyProcessed: false });
   });
 });
 

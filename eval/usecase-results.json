@@ -1,0 +1,100 @@
+[
+  {
+    "id": "logic-missing-gstin",
+    "section": "T1.7",
+    "prompt": "If the GSTIN in column D is blank, mark a new Status column as 'Missing GSTIN'",
+    "expect": [
+      "*"
+    ],
+    "ms": 38117,
+    "http": 200,
+    "types": [
+      "INSERT_COLUMN"
+    ],
+    "actions": [
+      {
+        "type": "INSERT_COLUMN",
+        "sheetName": "Purchase Register",
+        "position": "afterLastColumn",
+        "columnName": "Status"
+      }
+    ],
+    "text": "[explanation] Write content on Purchase Register",
+    "errors": [],
+    "statuses": [
+      "Prepared INSERT_COLUMN on Purchase Register",
+      "Progress: 1 step(s) ready · 1 change(s) prepared — continuing…",
+      "Running deterministic checks...",
+      "Actions verified"
+    ],
+    "verdict": "PASS"
+  },
+  {
+    "id": "filter-gt",
+    "section": "T2.2",
+    "prompt": "Show only rows where the taxable amount is above 1 lakh",
+    "expect": [
+      "*"
+    ],
+    "forbid": [
+      "SORT_RANGE"
+    ],
+    "ms": 19542,
+    "http": 200,
+    "types": [
+      "AUTO_FILTER"
+    ],
+    "actions": [
+      {
+        "type": "AUTO_FILTER",
+        "sheetName": "Purchase Register",
+        "range": "A1:I31",
+        "hasHeaders": true,
+        "filter": {
+          "column": "Taxable Amount",
+          "operator": "greaterThan",
+          "value": 100000
+        }
+      }
+    ],
+    "text": "[answer] I'll apply the prepared changes to your sheet.\n[explanation] Multi-agent pipeline: planned, executed, and verified.",
+    "errors": [],
+    "statuses": [
+      "Progress: 1 step(s) ready · 1 change(s) prepared — continuing…",
+      "Running deterministic checks...",
+      "Actions verified",
+      "1 actions ready for preview"
+    ],
+    "verdict": "PASS"
+  },
+  {
+    "id": "filter-clear",
+    "section": "T2.2",
+    "prompt": "Clear all filters",
+    "expect": [
+      "*"
+    ],
+    "ms": 20791,
+    "http": 200,
+    "types": [
+      "AUTO_FILTER"
+    ],
+    "actions": [
+      {
+        "type": "AUTO_FILTER",
+        "sheetName": "Purchase Register",
+        "range": "A1:I31",
+        "hasHeaders": true
+      }
+    ],
+    "text": "[answer] I'll apply the prepared changes to your sheet.\n[explanation] Multi-agent pipeline: planned, executed, and verified.",
+    "errors": [],
+    "statuses": [
+      "Progress: 1 step(s) ready · 1 change(s) prepared — continuing…",
+      "Running deterministic checks...",
+      "Actions verified",
+      "1 actions ready for preview"
+    ],
+    "verdict": "PASS"
+  }
+]

@@ -133,6 +133,14 @@ const FIELD_FIXTURES: Record<SheetActionType, Record<string, unknown>> = {
     newName: 'Copy',
     copyFrom: 'Dashboard',
   },
+  MOVE_SHEET: { type: 'MOVE_SHEET', sheetName: 'Dashboard', position: 0, afterSheet: 'Summary' },
+  DELETE_MATCHING_ROWS: {
+    type: 'DELETE_MATCHING_ROWS',
+    sheetName: 'Dashboard',
+    range: 'A1:D20',
+    hasHeaders: true,
+    filter: { column: 'GSTIN', operator: 'equals', value: '' },
+  },
   HIDE_SHEET: { type: 'HIDE_SHEET', sheetName: 'Dashboard' },
   SHOW_SHEET: { type: 'SHOW_SHEET', sheetName: 'Dashboard' },
   SET_SHEET_COLOR: { type: 'SET_SHEET_COLOR', sheetName: 'Dashboard', color: '#00FF00' },
@@ -322,6 +330,8 @@ const INTENTIONAL_TRANSFORMS: Partial<Record<SheetActionType, string[]>> = {
   MOVE_RANGE: [],
   CREATE_TABLE: ['name'], // name mirrored into tableName
   ADD_ROW: [], // values/data mirrored
+  // width below the 40pt readability floor is raised — TASKS.md #265
+  SET_COLUMN_WIDTH: ['width'],
 };
 
 function deepEqualish(a: unknown, b: unknown): boolean {

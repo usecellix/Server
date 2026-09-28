@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
+import { updateLlmUsageContext } from '../../llm-usage/llm-usage.context';
 import { sanitizeLogBody } from './log-body.util';
 import {
   WorkflowEdge,
@@ -86,6 +87,7 @@ export class WorkflowTraceService {
     traceId: string,
     meta: { route?: string; tier?: number; changeSetId?: string },
   ): void {
+    updateLlmUsageContext({ route: meta.route, tier: meta.tier });
     if (!traceId || traceId === '-') return;
     void this.workflowTraceModel
       .updateOne(

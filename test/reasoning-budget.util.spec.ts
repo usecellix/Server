@@ -2,11 +2,13 @@ import {
   computeReasoningMaxTokens,
   ensureBudgetForReasoning,
   escalatedRetryBudget,
+  isReasoningMandatory,
   isReasoningModel,
+  minReasoningEffort,
 } from '../src/excel-ai/utils/reasoning-budget.util';
 
 describe('isReasoningModel', () => {
-  it.each(['openai/gpt-5', 'openai/gpt-5-mini', 'gpt-5', 'openai/o3', 'openai/o1'])(
+  it.each(['openai/gpt-5', 'openai/gpt-5-mini', 'gpt-5', 'openai/o3', 'openai/o1', 'z-ai/glm-5.3', 'z-ai/glm-5.3-flash'])(
     'detects %s as a reasoning model',
     (model) => {
       expect(isReasoningModel(model)).toBe(true);
@@ -17,6 +19,24 @@ describe('isReasoningModel', () => {
     'treats %s as a non-reasoning model',
     (model) => {
       expect(isReasoningModel(model)).toBe(false);
+    },
+  );
+});
+
+describe('isReasoningMandatory / minReasoningEffort (TASKS.md #228)', () => {
+  it.each(['z-ai/glm-5.3', 'z-ai/glm-5.3-flash', 'z-ai/glm-4'])(
+    'flags %s as reasoning-mandatory — confirmed against live llm_calls: every effort:none attempt to this model family failed with "Reasoning is mandatory"',
+    (model) => {
+      expect(isReasoningMandatory(model)).toBe(true);
+      expect(minReasoningEffort(model)).toBe('low');
+    },
+  );
+
+  it.each(['openai/gpt-5', 'openai/gpt-4o', 'inception/mercury-2.5-preview', undefined])(
+    'does not flag %s — minReasoningEffort stays a no-op (none) for anything not confirmed to need it',
+    (model) => {
+      expect(isReasoningMandatory(model)).toBe(false);
+      expect(minReasoningEffort(model)).toBe('none');
     },
   );
 });

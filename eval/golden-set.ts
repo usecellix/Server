@@ -169,11 +169,17 @@ export const ROUTING_GOLDEN_SET: RoutingGoldenCase[] = [
   },
   {
     kind: 'routing',
-    id: 'tier3-sort-then-chart',
-    category: 'tier3-compound',
+    id: 'sort-then-chart-short-sequential',
+    category: 'tier1-single-action',
     prompt: 'sort by column B and then create a chart',
     mode: 'action',
-    expected: { route: 'write', tier: 3 },
+    // TASKS.md #238 — a short, single-sentence, single-sheet two-step prompt
+    // no longer escalates to Tier 3: it names no second object, and forcing
+    // the 100-credit-per-subtask Tier 3 pipeline onto a request this small
+    // was a real cost problem, not a safety win. Contrast the
+    // purchase-register-build case above, which is long/multi-sentence and
+    // still correctly escalates.
+    expected: { route: 'write', tier: 1 },
   },
   {
     kind: 'routing',

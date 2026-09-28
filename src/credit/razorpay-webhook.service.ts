@@ -2,6 +2,8 @@ import { BadRequestException, Injectable, Logger, ServiceUnavailableException } 
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import Razorpay from 'razorpay';
+import type { Invoices } from 'razorpay/dist/types/invoices';
+import type { Subscriptions } from 'razorpay/dist/types/subscriptions';
 import { AppConfigService } from '../config/app-config.service';
 import {
   ProcessedRazorpayEvent,
@@ -74,6 +76,32 @@ interface RazorpayPaymentLinkWebhookPayload {
 }
 
 /**
+ * `payment.authorized`/`payment.captured` for a Subscription's charge.
+ * Razorpay does not embed `notes` or a `subscription_id` directly on the
+ * payment entity here — only `invoice_id`, which has to be resolved via
+ * `invoices.fetch` to reach the subscription (and its notes) the payment
+ * belongs to. See handlePaymentCredited's docblock for why this path exists
+ * at all: `subscription.activated` is not guaranteed to fire for every
+ * subscription authorization (observed directly — a real UPI-intent-flow
+ * Beta subscription in test mode delivered payment.authorized/
+ * payment.captured but never subscription.activated, even on retry).
+ */
+interface RazorpayPaymentWebhookPayload {
+  event: string;
+  payload: {
+    payment?: {
+      entity: {
+        id: string;
+        status: string;
+        order_id?: string | null;
+        invoice_id?: string | null;
+        notes?: Record<string, string | number> | unknown[];
+      };
+    };
+  };
+}
+
+/**
  * Verifies and processes Razorpay webhook events. Replaces the earlier
  * Stripe integration (TASKS.md #181) — the original pricing doc always
  * specified Razorpay; this migration brings the code in line with that.
@@ -89,6 +117,7 @@ interface RazorpayPaymentLinkWebhookPayload {
 @Injectable()
 export class RazorpayWebhookService {
   private readonly logger = new Logger(RazorpayWebhookService.name);
+  private razorpayClient: Razorpay | undefined;
 
   constructor(
     private readonly config: AppConfigService,
@@ -102,6 +131,19 @@ export class RazorpayWebhookService {
     private readonly creditLedger: CreditLedgerService,
   ) {}
 
+  /** Only needed by handlePaymentCredited's invoice/subscription lookup — every other handler works off the webhook payload alone. */
+  private get razorpay(): Razorpay {
+    if (!this.razorpayClient) {
+      const keyId = this.config.razorpayKeyId;
+      const keySecret = this.config.razorpayKeySecret;
+      if (!keyId || !keySecret) {
+        throw new ServiceUnavailableException('RAZORPAY_NOT_CONFIGURED');
+      }
+      this.razorpayClient = new Razorpay({ key_id: keyId, key_secret: keySecret });
+    }
+    return this.razorpayClient;
+  }
+
   /**
    * Verifies the raw request body against Razorpay's HMAC-SHA256 signature
    * header before trusting anything in it, then parses it — an unverified
@@ -113,7 +155,7 @@ export class RazorpayWebhookService {
   verifyAndParseEvent(
     rawBody: Buffer,
     signatureHeader: string | undefined,
-  ): RazorpaySubscriptionWebhookPayload | RazorpayPaymentLinkWebhookPayload {
+  ): RazorpaySubscriptionWebhookPayload | RazorpayPaymentLinkWebhookPayload | RazorpayPaymentWebhookPayload {
     const webhookSecret = this.config.razorpayWebhookSecret;
     if (!webhookSecret) {
       throw new ServiceUnavailableException('RAZORPAY_WEBHOOK_NOT_CONFIGURED');
@@ -133,7 +175,10 @@ export class RazorpayWebhookService {
       throw new BadRequestException('INVALID_RAZORPAY_SIGNATURE');
     }
     try {
-      return JSON.parse(bodyText) as RazorpaySubscriptionWebhookPayload | RazorpayPaymentLinkWebhookPayload;
+      return JSON.parse(bodyText) as
+        | RazorpaySubscriptionWebhookPayload
+        | RazorpayPaymentLinkWebhookPayload
+        | RazorpayPaymentWebhookPayload;
     } catch {
       throw new BadRequestException('MALFORMED_RAZORPAY_PAYLOAD');
     }
@@ -151,7 +196,7 @@ export class RazorpayWebhookService {
    * payment-link payment id for a top-up).
    */
   async handleVerifiedEvent(
-    payload: RazorpaySubscriptionWebhookPayload | RazorpayPaymentLinkWebhookPayload,
+    payload: RazorpaySubscriptionWebhookPayload | RazorpayPaymentLinkWebhookPayload | RazorpayPaymentWebhookPayload,
   ): Promise<{ alreadyProcessed: boolean }> {
     const eventId = this.resolveEventId(payload);
     const existing = await this.processedEventModel.findOne({ paymentEventId: eventId }).lean();
@@ -173,10 +218,19 @@ export class RazorpayWebhookService {
       case 'payment_link.paid':
         await this.handlePaymentLinkPaid(payload as RazorpayPaymentLinkWebhookPayload, eventId);
         break;
+      case 'payment.captured':
+        // Fallback path — see handlePaymentCredited's docblock. Only
+        // 'captured' (money actually settled), not 'authorized' (can still
+        // fail to capture), grants credits — same real-funds bar
+        // subscription.activated/charged implicitly clear by only firing
+        // once Razorpay itself considers the charge successful.
+        await this.handlePaymentCredited(payload as RazorpayPaymentWebhookPayload, eventId);
+        break;
       default:
         // Every other event type (subscription.updated/pending/paused/
-        // resumed, payment_link.partially_paid/cancelled/expired) is logged,
-        // not silently dropped, so a gap here is visible rather than invisible.
+        // resumed, payment_link.partially_paid/cancelled/expired,
+        // payment.authorized/failed) is logged, not silently dropped, so a
+        // gap here is visible rather than invisible.
         this.logger.log(`Razorpay event ${payload.event} received but not yet handled (${eventId})`);
     }
 
@@ -194,7 +248,9 @@ export class RazorpayWebhookService {
     return { alreadyProcessed: false };
   }
 
-  private resolveEventId(payload: RazorpaySubscriptionWebhookPayload | RazorpayPaymentLinkWebhookPayload): string {
+  private resolveEventId(
+    payload: RazorpaySubscriptionWebhookPayload | RazorpayPaymentLinkWebhookPayload | RazorpayPaymentWebhookPayload,
+  ): string {
     const subscriptionPayload = payload as RazorpaySubscriptionWebhookPayload;
     if (subscriptionPayload.payload.subscription) {
       const subscriptionId = subscriptionPayload.payload.subscription.entity.id;
@@ -208,6 +264,14 @@ export class RazorpayWebhookService {
       const linkId = linkPayload.payload.payment_link.entity.id;
       const paymentId = linkPayload.payload.payment?.entity.id;
       return paymentId ? `${payload.event}:${linkId}:${paymentId}` : `${payload.event}:${linkId}`;
+    }
+    const paymentPayload = payload as RazorpayPaymentWebhookPayload;
+    if (paymentPayload.payload.payment) {
+      // The bare payment id alone is unique per real occurrence (Razorpay
+      // never reuses a payment id across a retry of the SAME payment) —
+      // unlike subscription/payment-link ids, which recur across their
+      // lifecycle events, this needs no compound key.
+      return `${payload.event}:${paymentPayload.payload.payment.entity.id}`;
     }
     // Should not happen for a payload Razorpay actually sends — fall back to
     // a coarser key rather than throwing, so an unexpected shape still gets
@@ -225,13 +289,35 @@ export class RazorpayWebhookService {
       this.logger.error(`${payload.event} missing subscription entity — cannot grant credits`);
       return;
     }
+    await this.grantSubscriptionCredits(entity, eventId, payload.event);
+  }
 
+  /**
+   * Shared grant core for a subscription's successful charge, regardless of
+   * which webhook event surfaced it — subscription.activated/charged
+   * (normal path) or payment.captured (fallback path, see
+   * handlePaymentCredited). Keeping this in one place means the two paths
+   * can never grant a different amount or skip a step relative to each
+   * other.
+   */
+  private async grantSubscriptionCredits(
+    entity: {
+      id: string;
+      status: string;
+      customer_id: string | null;
+      current_start?: number | null;
+      current_end?: number | null;
+      notes?: Record<string, string | number>;
+    },
+    eventId: string,
+    eventLabel: string,
+  ): Promise<void> {
     const billingEntityId = entity.notes?.billingEntityId as string | undefined;
     const planTier = entity.notes?.planTier as PlanTier | undefined;
 
     if (!billingEntityId || !planTier || !PLAN_MONTHLY_CREDITS[planTier]) {
       this.logger.error(
-        `${payload.event} missing billingEntityId/planTier in notes (subscription ${entity.id}) — cannot grant credits`,
+        `${eventLabel} missing billingEntityId/planTier in notes (subscription ${entity.id}) — cannot grant credits`,
       );
       return;
     }
@@ -266,6 +352,90 @@ export class RazorpayWebhookService {
     );
 
     await this.creditLedger.grantPlanCredits(billingEntityId, PLAN_MONTHLY_CREDITS[planTier], eventId);
+  }
+
+  /**
+   * Fallback for a Subscription's charge that Razorpay reports ONLY via
+   * payment.captured, without ever sending subscription.activated —
+   * reproduced directly against a real test-mode Beta subscription paid by
+   * UPI intent flow (payment.authorized + payment.captured both delivered;
+   * subscription.activated never arrived, even after 40+ minutes, so this is
+   * not a delivery-order/retry timing issue). Without this fallback, a real,
+   * successfully captured payment silently grants nothing — exactly what
+   * happened before this was added.
+   *
+   * The payment entity itself carries no notes/subscription_id (Razorpay
+   * only put `notes: []` — empty — on the payment here), so the only way
+   * back to billingEntityId/planTier is: payment.invoice_id ->
+   * invoices.fetch -> invoice.subscription_id -> subscriptions.fetch ->
+   * subscription.notes. Two extra Razorpay API calls, only paid on this
+   * fallback path — the normal subscription.activated/charged path never
+   * needs them since the subscription entity is already inline in that
+   * webhook's payload.
+   *
+   * A payment with no invoice_id (e.g. a one-off Order/Payment unrelated to
+   * any subscription) is not this service's concern and is left to the
+   * `default` logger.log in handleVerifiedEvent — returning early here
+   * rather than erroring, since "not every payment is a subscription
+   * payment" is expected, not a fault.
+   */
+  private async handlePaymentCredited(payload: RazorpayPaymentWebhookPayload, eventId: string): Promise<void> {
+    const entity = payload.payload.payment?.entity;
+    if (!entity) {
+      this.logger.error(`${payload.event} missing payment entity — cannot resolve subscription`);
+      return;
+    }
+    if (!entity.invoice_id) {
+      // Ordinary one-off payment, not a subscription charge — nothing to grant.
+      return;
+    }
+
+    let subscriptionId: string | undefined;
+    try {
+      const invoice = await this.razorpay.invoices.fetch(entity.invoice_id);
+      // Razorpay's actual API response includes subscription_id on an
+      // invoice entity (razorpay.com/docs/api/payments/invoices/#fetch-an-
+      // invoice-by-id) — the SDK's RazorpayInvoice type just never declared
+      // it (only RazorpayInvoiceQuery, a LIST filter, has it), so this reads
+      // past a real types-package gap rather than an actual missing field.
+      subscriptionId = (invoice as Invoices.RazorpayInvoice & { subscription_id?: string }).subscription_id;
+    } catch (error) {
+      this.logger.error(
+        `${payload.event} failed to fetch invoice ${entity.invoice_id} for payment ${entity.id}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      return;
+    }
+    if (!subscriptionId) {
+      // Invoice exists but isn't tied to a subscription — same "not our concern" case as no invoice_id at all.
+      return;
+    }
+
+    let subscription: Subscriptions.RazorpaySubscription;
+    try {
+      subscription = await this.razorpay.subscriptions.fetch(subscriptionId);
+    } catch (error) {
+      this.logger.error(
+        `${payload.event} failed to fetch subscription ${subscriptionId} for payment ${entity.id}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      return;
+    }
+
+    await this.grantSubscriptionCredits(
+      {
+        id: subscription.id,
+        status: subscription.status,
+        customer_id: subscription.customer_id,
+        current_start: subscription.current_start,
+        current_end: subscription.current_end,
+        notes: subscription.notes as Record<string, string | number> | undefined,
+      },
+      eventId,
+      payload.event,
+    );
   }
 
   /** Status-only transitions (cancellation, halting, completion, expiry) — updates the subscription row, grants nothing. */

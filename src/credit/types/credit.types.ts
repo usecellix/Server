@@ -20,7 +20,7 @@ export type PlanTier = 'free' | 'beta' | 'solo' | 'firm' | 'enterprise';
 
 export type BillingEntityType = 'user' | 'org';
 
-export type LedgerEntryType = 'grant' | 'purchase' | 'debit' | 'one_time_grant';
+export type LedgerEntryType = 'grant' | 'purchase' | 'debit' | 'one_time_grant' | 'expire';
 
 /** Resolved cost for a specific request, after per-unit quantity is applied. */
 export interface ResolvedCreditCost {
@@ -35,6 +35,23 @@ export interface CreditGateResult {
   reason?: 'insufficient_balance' | 'unwired_action' | 'unknown_action_type';
   availableBalance?: number;
   requiredCredits?: number;
+}
+
+/** Ledger actionType for debits priced from real token cost rather than the catalog. */
+export const AI_USAGE_ACTION_TYPE = 'AI_USAGE';
+
+export interface CreditBalances {
+  planCredits: number;
+  purchasedCredits: number;
+  oneTimeCredits: number;
+}
+
+export interface UsageDebitResult {
+  /** Credits actually taken — less than requested when the balance ran out. */
+  debited: number;
+  requested: number;
+  /** Balances after the debit; absent when the account had nothing to take. */
+  balances?: CreditBalances;
 }
 
 /** Result of an attempted debit. CREDIT_SYSTEM.md CD-3 / CD-6. */

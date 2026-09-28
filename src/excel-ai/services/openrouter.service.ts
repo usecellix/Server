@@ -1,15 +1,22 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { AppConfigService } from '../../config/app-config.service';
+import { llmCallerFromStack } from '../../llm-usage/llm-caller.util';
+import { LlmUsageService } from '../../llm-usage/llm-usage.service';
 import { LLMTier } from '../../types/cellix.types';
 import { LlmRequestError } from '../errors/llm-request.error';
-import { ModelRouter } from '../llm/model-router';
+import { estimateLlmCallCostUsd, ModelRouter, resolvePricingForModel } from '../llm/model-router';
 import { extractChatContent } from '../utils/extract-chat-content.util';
 import { isReasoningMandatoryError } from '../utils/reasoning-mandatory.util';
 import {
   computeReasoningMaxTokens,
   ensureBudgetForReasoning,
   escalatedRetryBudget,
+  minReasoningEffort,
 } from '../utils/reasoning-budget.util';
+import {
+  backoffDelayMs,
+  classifyLlmError,
+} from '../../agents/utils/transient-llm-error.util';
 
 export type OpenRouterChatMessage = {
   role: 'system' | 'user' | 'assistant';
@@ -25,7 +32,12 @@ export type LlmUsage = {
    *  non-zero value is the only real proof caching is working; the dashboard
    *  total lags too much to catch a regression in the moment. */
   cachedTokens?: number;
+  /** Provider-billed USD cost for the call, when the provider reports it. */
+  costUsd?: number;
 };
+
+/** Attribution for one logical call; `attempt` counts network attempts across retries. */
+type CallMeta = { caller: string; attempt: number };
 
 /**
  * Mutable out-param for `complete()`. `truncated` is true when the provider
@@ -93,6 +105,8 @@ type ChatMessage = {
 };
 
 type ChatCompletionResult = {
+  id?: string;
+  model?: string;
   choices?: Array<{
     finishReason?: string | null;
     message?: {
@@ -110,6 +124,7 @@ type ChatCompletionResult = {
     promptTokensDetails?: {
       cachedTokens?: number | null;
     };
+    cost?: number | null;
   };
 };
 
@@ -122,13 +137,60 @@ export class OpenRouterService {
   constructor(
     private readonly config: AppConfigService,
     private readonly modelRouter: ModelRouter,
+    @Optional() private readonly llmUsage?: LlmUsageService,
   ) {}
 
   isConfigured(): boolean {
     return Boolean(this.config.openRouterApiKey);
   }
 
-  async complete(opts: {
+  /**
+   * LONG_PROMPT_RELIABILITY_PLAN.md Phase 3 (TASKS.md #286) — retries a
+   * TRANSIENT provider fault with exponential backoff before surfacing it.
+   *
+   * The motivating failure is `OpenRouter could not verify available credits
+   * for this request in time. Retry shortly.`: a 402 that is a credit-CHECK
+   * timeout under concurrency, not an empty wallet, and which killed whole
+   * month-sheet waves across this session. Retrying here rather than in the
+   * agentic loop is deliberate — a retry at this level is invisible to the
+   * caller's iteration budget, so a provider hiccup can no longer consume the
+   * subtask retries reserved for genuine non-convergence.
+   *
+   * A permanent fault (auth, bad request, genuinely insufficient credit) is
+   * rethrown immediately, exactly as before.
+   */
+  async complete(opts: Parameters<OpenRouterService['completeOnce']>[0]): Promise<string> {
+    const meta: CallMeta = { caller: llmCallerFromStack(new Error().stack), attempt: 0 };
+    const maxAttempts = 3;
+    let lastError: unknown;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      try {
+        return await this.completeOnce(opts, meta);
+      } catch (error: unknown) {
+        lastError = error;
+        const { transient, reason } = classifyLlmError(error);
+        if (!transient || attempt === maxAttempts) {
+          if (transient) {
+            this.logger.error(
+              `OpenRouter transient fault persisted after ${maxAttempts} attempts (${reason}) — giving up.`,
+            );
+          }
+          throw error;
+        }
+        const delay = backoffDelayMs(attempt);
+        this.logger.warn(
+          `OpenRouter transient fault (${reason}) — retrying in ${delay}ms ` +
+            `(attempt ${attempt}/${maxAttempts - 1} of retries).`,
+        );
+        await new Promise((resolve) => setTimeout(resolve, delay));
+      }
+    }
+
+    throw lastError;
+  }
+
+  private async completeOnce(opts: {
     systemPrompt: string;
     userMessage: string;
     model?: string;
@@ -148,7 +210,7 @@ export class OpenRouterService {
      * and the missing subtasks were never noticed by any downstream check.)
      */
     outcome?: LlmCompletionOutcome;
-  }): Promise<string> {
+  }, meta: CallMeta = { caller: 'unknown', attempt: 0 }): Promise<string> {
     const apiKey = this.config.openRouterApiKey;
     if (!apiKey) {
       throw new LlmRequestError(503, 'OpenRouter not configured');
@@ -192,7 +254,7 @@ export class OpenRouterService {
         reasoningEffort: requestedEffort,
         reasoningMaxTokens: reasoningCap,
         responseFormat: opts.responseFormat ?? 'json_object',
-      });
+      }, meta);
 
       let text = this.extractCompletionText(response);
       if (!text.trim()) {
@@ -216,7 +278,7 @@ export class OpenRouterService {
           reasoningEffort: 'low',
           reasoningMaxTokens: retryReasoningCap,
           responseFormat: opts.responseFormat ?? 'json_object',
-        });
+        }, meta);
         text = this.extractCompletionText(response);
         if (!text.trim()) {
           this.logEmptyCompletion(model, response, 'retry with reasoning.effort=low');
@@ -269,6 +331,7 @@ export class OpenRouterService {
   }
 
   async quickCall(systemPrompt: string, userMessage: string): Promise<string> {
+    const meta: CallMeta = { caller: llmCallerFromStack(new Error().stack), attempt: 0 };
     const apiKey = this.config.openRouterApiKey;
     if (!apiKey) {
       return '';
@@ -282,17 +345,20 @@ export class OpenRouterService {
         appTitle: 'Cellix',
       });
 
+      // TASKS.md #228 — openRouterModelLow is the confirmed reasoning-mandatory
+      // GLM model; minReasoningEffort skips the guaranteed-failing 'none' attempt.
+      const quickCallModel = this.config.openRouterModelLow;
       const response = await this.requestChatCompletion(client, {
-        model: this.config.openRouterModelLow,
+        model: quickCallModel,
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userMessage },
         ],
         temperature: 0,
         maxCompletionTokens: 512,
-        reasoningEffort: 'none',
+        reasoningEffort: minReasoningEffort(quickCallModel),
         responseFormat: 'json_object',
-      });
+      }, meta);
 
       return this.extractCompletionText(response);
     } catch (error: unknown) {
@@ -317,9 +383,10 @@ export class OpenRouterService {
     model = this.config.openRouterModelMedium,
     maxTokens = 4096,
   ): AsyncGenerator<string> {
+    const meta: CallMeta = { caller: llmCallerFromStack(new Error().stack), attempt: 0 };
     const progress = { yielded: false };
     try {
-      yield* this.streamChatOnce(messages, telemetry, model, maxTokens, progress);
+      yield* this.streamChatOnce(messages, telemetry, model, maxTokens, progress, meta);
       return;
     } catch (error: unknown) {
       const status = this.extractStatus(error);
@@ -335,7 +402,7 @@ export class OpenRouterService {
       }
       this.logger.warn(`OpenRouter chat retrying once (${status}): ${detail}`);
     }
-    yield* this.streamChatOnce(messages, telemetry, model, maxTokens);
+    yield* this.streamChatOnce(messages, telemetry, model, maxTokens, undefined, meta);
   }
 
   private async *streamChatOnce(
@@ -344,6 +411,7 @@ export class OpenRouterService {
     model = this.config.openRouterModelMedium,
     maxTokens = 4096,
     progress?: { yielded: boolean },
+    meta: CallMeta = { caller: 'unknown', attempt: 0 },
   ): AsyncGenerator<string> {
     const apiKey = this.config.openRouterApiKey;
     if (!apiKey) {
@@ -354,6 +422,23 @@ export class OpenRouterService {
       telemetry.provider = 'openrouter';
       telemetry.model = model;
     }
+
+    meta.attempt += 1;
+    const startedAt = Date.now();
+    let lastUsage: LlmUsage | undefined;
+    let servedModel: string | undefined;
+    let generationId: string | undefined;
+    let recorded = false;
+    const record = (error?: unknown) => {
+      if (recorded) return;
+      recorded = true;
+      this.recordUsage(meta, model, Date.now() - startedAt, true, {
+        usage: lastUsage,
+        servedModel,
+        generationId,
+        error,
+      });
+    };
 
     try {
       const { OpenRouter } = await import('@openrouter/sdk');
@@ -397,8 +482,10 @@ export class OpenRouterService {
       );
 
       let streamedChars = 0;
-      let lastUsage: LlmUsage | undefined;
       for await (const chunk of stream) {
+        const chunkMeta = chunk as { id?: string; model?: string };
+        if (chunkMeta.id) generationId = chunkMeta.id;
+        if (chunkMeta.model) servedModel = chunkMeta.model;
         const usage = this.normalizeUsage((chunk as { usage?: Record<string, unknown> }).usage);
         if (usage) {
           lastUsage = usage;
@@ -428,6 +515,7 @@ export class OpenRouterService {
         );
       }
     } catch (error: unknown) {
+      record(error);
       const status = this.extractStatus(error);
       const detail = error instanceof Error ? error.message : 'OpenRouter request failed';
       if (status === 429 && telemetry?.modelTier) {
@@ -435,6 +523,9 @@ export class OpenRouterService {
       }
       this.logger.warn(`OpenRouter chat failed (${status}): ${detail}`);
       throw new LlmRequestError(status, detail);
+    } finally {
+      // Also covers a consumer that stops iterating early — the tokens were still billed.
+      record();
     }
   }
 
@@ -452,9 +543,10 @@ export class OpenRouterService {
       reasoningMaxTokens?: number;
       responseFormat: 'json_object' | 'text';
     },
+    meta: CallMeta = { caller: 'unknown', attempt: 0 },
   ): Promise<ChatCompletionResult> {
     try {
-      return await this.sendChatCompletionOnce(client, opts);
+      return await this.sendChatCompletionOnce(client, opts, meta);
     } catch (error: unknown) {
       const status = this.extractStatus(error);
       if (opts.reasoningEffort !== 'low' && isReasoningMandatoryError(error, status)) {
@@ -464,19 +556,104 @@ export class OpenRouterService {
         return await this.sendChatCompletionOnce(client, {
           ...opts,
           reasoningEffort: 'low',
-        });
+        }, meta);
       }
       if (this.isTransientNetworkError(error)) {
         this.logger.warn(
           `OpenRouter transient network error (${this.describeNetworkError(error)}) — retrying once`,
         );
-        return await this.sendChatCompletionOnce(client, opts);
+        return await this.sendChatCompletionOnce(client, opts, meta);
       }
       throw error;
     }
   }
 
   private async sendChatCompletionOnce(
+    client: OpenRouterClient,
+    opts: {
+      model: string;
+      messages: ChatMessage[];
+      temperature: number;
+      maxCompletionTokens: number;
+      reasoningEffort: ReasoningEffort;
+      reasoningMaxTokens?: number;
+      responseFormat: 'json_object' | 'text';
+    },
+    meta: CallMeta = { caller: 'unknown', attempt: 0 },
+  ): Promise<ChatCompletionResult> {
+    meta.attempt += 1;
+    const startedAt = Date.now();
+    try {
+      const response = await this.sendChatCompletionRaw(client, opts);
+      this.recordUsage(meta, opts.model, Date.now() - startedAt, false, {
+        usage: this.normalizeUsage(response.usage as Record<string, unknown> | undefined),
+        servedModel: response.model,
+        generationId: response.id,
+        finishReason: response.choices?.[0]?.finishReason ?? undefined,
+      });
+      return response;
+    } catch (error: unknown) {
+      this.recordUsage(meta, opts.model, Date.now() - startedAt, false, { error });
+      throw error;
+    }
+  }
+
+  private recordUsage(
+    meta: CallMeta,
+    model: string,
+    latencyMs: number,
+    streaming: boolean,
+    result: {
+      usage?: LlmUsage;
+      servedModel?: string;
+      generationId?: string;
+      finishReason?: string;
+      error?: unknown;
+    },
+  ): void {
+    if (!this.llmUsage) return;
+    const usage = result.usage;
+    const promptTokens = usage?.promptTokens ?? 0;
+    const completionTokens = usage?.completionTokens ?? 0;
+    let costUsd = usage?.costUsd;
+    let costEstimated = false;
+    if (costUsd === undefined) {
+      costEstimated = promptTokens + completionTokens > 0;
+      costUsd = costEstimated
+        ? estimateLlmCallCostUsd(
+            resolvePricingForModel(model, this.config).pricing,
+            promptTokens,
+            completionTokens,
+          )
+        : 0;
+    }
+    this.llmUsage.recordCall({
+      model,
+      servedModel: result.servedModel,
+      generationId: result.generationId,
+      caller: meta.caller,
+      attempt: meta.attempt,
+      streaming,
+      promptTokens,
+      completionTokens,
+      reasoningTokens: usage?.reasoningTokens,
+      cachedTokens: usage?.cachedTokens,
+      totalTokens: usage?.totalTokens,
+      costUsd,
+      costEstimated,
+      latencyMs,
+      success: result.error === undefined,
+      finishReason: result.finishReason,
+      ...(result.error !== undefined
+        ? {
+            errorStatus: this.extractStatus(result.error),
+            errorMessage: result.error instanceof Error ? result.error.message : String(result.error),
+          }
+        : {}),
+    });
+  }
+
+  private async sendChatCompletionRaw(
     client: OpenRouterClient,
     opts: {
       model: string;
@@ -628,6 +805,7 @@ export class OpenRouterService {
       cachedTokens:
         this.numberValue(promptDetails?.cachedTokens) ??
         this.numberValue(promptDetails?.cached_tokens),
+      costUsd: this.numberValue(usage.cost),
     };
   }
 

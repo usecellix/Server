@@ -96,4 +96,35 @@ describe('hasWriteIntent', () => {
       ).toBe(true);
     });
   });
+
+  // TASKS.md #235 — live-audit repros. Both were classified route=data by the
+  // LLM router itself, reached applyWriteIntentGuard, and hasWriteIntent()
+  // returned false for each — so the safety net that exists exactly for this
+  // case let both through, and the request was answered with a chat question
+  // ("want me to apply that change?") instead of a write-route preview.
+  describe('conditional labeling verbs — "mark"/"flag" (#235)', () => {
+    it.each([
+      "If the GSTIN in column D is blank, mark a new Status column as 'Missing GSTIN'",
+      "Add a column: if taxable amount is above 1 lakh mark 'High Value', else 'Standard'",
+      'Flag rows where IGST is above zero',
+    ])('detects write intent for %j', (message) => {
+      expect(hasWriteIntent(message)).toBe(true);
+    });
+  });
+
+  describe('"show/display only rows where" filter phrasing (#235)', () => {
+    it.each([
+      'Show only rows where the taxable amount is above 1 lakh',
+      'Display only the rows where GSTIN is blank',
+      'show only entries where the amount is above 50000',
+    ])('detects write intent for %j', (message) => {
+      expect(hasWriteIntent(message)).toBe(true);
+    });
+
+    it('leaves a plain read question alone', () => {
+      expect(hasWriteIntent('How many rows where the taxable amount is above 1 lakh?')).toBe(
+        false,
+      );
+    });
+  });
 });

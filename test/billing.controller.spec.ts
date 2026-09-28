@@ -45,6 +45,11 @@ describe('BillingController', () => {
       planTier: 'solo',
     });
 
+    // No 4th "returnTo" argument: Razorpay's Subscriptions API has no
+    // callback_url field, so there's nothing session-specific to pass —
+    // unlike the guest flow, this call differs from
+    // createGuestSubscriptionSession only in billingEntityId/email coming
+    // from the session rather than a submitted email.
     expect(createSubscriptionSession).toHaveBeenCalledWith('user-1', 'ca@example.com', 'solo');
     expect(result).toEqual({ url: 'https://rzp.io/i/x' });
   });

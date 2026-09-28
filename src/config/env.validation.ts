@@ -56,6 +56,18 @@ export const envValidationSchema = Joi.object({
   BETTER_AUTH_SECRET: Joi.string().min(32).optional(),
   BETTER_AUTH_URL: Joi.string().uri().optional(),
   CLIENT_ORIGIN: Joi.string().uri().default('https://localhost:3000'),
+  // CORS origin for CELLIX-landing-page (the marketing site) — separate from
+  // CLIENT_ORIGIN, which is the Excel add-in's origin. The two are different
+  // apps on different ports/schemes (add-in: https://localhost:3000 in dev;
+  // landing page: http://localhost:5173+ via Vite) and PublicBillingController
+  // is reached from the landing page's guest checkout, not the add-in — so
+  // main.ts's enableCors() needs both allowed simultaneously, not a single
+  // swapped value. Optional: unset means only CLIENT_ORIGIN is allowed, same
+  // as before this var existed. Comma-separated (Vite's dev port isn't
+  // stable across runs — see AppConfigService.marketingSiteOrigins), so this
+  // is validated as a plain string, not `.uri()` — a comma-joined value is
+  // not itself a single valid URI even though each part is.
+  MARKETING_SITE_ORIGIN: Joi.string().allow('').optional(),
   GOOGLE_CLIENT_ID: Joi.string().allow('').optional(),
   GOOGLE_CLIENT_SECRET: Joi.string().allow('').optional(),
   MICROSOFT_CLIENT_ID: Joi.string().allow('').optional(),
@@ -70,6 +82,10 @@ export const envValidationSchema = Joi.object({
   // RAZORPAY_PLAN_ID_* reference Plans created ahead of time via Razorpay's
   // dashboard/API (a one-time setup step outside this codebase, same
   // constraint Stripe Price IDs had) — Solo/Firm/Beta each need their own.
+  // Usage billing: credits charged per USD of real OpenRouter cost.
+  CREDITS_PER_USD: Joi.number().positive().default(600),
+  // How many LLM-spending requests one signed-in user may have in flight at once.
+  MAX_CONCURRENT_REQUESTS_PER_USER: Joi.number().integer().positive().default(2),
   RAZORPAY_KEY_ID: Joi.string().allow('').optional(),
   RAZORPAY_KEY_SECRET: Joi.string().allow('').optional(),
   RAZORPAY_WEBHOOK_SECRET: Joi.string().allow('').optional(),

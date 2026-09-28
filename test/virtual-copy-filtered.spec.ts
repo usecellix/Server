@@ -27,7 +27,7 @@ describe('virtualApply COPY_FILTERED_RANGE / MOVE_RANGE', () => {
     tables: [],
   };
 
-  it('copies filtered rows into a destination sheet', () => {
+  it('COPY_FILTERED_RANGE is deliberately NOT simulated — reads the SOURCE through the same shadow that mispredicted a live full-sheet copy (only ~11 of 61 rows known), so it is no longer previewed (reversibility-catalog.ts marks it non-reversible)', () => {
     const shadow = buildShadowWorkbook(context);
     const after = virtualApply(shadow, [
       {
@@ -50,44 +50,14 @@ describe('virtualApply COPY_FILTERED_RANGE / MOVE_RANGE', () => {
       },
     ]);
 
+    // ADD_SHEET still runs (a different action type) but the copy itself is a no-op.
     const dest = shadowSheetToContext(after.sheets.get('Pending Payments')!);
-    expect(dest.values[0]).toEqual(['Vendor', 'Payment Status']);
-    expect(dest.values[1]).toEqual(['Acme', 'Pending']);
-    expect(dest.values[2]).toEqual(['Gamma', 'Pending']);
-    expect(dest.values.length).toBe(3);
+    expect(dest.values.length).toBe(0);
 
+    // Source is completely untouched — Office.js is the sole source of truth.
     const source = shadowSheetToContext(after.sheets.get('Purchase Register')!);
     expect(source.values[1]).toEqual(['Acme', 'Pending']);
     expect(source.values[2]).toEqual(['Beta', 'Paid']);
-  });
-
-  it('move mode clears matched source rows after copy', () => {
-    const shadow = buildShadowWorkbook(context);
-    const after = virtualApply(shadow, [
-      {
-        type: 'COPY_FILTERED_RANGE',
-        sourceSheet: 'Purchase Register',
-        sourceRange: 'A1:B4',
-        hasHeaders: true,
-        destSheet: 'Pending Payments',
-        destStartCell: 'A1',
-        filter: {
-          column: 'Payment Status',
-          operator: 'equals',
-          value: 'Pending',
-        },
-        mode: 'move',
-      },
-    ]);
-
-    const dest = shadowSheetToContext(after.sheets.get('Pending Payments')!);
-    expect(dest.values.length).toBe(3);
-
-    const source = shadowSheetToContext(after.sheets.get('Purchase Register')!);
-    expect(source.values[1]?.[0]).toBeNull();
-    expect(source.values[1]?.[1]).toBeNull();
-    expect(source.values[2]).toEqual(['Beta', 'Paid']);
-    expect(source.values[3]?.[0]).toBeNull();
   });
 
   it('MOVE_RANGE relocates an entire block and clears the source', () => {

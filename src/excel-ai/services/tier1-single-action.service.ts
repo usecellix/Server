@@ -11,6 +11,7 @@ import {
   normalizeTier1HeaderFormatActions,
 } from '../utils/format-matching-rows.util';
 import { extractJsonFromLlmText } from '../utils/parse-llm-response.util';
+import { minReasoningEffort } from '../utils/reasoning-budget.util';
 import { OpenRouterService } from './openrouter.service';
 
 export interface Tier1ExecuteResult {
@@ -41,6 +42,7 @@ export class Tier1SingleActionService {
     }
 
     const model = this.config.openRouterModelTier1;
+    // TASKS.md #228 — same reasoning-mandatory GLM quirk as llm-router.
     const raw = await this.openRouter.complete({
       systemPrompt: buildTier1SystemPrompt(actionHint),
       userMessage: buildTier1UserMessage(message, actionHint, workbookContext),
@@ -48,7 +50,7 @@ export class Tier1SingleActionService {
       model,
       temperature: 0,
       maxTokens: 512,
-      reasoningEffort: 'none',
+      reasoningEffort: minReasoningEffort(model),
     });
 
     const parsed = parseExecutorPayload(raw);

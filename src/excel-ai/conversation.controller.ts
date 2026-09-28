@@ -5,6 +5,7 @@ import {
   Get,
   Headers,
   HttpCode,
+  Optional,
   Param,
   Patch,
   Post,
@@ -13,6 +14,12 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { FastifyReply } from 'fastify';
+import { randomUUID } from 'node:crypto';
+import {
+  runWithLlmUsageContext,
+  type LlmUsageContext,
+} from '../llm-usage/llm-usage.context';
+import { LlmUsageService } from '../llm-usage/llm-usage.service';
 import { TRACE_ID_HEADER } from '../common/constants/trace-id.constant';
 import { SkipEnvelope } from '../common/decorators/skip-envelope.decorator';
 import { AuthGuard, AuthUserSession, Session } from '../auth/auth.guard';
@@ -22,6 +29,10 @@ import { RenameConversationDto } from './dto/rename-conversation.dto';
 import { ToolResultDto } from './dto/tool-result.dto';
 import { ContinueRunDto } from './dto/continue-run.dto';
 import { ConversationService } from './services/conversation.service';
+import { UsageBillingService } from '../credit/usage-billing.service';
+import { ConcurrencyLimitService } from '../common/guards/concurrency-limit.service';
+import { AI_USAGE_ACTION_TYPE } from '../credit/types/credit.types';
+import { endSseResponse, initSseResponse, isSseResponse, writeSseEvent } from './utils/sse.util';
 
 /**
  * Go-live gap (Aug 28, 2026): AuthGuard existed (Mongo-backed, OAuth wired) but was
@@ -37,7 +48,12 @@ import { ConversationService } from './services/conversation.service';
 @UseGuards(AuthGuard)
 @Controller('excel-ai')
 export class ConversationController {
-  constructor(private readonly conversationService: ConversationService) {}
+  constructor(
+    private readonly conversationService: ConversationService,
+    private readonly usageBilling: UsageBillingService,
+    private readonly concurrencyLimit: ConcurrencyLimitService,
+    @Optional() private readonly llmUsage?: LlmUsageService,
+  ) {}
 
   @Post('conversation')
   @SkipEnvelope()
@@ -47,11 +63,21 @@ export class ConversationController {
     @Res() reply: FastifyReply,
     @Session() session: AuthUserSession | undefined,
   ): Promise<void> {
-    await this.conversationService.handleConversation(
-      body,
-      reply,
-      traceId,
-      session?.user?.id,
+    // The trace id doubles as the prompt id, so a stepwise run (which stores
+    // it) can attribute its later /continue waves back to this prompt.
+    const promptId = traceId?.trim() && traceId.trim() !== '-' ? traceId.trim() : randomUUID();
+    const context: LlmUsageContext = {
+      promptId,
+      userId: session?.user?.id,
+      conversationId: body.conversationId,
+    };
+    this.llmUsage?.beginPrompt(context, {
+      prompt: body.message,
+      mode: body.mode,
+      workbookId: body.workbookId,
+    });
+    await this.trackRequest(context, reply, () =>
+      this.conversationService.handleConversation(body, reply, promptId, session?.user?.id),
     );
   }
 
@@ -140,6 +166,94 @@ export class ConversationController {
     @Res() reply: FastifyReply,
     @Session() session: AuthUserSession | undefined,
   ): Promise<void> {
-    await this.conversationService.continueRun(body, reply, traceId, session?.user?.id);
+    // Unknown until continueRun loads the run and re-points this at the run's
+    // original prompt id; until then nothing is attributed to any prompt.
+    const context: LlmUsageContext = { promptId: '', userId: session?.user?.id };
+    await this.trackRequest(context, reply, () =>
+      this.conversationService.continueRun(body, reply, traceId, session?.user?.id),
+    );
+  }
+
+  private async trackRequest(
+    context: LlmUsageContext,
+    reply: FastifyReply,
+    fn: () => Promise<void>,
+  ): Promise<void> {
+    const startedAt = Date.now();
+    let error: string | undefined;
+
+    if (context.userId && !(await this.usageBilling.canStart(context.userId))) {
+      initSseResponse(reply);
+      writeSseEvent(reply, 'error', {
+        message: 'You are out of credits.',
+        code: 'INSUFFICIENT_CREDIT',
+        availableBalance: 0,
+      });
+      endSseResponse(reply);
+      this.llmUsage?.endRequest(context, { durationMs: Date.now() - startedAt, error: 'insufficient_credit' });
+      return;
+    }
+
+    // TASKS.md #344 — caps how many of THIS user's requests can be in flight
+    // at once, independent of credit balance (a well-funded account could
+    // otherwise fire unlimited concurrent LLM calls). Checked after the
+    // credit gate so an already-blocked user sees the credit error, not a
+    // generic rate-limit one.
+    const acquired = context.userId ? this.concurrencyLimit.tryAcquire(context.userId) : true;
+    if (!acquired) {
+      initSseResponse(reply);
+      writeSseEvent(reply, 'error', {
+        message: 'You already have a request in progress. Wait for it to finish before sending another.',
+        code: 'TOO_MANY_CONCURRENT_REQUESTS',
+      });
+      endSseResponse(reply);
+      this.llmUsage?.endRequest(context, { durationMs: Date.now() - startedAt, error: 'too_many_concurrent_requests' });
+      return;
+    }
+
+    this.settleBeforeStreamEnds(context, reply);
+    try {
+      await runWithLlmUsageContext(context, fn);
+    } catch (err: unknown) {
+      error = err instanceof Error ? err.message : String(err);
+      throw err;
+    } finally {
+      if (context.userId) this.concurrencyLimit.release(context.userId);
+      // Catches cost from calls that finished after the stream closed (e.g. a
+      // Stop mid-wave); a no-op when the stream-end settle already billed all of it.
+      void this.usageBilling.settle(context);
+      this.llmUsage?.endRequest(context, { durationMs: Date.now() - startedAt, error });
+    }
+  }
+
+  /**
+   * ConversationService closes the SSE stream from ~70 places. Deferring the
+   * real `end()` until this request's usage is debited lets the resulting
+   * `credits` event reach the task pane, so its balance updates live.
+   */
+  private settleBeforeStreamEnds(context: LlmUsageContext, reply: FastifyReply): void {
+    const billing = this.usageBilling;
+    if (!context.userId) return;
+    const raw = reply.raw;
+    const end = raw.end.bind(raw) as (...args: unknown[]) => unknown;
+    let ending = false;
+    raw.end = ((...args: unknown[]) => {
+      if (ending) return raw;
+      ending = true;
+      void billing
+        .settle(context)
+        .then((settlement) => {
+          if (!settlement?.balances || raw.writableEnded || raw.destroyed || !isSseResponse(reply)) return;
+          writeSseEvent(reply, 'credits', {
+            ...settlement.balances,
+            debited: settlement.debited,
+            actionType: AI_USAGE_ACTION_TYPE,
+            ...(context.conversationId ? { conversationId: context.conversationId } : {}),
+          });
+        })
+        .catch(() => undefined)
+        .finally(() => end(...args));
+      return raw;
+    }) as typeof raw.end;
   }
 }

@@ -3,6 +3,7 @@ import { MongooseModule } from '@nestjs/mongoose';
 import { AgentsModule } from '../agents/agents.module';
 import { AuditModule } from '../audit/audit.module';
 import { ContextCacheModule } from '../common/cache/context-cache.module';
+import { ConcurrencyLimitModule } from '../common/guards/concurrency-limit.module';
 import { CreditModule } from '../credit/credit.module';
 import { LoggingModule } from '../common/logging/logging.module';
 import { AppConfigModule } from '../config/app-config.module';
@@ -28,6 +29,7 @@ import { Tier2GenerateVerifyService } from './services/tier2-generate-verify.ser
     AppConfigModule,
     AuditModule,
     ContextCacheModule,
+    ConcurrencyLimitModule,
     CreditModule,
     LoggingModule,
     LlmModule,

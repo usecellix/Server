@@ -213,7 +213,7 @@ describe('virtualApply — CLEAR_CONTENT / CLEAR_ALL / SET_MATCHING_ROWS / MERGE
     expect(cell?.numberFormat).toBe('General');
   });
 
-  it('SET_MATCHING_ROWS writes the target value into every row matching the filter', () => {
+  it('SET_MATCHING_ROWS is deliberately NOT simulated — a live-tested run mispredicted a row change from stale/missing shadow data, so it is no longer previewed (reversibility-catalog.ts marks it non-reversible)', () => {
     const before = buildShadowWorkbook(purchaseContext);
     const after = virtualApply(before, [
       {
@@ -227,26 +227,9 @@ describe('virtualApply — CLEAR_CONTENT / CLEAR_ALL / SET_MATCHING_ROWS / MERGE
       },
     ] as never);
 
-    expect(after.sheets.get('Sheet1')?.cells.get('B2')?.value).toBe('Paid');
-    // Pear did not match the filter — untouched.
+    // No simulated change — Office.js is the sole source of truth for this action.
+    expect(after.sheets.get('Sheet1')?.cells.get('B2')?.value).toBe('Pending');
     expect(after.sheets.get('Sheet1')?.cells.get('B3')?.value).toBe('Pending');
-  });
-
-  it('SET_MATCHING_ROWS with no filter writes every data row', () => {
-    const before = buildShadowWorkbook(purchaseContext);
-    const after = virtualApply(before, [
-      {
-        type: 'SET_MATCHING_ROWS',
-        sheetName: 'Sheet1',
-        range: 'A1:B3',
-        hasHeaders: true,
-        targetColumn: 'Status',
-        value: 'Reviewed',
-      },
-    ] as never);
-
-    expect(after.sheets.get('Sheet1')?.cells.get('B2')?.value).toBe('Reviewed');
-    expect(after.sheets.get('Sheet1')?.cells.get('B3')?.value).toBe('Reviewed');
   });
 
   it('MERGE_CELLS keeps only the top-left value and discards the rest — and the diff shows it', () => {

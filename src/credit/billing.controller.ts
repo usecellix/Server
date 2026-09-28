@@ -1,4 +1,4 @@
-import { BadRequestException, Body, Controller, Get, Headers, Post, Query, Req, UseGuards } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Get, Headers, Logger, Post, Query, Req, UseGuards } from '@nestjs/common';
 import { FastifyRequest } from 'fastify';
 import { AuthGuard, AuthUserSession, Session } from '../auth/auth.guard';
 import { SkipEnvelope } from '../common/decorators/skip-envelope.decorator';
@@ -126,6 +126,8 @@ export class PublicBillingController {
  */
 @Controller('webhooks')
 export class RazorpayWebhookController {
+  private readonly logger = new Logger(RazorpayWebhookController.name);
+
   constructor(private readonly razorpayWebhookService: RazorpayWebhookService) {}
 
   @Post('razorpay')
@@ -140,7 +142,22 @@ export class RazorpayWebhookController {
       // req.rawBody — its absence means that option isn't wired, not a caller error.
       throw new BadRequestException('MISSING_RAW_BODY');
     }
-    const payload = this.razorpayWebhookService.verifyAndParseEvent(rawBody, signature);
-    return this.razorpayWebhookService.handleVerifiedEvent(payload);
+    try {
+      const payload = this.razorpayWebhookService.verifyAndParseEvent(rawBody, signature);
+      return await this.razorpayWebhookService.handleVerifiedEvent(payload);
+    } catch (error) {
+      // This is the ONLY place a webhook failure surfaces — HttpExceptionFilter
+      // reduces anything non-HttpException to a bare 500 with no message, so
+      // without this log a credit-granting bug here is completely invisible
+      // (a raw error from a Mongoose write, a malformed Razorpay payload
+      // field access, etc. all look identical from the client/Razorpay side:
+      // just "500"). Log before rethrowing so the global filter still
+      // produces the right status code for Razorpay's retry logic.
+      this.logger.error(
+        `Webhook processing failed: ${error instanceof Error ? error.message : String(error)}`,
+        error instanceof Error ? error.stack : undefined,
+      );
+      throw error;
+    }
   }
 }

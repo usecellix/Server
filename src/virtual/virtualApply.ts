@@ -1,11 +1,5 @@
 import { compareSortValues } from '../agents/utils/sort-value.util';
-import {
-  buildOutputRows,
-  filterDataRows,
-  applyFilterOperator,
-  resolveFilterColumnIndex,
-  findMatchingRowOffsets,
-} from '../agents/utils/range-filter.util';
+import { findMatchingRowOffsets } from '../agents/utils/range-filter.util';
 import { buildAggregateTable } from '../agents/utils/aggregate-table.util';
 import { Logger } from '@nestjs/common';
 import { Action } from '../agents/types/agent.types';
@@ -76,6 +70,12 @@ function applyAction(wb: ShadowWorkbook, action: Action): void {
     case 'COPY_SHEET':
       virtualCopySheet(wb, action);
       break;
+    // Intentionally not simulated: the shadow workbook models cell values, and
+    // tab ORDER changes none of them — every downstream checker reads sheets by
+    // name. Explicit case rather than a silent default-break, per
+    // ARCHITECTURE.md AD-3. TASKS.md #212.
+    case 'MOVE_SHEET':
+      break;
     case 'DELETE_SHEET':
       virtualDeleteSheet(wb, action.sheetName ?? '');
       break;
@@ -90,9 +90,13 @@ function applyAction(wb: ShadowWorkbook, action: Action): void {
     case 'SORT_RANGE':
       virtualSortRange(wb, action);
       break;
-    case 'COPY_FILTERED_RANGE':
-      virtualCopyFilteredRange(wb, action);
-      break;
+    // COPY_FILTERED_RANGE is deliberately NOT simulated (see reversibility-
+    // catalog.ts) — same root cause as SET_MATCHING_ROWS: it reads the SOURCE
+    // sheet through the same possibly-incomplete/stale shadow, so a live-
+    // tested "copy the whole sheet" produced a preview that only knew about
+    // ~11 of 61 rows and confidently predicted the rest as blank, while the
+    // real Office.js copy correctly wrote all 61 — a false "N cells do not
+    // match" alarm on a correct copy.
     case 'FORMAT_MATCHING_ROWS':
       // Format-only — shadow workbook has no fill state to update.
       break;
@@ -156,8 +160,16 @@ function applyAction(wb: ShadowWorkbook, action: Action): void {
     case 'CLEAR_ALL':
       virtualClearRange(wb, action, true);
       break;
-    case 'SET_MATCHING_ROWS':
-      virtualSetMatchingRows(wb, action);
+    // SET_MATCHING_ROWS is deliberately NOT simulated here (see
+    // reversibility-catalog.ts) — the shadow it would run against can be
+    // missing or stale for rows the executor never actually fetched, and a
+    // live-tested run confidently mispredicted a single row's change,
+    // producing a false "did not match what was proposed" alarm even though
+    // the real Office.js write (run against live data) was correct. Falling
+    // through to default means no `changes` are recorded for it, same as
+    // FORMAT_MATCHING_ROWS/AUTO_FILTER/CONDITIONAL_FORMAT already do.
+    case 'DELETE_MATCHING_ROWS':
+      virtualDeleteMatchingRows(wb, action);
       break;
     case 'MERGE_CELLS':
       virtualMergeCells(wb, action);
@@ -562,6 +574,16 @@ function findHeaderColumnIndex(sheet: ShadowSheet, headerName: string): number {
 function virtualAddSheet(wb: ShadowWorkbook, name: string, copyFrom?: string): void {
   if (copyFrom && wb.sheets.has(copyFrom)) {
     const source = wb.sheets.get(copyFrom)!;
+    // Cloning source.cells here is still correct for agenticLoop.service.ts's
+    // OWN use of virtualApply — replaying a turn's own subtasks in sequence so
+    // subtask N+1 ("sort CGST Sorted") can see what subtask N ("copy Invoices
+    // to CGST Sorted") produced, entirely before anything touches real Excel.
+    // Nothing is stale there; the shadow IS the only state that exists yet.
+    // The false "N cells do not match" alarm (#245/#246) is a DIFFERENT
+    // consumer — change-set.service.ts's outcome-verification diff, compared
+    // against real post-apply Excel — and is excluded at that call site
+    // instead (see createPreview's copy-sheet changes filter), so this
+    // shared helper does not have to serve both call sites' opposite needs.
     wb.sheets.set(name, {
       name,
       cells: new Map(source.cells),
@@ -754,14 +776,47 @@ function virtualClearRange(wb: ShadowWorkbook, action: Action, clearFormat: bool
   }
 }
 
-/** TASKS.md #66 — SET_MATCHING_ROWS: write `value` into `targetColumn` for every row matching `filter` (or all data rows if omitted). */
-function virtualSetMatchingRows(wb: ShadowWorkbook, action: Action): void {
+/**
+ * The WorkbookContext this shadow is built from is often a COMPRESSED SAMPLE
+ * of a sheet (same root cause range.handler.ts's `extendRangeToUsedRows`
+ * works around on the client — TASKS.md F13): a 60-row sheet can arrive with
+ * only the first ~10 data rows actually present in `sheet.cells`. `readRangeValues`
+ * has no way to tell "this cell is genuinely blank" apart from "this cell was
+ * never fetched" — both collapse to `null` — so a filter matching on blank
+ * ("GSTIN equals ''") sees every un-sampled row beyond the fetched prefix as
+ * a false match. That produced a live-tested false alarm: a real Excel write
+ * correctly touched only the ~10 genuinely-blank-GSTIN rows, but the
+ * server-side preview confidently predicted ~50 rows would change, so the
+ * client's post-apply outcome check reported "45 cells do not match" for a
+ * write that was actually correct. A row with NO cell present anywhere in
+ * the shadow (not even in other columns) is the signature of "never
+ * sampled" — real blank data rows in the middle of a table are rare and
+ * still fine to skip here, since under-predicting a preview is safe while
+ * over-predicting produces false failure reports.
+ */
+function isRowSampled(
+  sheet: ShadowSheet,
+  bounds: { startCol: number; endCol: number },
+  absoluteRow: number,
+): boolean {
+  for (let c = bounds.startCol; c <= bounds.endCol; c += 1) {
+    if (sheet.cells.has(`${colIndexToLetter(c)}${absoluteRow + 1}`)) return true;
+  }
+  return false;
+}
+
+/**
+ * Resolves the same predicate the Office.js handler will — against the shadow's
+ * cell values — so the Verifier sees which rows actually disappear rather than
+ * trusting a row/rowCount the model guessed. No filter means "every cell in the
+ * row is empty". TASKS.md #238.
+ */
+function virtualDeleteMatchingRows(wb: ShadowWorkbook, action: Action): void {
   const sheetName = action.sheetName ?? wb.activeSheetName;
   const sheet = getSheet(wb, sheetName);
-  if (!sheet || !action.targetColumn) return;
-
   const rangeStr = action.range ?? action.sourceRange;
-  if (!rangeStr) return;
+  if (!sheet || !rangeStr) return;
+
   const bounds = parseA1Range(stripSheetPrefix(rangeStr));
   if (!bounds) return;
 
@@ -769,24 +824,35 @@ function virtualSetMatchingRows(wb: ShadowWorkbook, action: Action): void {
   if (rows.length === 0) return;
 
   const hasHeaders = action.hasHeaders !== false;
-  const headerRow = hasHeaders ? rows[0] : null;
-  if (!headerRow) return; // matching by header name requires a header row, same as the real Office.js handler
+  const firstDataOffset = hasHeaders ? 1 : 0;
 
-  let targetColIndex: number;
-  try {
-    targetColIndex = resolveFilterColumnIndex(headerRow, action.targetColumn);
-  } catch {
-    return;
+  let offsets: number[];
+  if (action.filter) {
+    try {
+      offsets = findMatchingRowOffsets(rows, hasHeaders, action.filter);
+    } catch {
+      return;
+    }
+  } else {
+    offsets = rows
+      .map((row, offset) => ({ row, offset }))
+      .filter(
+        ({ row, offset }) =>
+          offset >= firstDataOffset &&
+          row.every((cell) => cell === null || String(cell ?? '').trim() === ''),
+      )
+      .map(({ offset }) => offset);
   }
 
-  const matchOffsets = action.filter
-    ? findMatchingRowOffsets(rows, hasHeaders, action.filter)
-    : rows.map((_, i) => i).filter((i) => i >= (hasHeaders ? 1 : 0));
+  offsets = offsets.filter((offset) => isRowSampled(sheet, bounds, bounds.startRow + offset));
 
-  for (const offset of matchOffsets) {
-    const address = `${colIndexToLetter(bounds.startCol + targetColIndex)}${bounds.startRow + offset + 1}`;
-    virtualSetCell(wb, sheetName, address, action.value ?? null, '');
-  }
+  if (offsets.length === 0) return;
+  // virtualDeleteRows takes 1-based sheet row numbers.
+  virtualDeleteRows(
+    wb,
+    sheetName,
+    offsets.map((offset) => bounds.startRow + offset + 1),
+  );
 }
 
 /**
@@ -1032,32 +1098,6 @@ function writeRowsAt(
   );
 }
 
-function virtualCopyFilteredRange(wb: ShadowWorkbook, action: Action): void {
-  const sourceSheetName = action.sourceSheet ?? action.sheetName ?? wb.activeSheetName;
-  const destSheetName = action.destSheet;
-  const sourceRange = action.sourceRange ?? action.range;
-  const destStartCell = action.destStartCell ?? 'A1';
-  if (!destSheetName || !sourceRange) return;
-
-  const sourceSheet = getSheet(wb, sourceSheetName);
-  if (!sourceSheet) return;
-
-  const rows = readRangeValues(sourceSheet, sourceRange);
-  const hasHeaders = action.hasHeaders ?? true;
-  const { headerRow, filteredRows } = filterDataRows(rows, hasHeaders, action.filter);
-  const outputRows = buildOutputRows(headerRow, filteredRows);
-  if (outputRows.length === 0) return;
-
-  const dest = parseDestStartCell(destStartCell);
-  if (!dest) return;
-
-  writeRowsAt(wb, destSheetName, dest.row, dest.col, outputRows);
-
-  if (action.mode === 'move' && action.filter && hasHeaders && headerRow) {
-    clearMatchedSourceRows(wb, sourceSheetName, sourceRange, hasHeaders, action.filter);
-  }
-}
-
 function virtualMoveRange(wb: ShadowWorkbook, action: Action): void {
   const sourceSheetName = action.sourceSheet ?? action.sheetName ?? wb.activeSheetName;
   const destSheetName = action.destSheet;
@@ -1081,42 +1121,6 @@ function virtualMoveRange(wb: ShadowWorkbook, action: Action): void {
   for (let r = bounds.startRow; r <= bounds.endRow; r += 1) {
     for (let c = bounds.startCol; c <= bounds.endCol; c += 1) {
       const address = `${colIndexToLetter(c)}${r + 1}`;
-      virtualSetCell(wb, sourceSheetName, address, null, '');
-    }
-  }
-}
-
-function clearMatchedSourceRows(
-  wb: ShadowWorkbook,
-  sourceSheetName: string,
-  sourceRange: string,
-  hasHeaders: boolean,
-  filter: NonNullable<Action['filter']>,
-): void {
-  const sourceSheet = getSheet(wb, sourceSheetName);
-  if (!sourceSheet) return;
-
-  const bounds = parseA1Range(stripSheetPrefix(sourceRange));
-  if (!bounds) return;
-
-  const rows = readRangeValues(sourceSheet, sourceRange);
-  const headerRow = hasHeaders && rows.length > 0 ? rows[0] : null;
-  if (!headerRow) return;
-
-  const colIndex = headerRow.findIndex(
-    (cell) => String(cell ?? '').trim().toLowerCase() === filter.column.trim().toLowerCase(),
-  );
-  if (colIndex === -1) return;
-
-  const dataStart = hasHeaders ? 1 : 0;
-  // Clear matched data rows bottom-to-top
-  for (let i = rows.length - 1; i >= dataStart; i -= 1) {
-    const row = rows[i];
-    if (!row) continue;
-    if (!applyFilterOperator(row[colIndex], filter)) continue;
-    const absoluteRow = bounds.startRow + i;
-    for (let c = bounds.startCol; c <= bounds.endCol; c += 1) {
-      const address = `${colIndexToLetter(c)}${absoluteRow + 1}`;
       virtualSetCell(wb, sourceSheetName, address, null, '');
     }
   }

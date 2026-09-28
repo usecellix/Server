@@ -28,6 +28,26 @@ describe('Spec 21 overwrite confirmation', () => {
       expect(hasExplicitOverwriteConfirmation('add a column called Net of Tax')).toBe(false);
       expect(hasExplicitOverwriteConfirmation('write Paid into Remarks')).toBe(false);
     });
+
+    it('matches naming an existing column directly (mark/flag/label/tag/set column X as/to/with Y) — the guide\'s own T1.7 phrasing', () => {
+      expect(
+        hasExplicitOverwriteConfirmation(
+          "If the GSTIN in column D is blank, mark column J as 'Missing GSTIN'",
+        ),
+      ).toBe(true);
+      expect(
+        hasExplicitOverwriteConfirmation("mark column H as 'Missing GSTIN'"),
+      ).toBe(true);
+      expect(hasExplicitOverwriteConfirmation('flag column H as Follow-up')).toBe(true);
+      expect(hasExplicitOverwriteConfirmation('set column F to 0')).toBe(true);
+      expect(hasExplicitOverwriteConfirmation('label column C with Reviewed')).toBe(true);
+      expect(hasExplicitOverwriteConfirmation('tag column "Status" as Done')).toBe(true);
+    });
+
+    it('does not match naming a NEW column (no existing-column overwrite intent)', () => {
+      expect(hasExplicitOverwriteConfirmation('add a new column called Status')).toBe(false);
+      expect(hasExplicitOverwriteConfirmation('insert a column for remarks')).toBe(false);
+    });
   });
 
   describe('rangesOverlap + isRefinementOfOwnLastEdit', () => {

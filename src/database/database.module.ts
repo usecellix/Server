@@ -1,7 +1,10 @@
-import { Module } from '@nestjs/common';
+import { Logger, Module } from '@nestjs/common';
 import { MongooseModule } from '@nestjs/mongoose';
+import type { Connection } from 'mongoose';
 import { AppConfigModule } from '../config/app-config.module';
 import { AppConfigService } from '../config/app-config.service';
+
+const logger = new Logger('DatabaseModule');
 
 @Module({
   imports: [
@@ -20,6 +23,30 @@ import { AppConfigService } from '../config/app-config.service';
         return {
           uri: config.mongoUrl,
           dbName: config.mongoDbName,
+          // Fires once the underlying connection actually opens — the useFactory
+          // return value above only configures the connection attempt, it runs
+          // before Mongoose has connected. `connection.on('connected', ...)` also
+          // covers a driver-level reconnect after a dropped connection, which a
+          // one-shot post-bootstrap log would miss.
+          connectionFactory: (connection: Connection) => {
+            const logConnected = () =>
+              logger.log(`MongoDB connected: db="${connection.db?.databaseName ?? config.mongoDbName}"`);
+            // readyState can already be 1 (connected) by the time this factory
+            // runs — Mongoose connects as soon as `mongoose.createConnection`
+            // is called, which happens before this callback for a fast local
+            // connection, so a plain `.on('connected', ...)` can miss the event
+            // entirely. Check the current state first, still listen for future
+            // (re)connects.
+            if (connection.readyState === 1) {
+              logConnected();
+            } else {
+              connection.on('connected', logConnected);
+            }
+            connection.on('error', (err: Error) => {
+              logger.error(`MongoDB connection error: ${err.message}`, err.stack);
+            });
+            return connection;
+          },
         };
       },
     }),

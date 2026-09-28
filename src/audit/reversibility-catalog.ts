@@ -7,11 +7,9 @@ import { SheetActionType } from '../excel-ai/types/sheet-actions.types';
  *
  * Deliberately NOT derived from `virtual-apply-catalog.ts`'s `simulated` flag, even though
  * the two look related. `simulated: true` only means "the shadow workbook's cell state
- * reflects this action's effect" — it does not mean a *correct* inverse exists. Three
- * types expose the gap directly:
- *   - RENAME_SHEET is `simulated: true`, but a rename isn't a cell-value change at all —
- *     the generic cell-diff machinery would misread the old sheet name's cells as entirely
- *     deleted and the new sheet name's cells as entirely new, producing a nonsense revert.
+ * reflects this action's effect" — it does not mean a *correct* inverse exists. Two
+ * types still expose the gap directly (RENAME_SHEET no longer does — TASKS.md #255 gave
+ * it a real structural inverse, the same shape ADD_SHEET/DELETE_SHEET already had):
  *   - COPY_SHEET is `simulated: true`, but its "revert" (via the generic cell-level path)
  *     would only clear the copy's cell values — it never removes the sheet itself,
  *     leaving a phantom empty sheet behind. The same class of bug TASKS.md #13 fixed for
@@ -40,12 +38,25 @@ export const REVERSIBILITY_CATALOG: Record<SheetActionType, ReversibilityCatalog
   BATCH_SET: { reversible: true },
   CLEAR_CONTENT: { reversible: true },
   CLEAR_ALL: { reversible: true },
-  SET_MATCHING_ROWS: { reversible: true },
+  SET_MATCHING_ROWS: {
+    reversible: false,
+    reason:
+      "Filtered write over a range the executor never fully transcribed — the shadow used to preview it can be missing or stale for rows outside what was actually sampled, so a live-tested run produced a confidently wrong single-cell prediction (predicted row 7's blank GSTIN would change; the real filter, run against live data, correctly left it alone) and a false 'did not match what was proposed' alarm. No longer simulated (see virtualApply.ts), so no before/after state is captured to restore.",
+  },
+  DELETE_MATCHING_ROWS: {
+    reversible: false,
+    reason:
+      'Deleting rows removes cells the generic cell-diff can restore values into, but nothing recreates the rows themselves — the same structural gap DELETE_ROW has. TASKS.md #238.',
+  },
   SORT_RANGE: { reversible: true }, // permutes values within the same address set, no shift
   FILL_DOWN: { reversible: true },
   FILL_RIGHT: { reversible: true },
   MOVE_RANGE: { reversible: true }, // copies to dest + clears source; no shift of unrelated cells
-  COPY_FILTERED_RANGE: { reversible: true }, // writes into a new/appended range
+  COPY_FILTERED_RANGE: {
+    reversible: false,
+    reason:
+      "Reads the SOURCE sheet through the same shadow SET_MATCHING_ROWS's preview relied on — a live-tested full-sheet copy only had shadow data for ~11 of 61 source rows, so the preview confidently predicted the rest as blank while the real Office.js copy correctly wrote all 61, producing a false 'did not match what was proposed' alarm. No longer simulated (see virtualApply.ts), so no before/after state is captured to restore.",
+  },
   AGGREGATE_TABLE: { reversible: true }, // writes new aggregate cells, append pattern
   WRITE_TABLE: { reversible: true },
 
@@ -75,11 +86,15 @@ export const REVERSIBILITY_CATALOG: Record<SheetActionType, ReversibilityCatalog
       'Revert-only inverse of CREATE_TABLE (not advertised to the Executor — see action-catalog.ts). If ever applied as a forward action directly, nothing captures the original range/style needed to recreate the table.',
   },
 
-  // ---- Simulated but genuinely NOT revertible today — the gap this catalog exists to catch ----
-  RENAME_SHEET: {
+  // TASKS.md #255 — now has a real structural inverse (captureStructuralOps
+  // reads oldName/newName straight off the action, no cell diffing involved)
+  // instead of relying on the generic cell-diff path, which could never work
+  // for a rename (no CellChange is ever produced by one).
+  RENAME_SHEET: { reversible: true },
+  MOVE_SHEET: {
     reversible: false,
     reason:
-      "A rename isn't a cell-value change — the generic cell-diff would treat the old sheet name's cells as deleted and the new name's cells as newly created, producing an incorrect revert rather than renaming back.",
+      'Tab order is not cell data — nothing captures the sheet\'s previous position to move it back. A true inverse is cheap to add later (capture the index at preview time, emit the opposite MOVE_SHEET), but until then a move must report itself as irreversible rather than claim a revert it cannot perform. TASKS.md #212.',
   },
   COPY_SHEET: {
     reversible: false,

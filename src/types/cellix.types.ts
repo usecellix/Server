@@ -112,6 +112,12 @@ export interface SheetSnapshot {
   structure?: SheetStructure;
   formulaSummary?: string;
   compressionMeta?: SheetCompressionMeta;
+  /**
+   * Read from Office.js's real `worksheet.visibility` client-side (TASKS.md
+   * #257) — optional so an older/minimal context that never populated it
+   * reads as "unknown", not "definitely visible".
+   */
+  isHidden?: boolean;
 }
 
 export interface NamedRangeInfo {

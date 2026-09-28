@@ -1,7 +1,15 @@
 import { FastifyReply } from 'fastify';
 import { captureSseEvent } from '../../common/logging/request-response-capture.util';
+import { updateLlmUsageContext } from '../../llm-usage/llm-usage.context';
+
+const sseResponses = new WeakSet<object>();
+
+export function isSseResponse(reply: FastifyReply): boolean {
+  return sseResponses.has(reply.raw);
+}
 
 export function initSseResponse(reply: FastifyReply): void {
+  sseResponses.add(reply.raw);
   reply.raw.writeHead(200, {
     'Content-Type': 'text/event-stream; charset=utf-8',
     'Cache-Control': 'no-cache, no-transform',
@@ -12,6 +20,10 @@ export function initSseResponse(reply: FastifyReply): void {
 
 export function writeSseEvent(reply: FastifyReply, event: string, data: unknown): void {
   captureSseEvent(reply, event, data);
+  if (event === 'error') {
+    const message = (data as { message?: unknown } | null)?.message;
+    updateLlmUsageContext({ error: typeof message === 'string' ? message : 'error' });
+  }
   reply.raw.write(`event: ${event}\n`);
   reply.raw.write(`data: ${JSON.stringify(data)}\n\n`);
   const flushable = reply.raw as { flush?: () => void };
@@ -20,4 +32,22 @@ export function writeSseEvent(reply: FastifyReply, event: string, data: unknown)
 
 export function endSseResponse(reply: FastifyReply): void {
   reply.raw.end();
+}
+
+/**
+ * An AbortSignal that fires when the underlying HTTP connection for this SSE
+ * response closes — the client navigating away, closing the taskpane, or the
+ * "Stop" button aborting its fetch. Without this, the agentic loop had no way
+ * to learn a run was cancelled: it kept executing every remaining wave (LLM
+ * calls included) to completion, only to write to a response nobody was
+ * reading. Call once per request, right after `initSseResponse`, and pass the
+ * `signal` down into anything long-running (AgenticLoopService's wave loop).
+ * TASKS.md #260.
+ */
+export function createRequestAbortSignal(reply: FastifyReply): AbortSignal {
+  const controller = new AbortController();
+  const onClose = () => controller.abort();
+  reply.raw.once('close', onClose);
+  reply.raw.once('error', onClose);
+  return controller.signal;
 }

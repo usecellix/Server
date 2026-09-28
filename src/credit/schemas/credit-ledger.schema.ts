@@ -19,8 +19,8 @@ export class CreditLedgerEntry {
   @Prop({ type: String, index: true })
   seatUserId?: string;
 
-  @Prop({ type: String, required: true, enum: ['grant', 'purchase', 'debit', 'one_time_grant'] })
-  entryType!: 'grant' | 'purchase' | 'debit' | 'one_time_grant';
+  @Prop({ type: String, required: true, enum: ['grant', 'purchase', 'debit', 'one_time_grant', 'expire'] })
+  entryType!: 'grant' | 'purchase' | 'debit' | 'one_time_grant' | 'expire';
 
   /** Positive for grant/purchase, negative for debit. */
   @Prop({ type: Number, required: true })
@@ -38,6 +38,14 @@ export class CreditLedgerEntry {
 
   @Prop({ type: String })
   changeSetId?: string;
+
+  /** The ai_prompts row this debit paid for (= trace id). Set on AI_USAGE debits. */
+  @Prop({ type: String, index: true, sparse: true })
+  promptId?: string;
+
+  /** Real provider cost this debit was priced from, on the first row of an AI_USAGE debit. */
+  @Prop({ type: Number })
+  costUsd?: number;
 
   /** Idempotency key for grant/purchase entries originating from a Razorpay webhook. */
   @Prop({ type: String, index: true, sparse: true, unique: true })

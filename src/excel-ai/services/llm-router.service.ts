@@ -12,6 +12,7 @@ import { RouterDecision, RouterInput } from '../types/router.types';
 import { classifyComplexity } from '../utils/complexity-classifier.util';
 import { resolveLocalFindRoute } from '../utils/find-query-parser.util';
 import { hasWriteIntent, isWorkbookScaffoldIntent } from '../utils/write-intent-guard.util';
+import { minReasoningEffort } from '../utils/reasoning-budget.util';
 import { OpenRouterService } from './openrouter.service';
 
 // Regex fast lane — these NEVER go to the LLM router.
@@ -28,6 +29,38 @@ const INSTANT_SHORTCUT_PATTERNS: Array<{ pattern: RegExp; action: string }> = [
 
 function isValidComplexity(value: unknown): value is 0 | 1 | 2 | 3 {
   return value === 0 || value === 1 || value === 2 || value === 3;
+}
+
+/** Verbs that can only be a request to change the workbook. */
+const WRITE_VERB =
+  /\b(add|insert|create|build|generate|delete|remove|drop|clear|wipe|highlight|bold|italic|underline|sort|fill|apply|rename|merge|unmerge|split|freeze|unfreeze|hide|unhide|write|convert|replace|protect|unlock|resize|autofit|wrap|align|define|validate|dedupe|deduplicate|trim)\b/i;
+
+/**
+ * Words that are verbs in an instruction and plain nouns in a question —
+ * "duplicate VALUES in column A", "what FILTER is active", "the COPY sheet".
+ * Only an imperative position makes them a write. Without this split,
+ * "Are there duplicate values in column A?" read as a write request.
+ */
+const AMBIGUOUS_WRITE_VERB =
+  /(?:^|\b(?:you|please|to|and|then|also|now)\s+)(duplicate|copy|filter|format|colou?r|mark|flag|name|move|set|make|change|update|show|clean|lock|round)\b/i;
+
+/**
+ * A question about the data ("are there duplicates?", "how many blanks?",
+ * "which supplier is highest?") with no verb asking for a change. The guide
+ * treats these as read-only (Q&A.4) — answer them, never write. TASKS.md #214.
+ */
+export function isReadOnlyQuestion(message: string): boolean {
+  const text = String(message ?? '').trim();
+  if (!text) return false;
+
+  const interrogative =
+    /^(are|is|do|does|did|can|could|how|what|which|who|whom|whose|where|when|why|any)\b/i.test(text) ||
+    /\?\s*$/.test(text);
+  if (!interrogative) return false;
+
+  // "Can you highlight the duplicates?" is a question in form and a write in
+  // substance — the verb decides, not the question mark.
+  return !WRITE_VERB.test(text) && !AMBIGUOUS_WRITE_VERB.test(text);
 }
 
 @Injectable()
@@ -52,17 +85,34 @@ export class LlmRouterService {
    */
   async classifyIntent(message: string): Promise<'CHITCHAT' | 'TASK'> {
     try {
+      // TASKS.md #228 — z-ai/glm-5.3-flash (the configured LOW-tier model)
+      // rejects reasoning.effort: 'none' outright on every call; sending it
+      // anyway just pays a guaranteed-failing round trip before the
+      // effort:'low' retry that always follows it. minReasoningEffort skips
+      // straight to the value that actually works for whatever model this
+      // resolves to, and is a no-op ('none') for any model without that quirk.
+      const model = this.config.openRouterModelLow;
       const raw = await this.openRouter.complete({
         systemPrompt: CHITCHAT_CLASSIFIER_SYSTEM_PROMPT,
         userMessage: buildChitchatClassifierUserMessage(message),
-        model: this.config.openRouterModelLow,
+        model,
         tier: 'low',
         temperature: 0,
         maxTokens: 8,
-        reasoningEffort: 'none',
+        reasoningEffort: minReasoningEffort(model),
+        // TASKS.md #228 — the prompt asks for a bare label ("Respond with
+        // only the label, nothing else"), but `complete()` defaults
+        // responseFormat to 'json_object'. Without this override the model
+        // wraps its answer as JSON (e.g. `{"label":"TASK"}`), which the
+        // startsWith checks below never match — chitchat detection was
+        // silently dead (fail-open to TASK) on every real call. The existing
+        // unit tests never caught this because they mock `complete` to
+        // return the bare string directly, not what the real API sends back
+        // under the default JSON mode.
+        responseFormat: 'text',
       });
 
-      const label = raw.trim().toUpperCase();
+      const label = extractLabelFromClassifierResponse(raw);
       if (label.startsWith('CHITCHAT')) return 'CHITCHAT';
       if (label.startsWith('TASK')) return 'TASK';
 
@@ -113,7 +163,13 @@ export class LlmRouterService {
 
     // Write patterns before data: "dashboard" + "total amount" (column name) would otherwise
     // false-positive into SmartDataQuery and answer "no sheet data".
-    if (input.mode === 'action') {
+    // A question with no write verb is a data query however it matches below:
+    // "Are there duplicate values in column A?" hit the DUPLICATE_CHECK
+    // complexity regex here, short-circuiting to write with confidence 1.0
+    // before ensureWriteComplexity could downgrade it, and Tier 2 answered the
+    // yes/no question by painting a conditional-format rule onto the sheet.
+    // TASKS.md #214.
+    if (input.mode === 'action' && !isReadOnlyQuestion(input.message)) {
       const complexityEarly = classifyComplexity(input.message);
       if (complexityEarly.match) {
         const { tier, actionHint } = complexityEarly.match;
@@ -250,6 +306,18 @@ export class LlmRouterService {
       return decision;
     }
 
+    // The guide's Q&A.4 data questions are read-only by definition, but the
+    // router sent "Are there duplicate values in column A?" to write, where
+    // Tier 2 answered a yes/no question by inserting a Duplicate? column into
+    // the user's sheet. A question with no write verb anywhere in it is a
+    // query, whatever the router said. TASKS.md #214.
+    if (isReadOnlyQuestion(message)) {
+      this.logger.log(
+        `Router said write for a question with no write verb — downgrading to data: "${message.slice(0, 100)}"`,
+      );
+      return { ...decision, route: 'data', complexity: undefined, actionHint: undefined };
+    }
+
     const complexity = isValidComplexity(decision.complexity) ? decision.complexity : 3;
     const matchedBy = decision.matchedBy ?? 'llm-fallback';
 
@@ -276,6 +344,12 @@ export class LlmRouterService {
     );
 
     try {
+      // TASKS.md #228 — same reasoning-mandatory quirk as classifyIntent
+      // above: if OPENROUTER_MODEL_ROUTER is unset, this falls back to
+      // openRouterModelLow (the GLM model confirmed to reject 'none' on
+      // every call); minReasoningEffort is a no-op for mercury/any model
+      // without the quirk, so this is safe regardless of which one resolves.
+      const model = this.config.openRouterModelRouter;
       const raw = await this.openRouter.complete({
         systemPrompt: ROUTER_SYSTEM_PROMPT,
         userMessage,
@@ -284,11 +358,11 @@ export class LlmRouterService {
         // move multi-sheet.service.ts's summary or ambiguity clarification.
         // Defaults to openRouterModelLow: unset OPENROUTER_MODEL_ROUTER is a
         // no-op, identical behavior to before this override existed.
-        model: this.config.openRouterModelRouter,
+        model,
         tier: 'low',
         temperature: 0,
         maxTokens: 256,
-        reasoningEffort: 'none',
+        reasoningEffort: minReasoningEffort(model),
       });
 
       const parsed = parseAgentJson<RouterDecision>(raw);
@@ -323,4 +397,20 @@ export class LlmRouterService {
       reasoning: 'LLM Router fallback — regex heuristic',
     };
   }
+}
+
+/**
+ * classifyIntent's response is supposed to be the bare word "CHITCHAT" or
+ * "TASK" (see CHITCHAT_CLASSIFIER_SYSTEM_PROMPT). Defensive against a model
+ * still wrapping it despite `responseFormat: 'text'` — e.g. `{"label":
+ * "TASK"}`, a fenced code block, or trailing punctuation — by pulling out the
+ * first bare occurrence of either label rather than requiring the whole
+ * trimmed string to equal one exactly.
+ */
+function extractLabelFromClassifierResponse(raw: string): string {
+  const upper = raw.trim().toUpperCase();
+  if (upper.startsWith('CHITCHAT') || upper.startsWith('TASK')) return upper;
+
+  const match = /\b(CHITCHAT|TASK)\b/.exec(upper);
+  return match ? match[1] : upper;
 }

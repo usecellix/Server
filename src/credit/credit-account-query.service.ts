@@ -19,7 +19,7 @@ export interface AccountSummary {
 
 export interface LedgerPage {
   entries: Array<{
-    entryType: 'grant' | 'purchase' | 'debit' | 'one_time_grant';
+    entryType: 'grant' | 'purchase' | 'debit' | 'one_time_grant' | 'expire';
     amount: number;
     bucket: 'planCredits' | 'purchasedCredits' | 'oneTimeCredits';
     actionType?: string;

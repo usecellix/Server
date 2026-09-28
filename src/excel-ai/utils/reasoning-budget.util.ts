@@ -14,11 +14,48 @@
  */
 
 /** Models whose completion budget is shared with reasoning tokens. */
-const REASONING_MODEL_PATTERNS = [/(^|\/)gpt-5/i, /(^|\/)o[134](-|$)/i];
+const REASONING_MODEL_PATTERNS = [/(^|\/)gpt-5/i, /(^|\/)o[134](-|$)/i, /(^|\/)glm-/i];
 
 export function isReasoningModel(model: string | undefined): boolean {
   if (!model) return false;
   return REASONING_MODEL_PATTERNS.some((re) => re.test(model));
+}
+
+/**
+ * Models that reject `reasoning.effort: 'none'` outright (OpenRouter 400:
+ * "Reasoning is mandatory for this endpoint and cannot be disabled") rather
+ * than merely sharing their completion budget with reasoning tokens. This is
+ * a stricter subset of `isReasoningModel` in principle, but in practice every
+ * GLM model this deployment has actually sent a request to rejects `'none'`
+ * 100% of the time (confirmed directly against `llm_calls`: every attempt-1
+ * call with `effort: 'none'` to `z-ai/glm-5.3` or `z-ai/glm-5.3-flash` failed
+ * with this exact error, every attempt-2 retry at `effort: 'low'` succeeded)
+ * — so GLM is listed here too rather than assumed compatible with `'none'`.
+ *
+ * `OpenRouterService.requestChatCompletion` already retries a rejected
+ * `'none'` request once at `effort: 'low'` (TASKS.md's reasoning-mandatory
+ * fix), which is what keeps every affected call from actually failing — but
+ * for a model on THIS list, that first attempt is not a real attempt, it is
+ * a guaranteed-failing round trip paid on every single request through that
+ * lane (TASKS.md #228). `minReasoningEffort` lets a caller skip straight to
+ * the effort level that actually works.
+ */
+const REASONING_MANDATORY_MODEL_PATTERNS = [/(^|\/)glm-/i];
+
+export function isReasoningMandatory(model: string | undefined): boolean {
+  if (!model) return false;
+  return REASONING_MANDATORY_MODEL_PATTERNS.some((re) => re.test(model));
+}
+
+/**
+ * The lowest `reasoning.effort` value that will not be rejected outright for
+ * `model`. Callers that would otherwise default to `'none'` should use this
+ * instead — it degrades gracefully to `'none'` for any model not known to
+ * require reasoning, so it's always safe to route a fixed `'none'` request
+ * through this rather than special-casing each caller.
+ */
+export function minReasoningEffort(model: string | undefined): 'none' | 'low' {
+  return isReasoningMandatory(model) ? 'low' : 'none';
 }
 
 /** Fraction of the shared budget reasoning may consume. */

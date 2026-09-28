@@ -21,10 +21,25 @@ export interface OverwriteTurnActionRecord {
 const EXPLICIT_OVERWRITE_LANGUAGE =
   /\b(change|update|modify|correct|fix|replace|overwrite)\b[\s\S]{0,80}\b(to|with|as)\b/i;
 
+/**
+ * Naming an EXISTING column directly ("mark column J as X", "set column F to
+ * Y", "flag column H as Z") is itself explicit targeting — the user picked
+ * that exact column, not "a new column" or "an empty column". Without this,
+ * every such request (this is the guide's own T1.7 phrasing, e.g. "mark
+ * column H as 'Missing GSTIN'") gets fully planned, shown as verified, and
+ * only fails at apply time with an opaque "write blocked" error the moment
+ * that column happens to already hold data — a dead end for a whole family
+ * of guide-documented prompts, not a data-safety win. Requires "column" plus
+ * a short identifier (a single letter/number, or a quoted/word name) so this
+ * never fires on a request that never named a column at all.
+ */
+const EXPLICIT_COLUMN_TARGET_LANGUAGE =
+  /\b(mark|flag|label|tag|set)\b[\s\S]{0,10}\bcolumn\b\s+(?:[A-Za-z]{1,3}\b|"[^"]{1,40}"|'[^']{1,40}'|[\w][\w .-]{0,39})[\s\S]{0,15}\b(as|to|with)\b/i;
+
 export function hasExplicitOverwriteConfirmation(message: string): boolean {
   const text = String(message ?? '').trim();
   if (!text) return false;
-  return EXPLICIT_OVERWRITE_LANGUAGE.test(text);
+  return EXPLICIT_OVERWRITE_LANGUAGE.test(text) || EXPLICIT_COLUMN_TARGET_LANGUAGE.test(text);
 }
 
 function splitQualifiedRange(range: string): { sheet: string | null; local: string } {

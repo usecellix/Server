@@ -40,14 +40,18 @@ describe('LlmRouterService complexity integration', () => {
     expect(openRouter.complete).not.toHaveBeenCalled();
   });
 
-  it('returns compound write as tier 3 via regex', async () => {
+  // TASKS.md #238 — this short, single-sentence prompt now hits the narrow
+  // sequential carve-out and resolves at its own single-action tier (1)
+  // rather than escalating to 3, since it names no second sheet/object and
+  // fits comfortably in the single-action lane without a planner.
+  it('returns a short compound write at its own tier via regex, not escalated', async () => {
     const decision = await service.route({
       ...baseInput,
       message: 'sort by column B and then create a chart',
     });
 
     expect(decision.route).toBe('write');
-    expect(decision.complexity).toBe(3);
+    expect(decision.complexity).toBe(1);
     expect(decision.matchedBy).toBe('regex');
     expect(openRouter.complete).not.toHaveBeenCalled();
   });

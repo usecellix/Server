@@ -12,13 +12,16 @@
     "test:watch": "jest --watch",
     "test:phase-regression": "jest --runInBand --forceExit --coverage=false test/complexity-classifier.spec.ts test/complexity-tiering-flag.spec.ts test/llm-router-complexity.spec.ts test/write-intent-guard.spec.ts test/write-intent-router.spec.ts test/write-route-no-action.error.spec.ts test/tier0-direct.service.spec.ts test/tier1-single-action.service.spec.ts test/tier2-generate-verify.service.spec.ts test/conversation-tier-routing.spec.ts test/conversation.e2e.spec.ts test/mode-guard.util.spec.ts test/mode-plan-only.spec.ts test/mode-selector.e2e.spec.ts test/audit-sourcerefs.spec.ts test/audit-export.spec.ts test/orchestrator.e2e.spec.ts test/formula-validator.service.spec.ts test/table-request-headers.spec.ts test/table-request-compound-gate.spec.ts test/normalize-field-preservation.spec.ts test/normalize-executor-output.spec.ts test/completeness.checker.spec.ts test/action-catalog-parity.spec.ts test/header-row-detection.spec.ts test/golden-set-eval.spec.ts test/action-wave.util.spec.ts test/action-wave-emission.spec.ts test/executor-token-budget.util.spec.ts test/executor-agent-token-budget.spec.ts test/aggregate-table.util.spec.ts test/virtual-aggregate-table.spec.ts src/domain-tools src/gst-recon/gstin-validator.spec.ts src/gst-recon/sheet-detector.spec.ts src/gst-recon/orchestrator.spec.ts",
     "eval": "jest --runInBand --coverage=false test/golden-set-eval.spec.ts",
-    "eval:live": "ts-node eval/run-live-eval.ts"
+    "eval:live": "ts-node eval/run-live-eval.ts",
+    "razorpay:setup-test-plans": "ts-node scripts/razorpay-setup-test-plans.ts"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
+    "@fastify/helmet": "^13.1.1",
+    "@fastify/rate-limit": "^11.2.0",
     "@nestjs/cache-manager": "^3.1.0",
     "@nestjs/common": "^11.1.19",
     "@nestjs/config": "^4.0.4",
@@ -28,7 +31,6 @@
     "@nestjs/platform-fastify": "^11.1.19",
     "@nestjs/swagger": "^11.3.2",
     "@nestjs/terminus": "^11.1.1",
-    "@nestjs/throttler": "^6.5.0",
     "@openrouter/sdk": "^0.12.35",
     "@toon-format-cjs/toon": "^1.0.1",
     "better-auth": "^1.6.23",
@@ -37,7 +39,6 @@
     "class-validator": "^0.15.1",
     "compression": "^1.8.1",
     "fastify": "^5.8.5",
-    "helmet": "^8.1.0",
     "joi": "^18.1.2",
     "mongodb": "^7.2.0",
     "mongoose": "^9.6.2",

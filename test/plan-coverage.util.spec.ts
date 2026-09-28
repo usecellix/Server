@@ -1,6 +1,8 @@
 import {
+  describesSheetCreation,
   ensureReferencedSheetsPlanned,
   ensureRepeatForCoverage,
+  ensureTargetSheetsCreated,
   substituteRepeatEntry,
 } from '../src/agents/utils/plan-coverage.util';
 import { PlanPhase, PlannerOutput, SubTask, WorkbookContext } from '../src/agents/types/agent.types';
@@ -174,5 +176,195 @@ describe('ensureReferencedSheetsPlanned (TASKS.md #230)', () => {
       context('Main'),
     );
     expect(added).toEqual([]);
+  });
+});
+
+describe('describesSheetCreation (TASKS.md #262)', () => {
+  it('recognizes the Planner\'s own create phrasings', () => {
+    expect(describesSheetCreation("Create sheet 'January' (position after Main)", 'January')).toBe(true);
+    expect(describesSheetCreation("Create the supporting sheet 'Lists' — nothing creates it", 'Lists')).toBe(true);
+    expect(describesSheetCreation('Create the Main sheet with a dashboard', 'Main')).toBe(true);
+    expect(describesSheetCreation('Add a new worksheet named Summary', 'Summary')).toBe(true);
+  });
+
+  it('does not treat a write-only subtask as a create', () => {
+    expect(describesSheetCreation("On Main, write title in A1 ('Payments Dashboard 2026')", 'Main')).toBe(false);
+    expect(describesSheetCreation('Fill Monthly Totals rows 5-10 on Main', 'Main')).toBe(false);
+  });
+
+  // The live failure: January's create names Main only as a POSITION hint.
+  it('does not read one sheet\'s create as a create of another named nearby', () => {
+    expect(describesSheetCreation("Create sheet 'January' (position after Main)", 'Main')).toBe(false);
+  });
+});
+
+describe('ensureTargetSheetsCreated (TASKS.md #262)', () => {
+  // The exact live shape: months say "Create sheet 'X'", Main subtasks only write.
+  it('adds a create for a target sheet every subtask only writes to', () => {
+    const { plan: out, added } = ensureTargetSheetsCreated(
+      plan([
+        subtask('p2_s1', 'January', "Create sheet 'January', write headers in row 1 (A1:J1)"),
+        subtask('p3_s1', 'Main', "On Main, write title in A1 ('Payments Dashboard 2026')", ['p2_s1']),
+        subtask('p3_s2', 'Main', 'Fill Monthly Totals rows 5-16 on Main', ['p3_s1']),
+      ]),
+      context('Sheet1'),
+    );
+
+    expect(added).toEqual(['Main']);
+    const create = out.subtasks[0];
+    expect(create.id).toBe('auto_create_1');
+    expect(create.targetSheet).toBe('Main');
+    // Every Main subtask must wait for it; January must not be touched.
+    expect(out.subtasks.find((s) => s.id === 'p3_s1')!.dependsOn).toContain('auto_create_1');
+    expect(out.subtasks.find((s) => s.id === 'p3_s2')!.dependsOn).toContain('auto_create_1');
+    expect(out.subtasks.find((s) => s.id === 'p2_s1')!.dependsOn).toEqual([]);
+  });
+
+  it('adds nothing when a subtask already creates the sheet', () => {
+    const { added } = ensureTargetSheetsCreated(
+      plan([
+        subtask('s1', 'January', JANUARY_DESCRIPTION),
+        subtask('s2', 'Main', "Create the Main sheet, then write B2=SUM(January!G:G)", ['s1']),
+      ]),
+      context('Sheet1'),
+    );
+    expect(added).toEqual([]);
+  });
+
+  it('adds nothing for a sheet that already exists in the workbook', () => {
+    const { added } = ensureTargetSheetsCreated(
+      plan([subtask('s1', 'Main', 'On Main, write the KPI band in row 2')]),
+      context('Main'),
+    );
+    expect(added).toEqual([]);
+  });
+
+  // ensureReferencedSheetsPlanned runs first; its auto_sheet_* creates must
+  // not then be duplicated by this net.
+  it('does not duplicate a create the referenced-sheet net already added', () => {
+    const referenced = ensureReferencedSheetsPlanned(
+      plan([subtask('s1', 'Main', 'Add dropdowns for Source (Lists!$B$3:$B$20) on column H')]),
+      context('Main'),
+    );
+    expect(referenced.added).toEqual(['Lists']);
+
+    const { added } = ensureTargetSheetsCreated(referenced.plan, context('Main'));
+    expect(added).toEqual([]);
+  });
+});
+
+describe('malformed workbook context (TASKS.md #263)', () => {
+  /**
+   * Live: a sheet entry whose `name` was not a string threw
+   * `TypeError: name.trim is not a function` out of ensureReferencedSheetsPlanned,
+   * failing the whole request AFTER the Planner had already run.
+   */
+  const badContext = {
+    activeSheetName: 'Sheet1',
+    sheets: [
+      { name: undefined },
+      { name: 42 },
+      { name: ['January'] },
+      { name: 'Real Sheet' },
+    ],
+    namedRanges: [],
+    tables: [],
+  } as unknown as WorkbookContext;
+
+  it('does not throw when a sheet name is not a string', () => {
+    expect(() =>
+      ensureReferencedSheetsPlanned(
+        plan([subtask('s1', 'Main', 'Add dropdowns for Source (Lists!$B$3:$B$20)')]),
+        badContext,
+      ),
+    ).not.toThrow();
+
+    expect(() =>
+      ensureTargetSheetsCreated(
+        plan([subtask('s1', 'Main', 'On Main, write the KPI band in row 2')]),
+        badContext,
+      ),
+    ).not.toThrow();
+  });
+
+  it('still recognizes the well-formed sheets alongside the malformed ones', () => {
+    const { added } = ensureTargetSheetsCreated(
+      plan([subtask('s1', 'Real Sheet', 'On Real Sheet, write a total in B2')]),
+      badContext,
+    );
+    // 'Real Sheet' exists, so nothing to create despite its malformed siblings.
+    expect(added).toEqual([]);
+  });
+
+  it('does not crash on a subtask whose targetSheet is not a string', () => {
+    const malformed = plan([
+      { id: 's1', targetSheet: 7, description: 'write something', dependsOn: [], estimatedActions: 1 },
+    ] as unknown as SubTask[]);
+    expect(() => ensureTargetSheetsCreated(malformed, context('Sheet1'))).not.toThrow();
+  });
+});
+
+/**
+ * The exact plan from the live 2026-09-17 failure (captured from
+ * `logs/planner.log`, descriptions truncated but verbatim at the head, which
+ * is what decides create-vs-write).
+ *
+ * The Planner produced a complete, correct-looking 18-subtask plan whose five
+ * Main subtasks all WRITE to Main and none creates it. Every one of them then
+ * failed in Excel with "The requested resource doesn't exist" — the user saw
+ * this as "if i tap on the Accept there is no change".
+ */
+describe('live 2026-09-17 ledger failure — Main never created (TASKS.md #262)', () => {
+  const livePlan = () =>
+    plan([
+      subtask('p1_s1', 'Lists', "Create sheet 'Lists' (position it at the END of the workbook, after all month and Main sheets) and populate the dropdown"),
+      subtask('p2_s1', 'January', "Create sheet 'January' (position after Main), write headers in row 1: Unit No, Guest, Guest Name, Check In, Check Out, R", ['p1_s1']),
+      subtask('p3_s1', 'Main', "On Main, write title in A1 ('Payments Dashboard 2026'), then KPI band in row 2: A2='Total Amount', B2=SUM(B5:B16)", ['p1_s1']),
+      subtask('p3_s2', 'Main', "Fill Monthly Totals rows Jan-Jun (Main rows 5-10), one row per month, full formulas: row 5: A5='January', B5=SUM(January!G:G)", ['p1_s1', 'p2_s1']),
+      subtask('p3_s3', 'Main', "Fill Monthly Totals rows Jul-Dec (Main rows 11-16), full formulas: row 11: A11='July', B11=SUM(July!G:G)", ['p1_s1']),
+      subtask('p3_s4', 'Main', 'Write the CONSOLIDATED TRANSACTIONS header at Main!A18 (one blank row below the Monthly Totals table ending at row 16)', ['p3_s1', 'p3_s2', 'p3_s3']),
+      subtask('p3_s5', 'Main', "Format Main: set column widths (A ~14, B-F ~14, G-K ~14), apply Indian currency numberFormat to B5:D16", ['p3_s4']),
+    ]);
+
+  it('adds the create for Main that the live plan was missing', () => {
+    const { plan: out, added } = ensureTargetSheetsCreated(livePlan(), context('Sheet1'));
+
+    expect(added).toEqual(['Main']);
+    expect(out.subtasks[0].id).toBe('auto_create_1');
+    expect(out.subtasks[0].targetSheet).toBe('Main');
+  });
+
+  it('makes every Main subtask wait for that create, and leaves the others alone', () => {
+    const { plan: out } = ensureTargetSheetsCreated(livePlan(), context('Sheet1'));
+    const byId = new Map(out.subtasks.map((s) => [s.id, s]));
+
+    for (const id of ['p3_s1', 'p3_s2', 'p3_s3', 'p3_s4', 'p3_s5']) {
+      expect(byId.get(id)!.dependsOn).toContain('auto_create_1');
+    }
+    // Lists and January create themselves — untouched.
+    expect(byId.get('p1_s1')!.dependsOn).toEqual([]);
+    expect(byId.get('p2_s1')!.dependsOn).toEqual(['p1_s1']);
+  });
+
+  it('the create lands in the first execution wave, before anything writes to Main', () => {
+    const { plan: out } = ensureTargetSheetsCreated(livePlan(), context('Sheet1'));
+    const create = out.subtasks.find((s) => s.id === 'auto_create_1')!;
+    // No dependencies of its own — nothing can order a Main write ahead of it.
+    expect(create.dependsOn).toEqual([]);
+  });
+});
+
+describe('describesSheetCreation — no sheet keyword (TASKS.md #262)', () => {
+  it('accepts the terse "Create <Name>" form the Planner also uses', () => {
+    expect(describesSheetCreation('Create January', 'January')).toBe(true);
+    expect(describesSheetCreation('Create Main', 'Main')).toBe(true);
+    expect(describesSheetCreation('Create the Main dashboard', 'Main')).toBe(true);
+  });
+
+  it('still refuses a name the create verb does not govern', () => {
+    // The live trap: January's create names Main only as a position hint.
+    expect(describesSheetCreation("Create sheet 'January' (position after Main)", 'Main')).toBe(false);
+    expect(describesSheetCreation('Write lists', 'Lists')).toBe(false);
+    expect(describesSheetCreation('Add a total to Main', 'Main')).toBe(false);
   });
 });

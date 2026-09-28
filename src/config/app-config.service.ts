@@ -177,6 +177,25 @@ export class AppConfigService {
   }
 
   /**
+   * Comma-separated — Vite's dev port isn't stable (auto-increments past
+   * 5173 whenever it's already taken by another running instance), so local
+   * dev needs more than one landing-page origin allowed at once rather than
+   * chasing whichever port happened to be free this run.
+   */
+  get marketingSiteOrigins(): string[] {
+    const value = this.configService.get<string>('MARKETING_SITE_ORIGIN', '');
+    return value
+      .split(',')
+      .map((origin) => origin.trim())
+      .filter((origin) => origin.length > 0);
+  }
+
+  /** Every origin main.ts's enableCors() should allow — add-in + (if set) the marketing site. */
+  get allowedCorsOrigins(): string[] {
+    return [this.clientOrigin, ...this.marketingSiteOrigins];
+  }
+
+  /**
    * CELLIX-landing-page dev/prod origin(s) — comma-separated. Hosts /login
    * and /register, which the Excel add-in's Office dialog also opens
    * directly for the email/password flow (client/src/auth/useAuth.ts
@@ -243,6 +262,22 @@ export class AppConfigService {
   get razorpayPlanIdBeta(): string | undefined {
     const value = this.configService.get<string>('RAZORPAY_PLAN_ID_BETA', '');
     return value?.trim() ? value.trim() : undefined;
+  }
+
+  /**
+   * Credits charged per USD of real provider cost. 600 ≈ a 3x markup: top-up
+   * packs sell credits at ~₹0.36–0.40 (≈$0.0045), so $1 of model spend
+   * becomes ~$2.7–3 of credit.
+   */
+  get creditsPerUsd(): number {
+    const value = Number(this.configService.get<number | string>('CREDITS_PER_USD', 600));
+    return Number.isFinite(value) && value > 0 ? value : 600;
+  }
+
+  /** TASKS.md #344 — how many LLM-spending requests one signed-in user may have in flight at once. */
+  get maxConcurrentRequestsPerUser(): number {
+    const value = Number(this.configService.get<number | string>('MAX_CONCURRENT_REQUESTS_PER_USER', 2));
+    return Number.isFinite(value) && value > 0 ? Math.trunc(value) : 2;
   }
 
   get checkoutSuccessUrl(): string {
