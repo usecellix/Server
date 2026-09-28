@@ -10,8 +10,19 @@ const UNQUOTED_CALLED_OR_NAMED = new RegExp(
   'i',
 );
 
+/**
+ * Replace every Excel-illegal sheet-name character with a space and collapse
+ * whitespace — no length truncation, no fallback for an empty result. Use this
+ * (instead of `sanitizeExcelSheetName`) when the caller still needs to reserve
+ * room in the 31-char budget for something appended afterward (e.g. a layout
+ * suffix like " — Books Only") before truncating the combined name.
+ */
+export function stripIllegalSheetNameChars(raw: string): string {
+  return raw.trim().replace(INVALID_SHEET_CHARS, ' ').replace(/\s+/g, ' ').trim();
+}
+
 export function sanitizeExcelSheetName(raw: string, fallback = 'Sheet'): string {
-  let name = raw.trim().replace(INVALID_SHEET_CHARS, ' ').replace(/\s+/g, ' ').trim();
+  let name = stripIllegalSheetNameChars(raw);
   if (!name) name = fallback;
   if (name.length > MAX_EXCEL_SHEET_NAME_LENGTH) {
     name = name.slice(0, MAX_EXCEL_SHEET_NAME_LENGTH).trim();

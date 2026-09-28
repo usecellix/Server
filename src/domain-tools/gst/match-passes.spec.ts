@@ -1,4 +1,5 @@
 import { gstMatch } from './gst-match.tool';
+import { dedupePortalRows } from './match-passes';
 import { normalizeInvoiceNumber } from './normalize-invoice';
 import { NormalizedInvoiceRow } from '../types/domain-tool.types';
 
@@ -49,8 +50,33 @@ describe('Pass 1b — fallback match (no Invoice Number column)', () => {
     expect(result.data.resultRows[0].diffType).toBe('FALLBACK_NO_INVOICE_NUMBER');
   });
 
-  it('does NOT run the fallback when booksHasInvoiceNumberColumn is not explicitly false', () => {
+  it('still recovers a blank-invoice-number row even when booksHasInvoiceNumberColumn is left unset (per-row eligibility, not a sheet-wide gate)', () => {
+    // Regression test: a books sheet that generally has an Invoice Number column, but
+    // leaves it blank for one row (e.g. an interstate purchase entered without a
+    // reference), used to skip Pass 1b for that row entirely because the OLD gate was
+    // sheet-level (`booksHasInvoiceNumberColumn === false`) rather than per-row — the row
+    // fell all the way to a false `amount_mismatch` diagnosis against an identical-value
+    // portal row instead of matching. `booksHasInvoiceNumberColumn` is intentionally
+    // omitted here to prove the fallback no longer depends on it.
     const books = row({ invoiceNumber: '', normalizedInvoiceNumber: '' });
+    const portal = row({
+      invoiceNumber: 'PORTAL-REF-1',
+      normalizedInvoiceNumber: normalizeInvoiceNumber('PORTAL-REF-1'),
+      sourceRowRef: { documentType: 'gstr2b', documentId: '2b', rowOrLine: 99 },
+    });
+
+    const result = gstMatch({
+      purchaseRegister: [books],
+      gstr2b: [portal],
+    });
+
+    expect(result.data.resultRows).toHaveLength(1);
+    expect(result.data.resultRows[0].status).toBe('MATCHED');
+    expect(result.data.resultRows[0].diffType).toBe('FALLBACK_NO_INVOICE_NUMBER');
+  });
+
+  it('does NOT fallback-match a row that HAS an invoice number but simply failed to match one in Pass 1 (likely a typo, left for the fuzzy pass instead)', () => {
+    const books = row({ invoiceNumber: 'INV-100', normalizedInvoiceNumber: normalizeInvoiceNumber('INV-100') });
     const portal = row({
       invoiceNumber: 'PORTAL-REF-1',
       normalizedInvoiceNumber: normalizeInvoiceNumber('PORTAL-REF-1'),
@@ -155,7 +181,7 @@ describe('finalizeUnmatched — mismatch reason diagnostics', () => {
     expect(pr?.explanation).toMatch(/amount differs/i);
   });
 
-  it('tags same-GSTIN-and-amount-but-different-date as date_mismatch with fieldDiff', () => {
+  it('tags same-GSTIN-and-amount-but-different-date as date_mismatch with fieldDiff, and never ALSO lists that same portal invoice as Portal-only (BUGFIX_portal_only_double_count.md)', () => {
     const books = row({ invoiceNumber: 'BOOKS-VERY-DIFFERENT-NUMBER-C', taxableValue: 10000, invoiceDate: '2026-04-15' });
     const portal = row({
       invoiceNumber: 'PORTAL-COMPLETELY-UNLIKE-NUMBER-D',
@@ -173,6 +199,56 @@ describe('finalizeUnmatched — mismatch reason diagnostics', () => {
       { field: 'invoiceDate', booksValue: '2026-04-15', portalValue: '2026-05-20' },
     ]);
     expect(pr?.explanation).toMatch(/date differs/i);
+
+    // The portal invoice date_mismatch just cited as the books row's counterpart
+    // has a books-side citation — it must not ALSO be reported as Portal-only.
+    expect(result.data.resultRows.filter((r) => r.status === 'PORTAL_ONLY')).toHaveLength(0);
+    expect(result.data.resultRows).toHaveLength(1);
+  });
+
+  it('the exact real-world repro: Palm Grove Textiles / PGT-312, same GSTIN + amount, books date 25th vs portal date 28th (BUGFIX_portal_only_double_count.md)', () => {
+    const books = row({
+      gstin: '32PALGT2345F1Z1',
+      narration: 'Palm Grove Textiles',
+      invoiceNumber: '',
+      normalizedInvoiceNumber: '',
+      invoiceDate: '2024-05-25',
+      taxableValue: 29000,
+      cgst: 2610,
+      sgst: 2610,
+    });
+    const portal = row({
+      gstin: '32PALGT2345F1Z1',
+      narration: 'PALM GROVE TEXTILES',
+      invoiceNumber: 'PGT/312',
+      normalizedInvoiceNumber: normalizeInvoiceNumber('PGT/312'),
+      invoiceDate: '2024-05-28',
+      taxableValue: 29000,
+      cgst: 2610,
+      sgst: 2610,
+      sourceRowRef: { documentType: 'gstr2b', documentId: '2b', rowOrLine: 500 },
+    });
+
+    const result = gstMatch({
+      purchaseRegister: [books],
+      gstr2b: [portal],
+      settings: { detectRcm: false },
+      booksHasInvoiceNumberColumn: false,
+    });
+
+    const pr = result.data.resultRows.find((r) => r.registerRow);
+    expect(pr?.status).toBe('PR_ONLY');
+    expect(pr?.mismatchReason).toBe('date_mismatch');
+    expect(pr?.closestPortalRow?.invoiceNumber).toBe('PGT/312');
+    expect(pr?.explanation).toContain('2024-05-25');
+    expect(pr?.explanation).toContain('2024-05-28');
+
+    // PGT/312 must appear exactly once in the whole result set — as the
+    // date_mismatch counterpart — and never a second time as Portal-only.
+    const portalOnly = result.data.resultRows.filter((r) => r.status === 'PORTAL_ONLY');
+    expect(portalOnly).toHaveLength(0);
+    expect(portalOnly.some((r) => r.portalRow?.invoiceNumber === 'PGT/312')).toBe(false);
+    expect(result.data.resultRows).toHaveLength(1);
   });
 
   it('tags a row with no plausible candidate anywhere as genuinely_missing', () => {
@@ -522,5 +598,179 @@ describe('resolveLikelyBlankGstinMatches — blank-GSTIN rows resolved against p
     expect(likelyMatched).toHaveLength(2);
     expect(stillBlank).toHaveLength(1);
     expect(portalOnly).toHaveLength(originalPortalOnlyCount - 2);
+  });
+});
+
+describe('sales mode (mode: "sales") — B2C rows never fall into the B2B diagnostic funnel', () => {
+  it('a blank-recipient-GSTIN B2C row is diagnosed as genuinely_missing, never blank_counterparty_gstin', () => {
+    const books = row({ gstin: '', narration: 'Walk-in Customer', invoiceDate: '2026-04-01', taxableValue: 500 });
+
+    const result = gstMatch({
+      purchaseRegister: [books],
+      gstr2b: [],
+      mode: 'sales',
+      settings: { detectRcm: false },
+    });
+
+    expect(result.data.resultRows).toHaveLength(1);
+    const only = result.data.resultRows[0];
+    expect(only.mismatchReason).toBe('genuinely_missing');
+    expect(only.mismatchReason).not.toBe('blank_counterparty_gstin');
+    expect(only.explanation).not.toContain('cannot be matched');
+  });
+
+  it('the same blank-GSTIN books row in purchase mode is unaffected — still blank_counterparty_gstin', () => {
+    const books = row({ gstin: '', invoiceDate: '2026-04-01', taxableValue: 500 });
+
+    const result = gstMatch({
+      purchaseRegister: [books],
+      gstr2b: [],
+      settings: { detectRcm: false },
+    });
+
+    expect(result.data.resultRows[0].mismatchReason).toBe('blank_counterparty_gstin');
+  });
+
+  it('resolveLikelyBlankGstinMatches never mislabels a B2C row as "likely matched" even when a date+amount candidate exists on the portal', () => {
+    const b2cBooksRow = row({ gstin: '', invoiceDate: '2026-04-01', taxableValue: 500, narration: 'Walk-in Customer' });
+    // A same-date/amount portal-only row that would have been picked up as a "likely
+    // match" candidate under the old (mode-unaware) blank-GSTIN dedup.
+    const coincidentalPortalRow = row({
+      gstin: '27ZZZZZ0000Z1Z5',
+      invoiceDate: '2026-04-01',
+      taxableValue: 500,
+      sourceRowRef: { documentType: 'gstr1', documentId: 'gstr1', rowOrLine: 950 },
+    });
+
+    const result = gstMatch({
+      purchaseRegister: [b2cBooksRow],
+      gstr2b: [coincidentalPortalRow],
+      mode: 'sales',
+      settings: { detectRcm: false },
+    });
+
+    const prOnly = result.data.resultRows.find((r) => r.registerRow);
+    expect(prOnly?.mismatchReason).toBe('genuinely_missing');
+    expect(prOnly?.mismatchReason).not.toBe('blank_gstin_likely_matched');
+    // Both rows stay separate — no merging of a B2C row with an unrelated portal entry.
+    expect(result.data.resultRows.filter((r) => r.status === 'PORTAL_ONLY')).toHaveLength(1);
+  });
+});
+
+describe('sales mode GSTIN-mismatch explanation wording ("customer"/"GSTR-1", never "vendor"/"GSTR-2B")', () => {
+  it('runPanCrossGstinMatch explanation uses sales wording under mode: "sales"', () => {
+    const books = row({
+      gstin: '32AIOPJ2231N1Z8',
+      invoiceNumber: '',
+      normalizedInvoiceNumber: '',
+      invoiceDate: '2024-05-09',
+      taxableValue: 120780.4,
+    });
+    const portal = row({
+      gstin: '33AIOPJ2231N1Z6',
+      invoiceNumber: 'CBR/24-25/1691',
+      normalizedInvoiceNumber: normalizeInvoiceNumber('CBR/24-25/1691'),
+      invoiceDate: '2024-05-09',
+      taxableValue: 120780.4,
+      sourceRowRef: { documentType: 'gstr1', documentId: 'gstr1', rowOrLine: 1000 },
+    });
+
+    const result = gstMatch({
+      purchaseRegister: [books],
+      gstr2b: [portal],
+      mode: 'sales',
+      settings: { detectRcm: false },
+      booksHasInvoiceNumberColumn: false,
+    });
+
+    const mismatch = result.data.resultRows.find((r) => r.status === 'GSTIN_MISMATCH');
+    expect(mismatch?.explanation).toContain('Same customer');
+    expect(mismatch?.explanation).toContain('in GSTR-1');
+    expect(mismatch?.explanation).not.toContain('vendor');
+    expect(mismatch?.explanation).not.toContain('GSTR-2B');
+  });
+
+  it('purchase mode (default) keeps the original "vendor"/"GSTR-2B" wording — unchanged', () => {
+    const books = row({
+      gstin: '32AIOPJ2231N1Z8',
+      invoiceNumber: '',
+      normalizedInvoiceNumber: '',
+      invoiceDate: '2024-05-09',
+      taxableValue: 120780.4,
+    });
+    const portal = row({
+      gstin: '33AIOPJ2231N1Z6',
+      invoiceNumber: 'CBR/24-25/1691',
+      normalizedInvoiceNumber: normalizeInvoiceNumber('CBR/24-25/1691'),
+      invoiceDate: '2024-05-09',
+      taxableValue: 120780.4,
+      sourceRowRef: { documentType: 'gstr2b', documentId: '2b', rowOrLine: 1000 },
+    });
+
+    const result = gstMatch({
+      purchaseRegister: [books],
+      gstr2b: [portal],
+      settings: { detectRcm: false },
+      booksHasInvoiceNumberColumn: false,
+    });
+
+    const mismatch = result.data.resultRows.find((r) => r.status === 'GSTIN_MISMATCH');
+    expect(mismatch?.explanation).toContain('Same vendor');
+    expect(mismatch?.explanation).toContain('in GSTR-2B');
+  });
+});
+
+describe('dedupePortalRows — collapses the same real invoice appearing in two portal sources', () => {
+  it('keeps only one copy of an invoice with the same GSTIN + Invoice Number', () => {
+    const a = row({ gstin: '29AAAAA0000A1Z5', invoiceNumber: 'PGT/312' });
+    const b = row({ gstin: '29AAAAA0000A1Z5', invoiceNumber: 'PGT/312' }); // same identity, from the other source
+    const c = row({ gstin: '29BBBBB0000B1Z5', invoiceNumber: 'PGT/312' }); // different GSTIN — genuinely distinct
+
+    const result = dedupePortalRows([a, b, c]);
+
+    expect(result).toHaveLength(2);
+    expect(result).toContain(a); // first occurrence wins
+    expect(result).not.toContain(b);
+    expect(result).toContain(c);
+  });
+
+  it('falls back to GSTIN + Date + Amount when Invoice Number is blank', () => {
+    const a = row({
+      gstin: '29AAAAA0000A1Z5',
+      invoiceNumber: '',
+      normalizedInvoiceNumber: '',
+      invoiceDate: '2026-04-10',
+      taxableValue: 5000,
+    });
+    const b = row({
+      gstin: '29AAAAA0000A1Z5',
+      invoiceNumber: '',
+      normalizedInvoiceNumber: '',
+      invoiceDate: '2026-04-10',
+      taxableValue: 5000,
+    });
+    const differentAmount = row({
+      gstin: '29AAAAA0000A1Z5',
+      invoiceNumber: '',
+      normalizedInvoiceNumber: '',
+      invoiceDate: '2026-04-10',
+      taxableValue: 9999,
+    });
+
+    const result = dedupePortalRows([a, b, differentAmount]);
+
+    expect(result).toHaveLength(2);
+    expect(result).toContain(a);
+    expect(result).not.toContain(b);
+    expect(result).toContain(differentAmount);
+  });
+
+  it('preserves order and count when there are no duplicates', () => {
+    const rows = [row(), row(), row()];
+    expect(dedupePortalRows(rows)).toEqual(rows);
+  });
+
+  it('is a no-op on an empty array', () => {
+    expect(dedupePortalRows([])).toEqual([]);
   });
 });

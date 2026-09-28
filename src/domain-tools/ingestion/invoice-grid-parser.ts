@@ -74,12 +74,32 @@ export function parseInvoiceGrid(
     // has a resolvable Invoice Number column — otherwise every real row has a blank invoice
     // number by definition, and this would silently drop genuine blank-GSTIN rows before they
     // ever reach mismatch diagnosis (the exact "silently falls through" failure this pipeline
-    // exists to prevent).
+    // exists to prevent). But blank-invoice + blank-GSTIN alone isn't enough either: a real
+    // purchase entered with neither field filled in (common for an interstate/RCM-style entry
+    // logged before the vendor's invoice number was on hand) has genuine financial data in
+    // every other column — dropping it here means it never even reaches
+    // `blank_counterparty_gstin` diagnosis, it just vanishes with no trace anywhere in the
+    // output. Only skip when the row ALSO carries no amount at all — the true junk/subtotal
+    // case this guard exists for.
+    const hasAnyAmount =
+      parseAmount(cellAt(row, headers, mapping, 'taxableAmt')) !== 0 ||
+      parseAmount(cellAt(row, headers, mapping, 'taxAmount')) !== 0 ||
+      parseAmount(cellAt(row, headers, mapping, 'igst')) !== 0 ||
+      parseAmount(cellAt(row, headers, mapping, 'cgst')) !== 0 ||
+      parseAmount(cellAt(row, headers, mapping, 'sgst')) !== 0 ||
+      (slabLayout &&
+        Boolean(
+          deriveTaxableValueFromSlabRow(
+            Object.fromEntries(headers.map((h, i) => [h, row[i]])),
+            0,
+          ),
+        ));
     if (
       skipEmpty &&
       invCol !== undefined &&
       !String(invoiceNumber ?? '').trim() &&
-      !String(gstin ?? '').trim()
+      !String(gstin ?? '').trim() &&
+      !hasAnyAmount
     ) {
       continue;
     }

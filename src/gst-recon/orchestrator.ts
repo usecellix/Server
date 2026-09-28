@@ -17,6 +17,7 @@ import {
 } from './gstin-validator';
 import { GstReconService } from './gst-recon.service';
 import { GstReconcileRequestDto } from './gst-recon.dto';
+import { sanitizeExcelSheetName } from '../excel-ai/utils/sheet-name.util';
 
 function inferPurchaseSubtype(payload: GstReconIntentPayload): ReconType {
   const raw = `${payload.extractedPeriod ?? ''} ${JSON.stringify(payload)}`.toLowerCase();
@@ -51,7 +52,7 @@ function buildReconSheetName(
         ? 'Purchase-2A'
         : 'Purchase';
   const base = `GST Recon — ${clientName ?? 'Client'} — ${period} — ${typeLabel}`;
-  return base.slice(0, 31);
+  return sanitizeExcelSheetName(base);
 }
 
 /** If row 1 is a GSTIN metadata banner, headers are on row 2. */

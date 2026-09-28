@@ -176,6 +176,21 @@ export class AppConfigService {
     return this.configService.get<string>('CLIENT_ORIGIN', 'https://localhost:3000');
   }
 
+  /**
+   * CELLIX-landing-page dev/prod origin(s) — comma-separated. Hosts /login
+   * and /register, which the Excel add-in's Office dialog also opens
+   * directly for the email/password flow (client/src/auth/useAuth.ts
+   * openEmailLoginDialog), so this origin needs the same CORS + Better Auth
+   * trustedOrigins access as the Excel add-in's own origin (clientOrigin).
+   */
+  get marketingSiteOrigins(): string[] {
+    return this.configService
+      .get<string>('MARKETING_SITE_ORIGIN', '')
+      .split(',')
+      .map((origin) => origin.trim().replace(/\/+$/, ''))
+      .filter(Boolean);
+  }
+
   get googleClientId(): string | undefined {
     const value = this.configService.get<string>('GOOGLE_CLIENT_ID', '');
     return value?.trim() ? value.trim() : undefined;

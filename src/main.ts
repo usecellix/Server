@@ -124,8 +124,12 @@ async function bootstrap(): Promise<void> {
     new RequestResponseCaptureInterceptor(),
     new ResponseEnvelopeInterceptor(app.get(Reflector)),
   );
+  // Excel add-in origin + marketing site origin(s) — the latter serves
+  // /login and /register, which the add-in's Office dialog opens directly
+  // for the email/password flow, so both need to pass CORS with credentials.
+  const allowedOrigins = [config.clientOrigin, ...config.marketingSiteOrigins];
   app.enableCors({
-    origin: config.clientOrigin,
+    origin: allowedOrigins,
     credentials: true,
   });
 

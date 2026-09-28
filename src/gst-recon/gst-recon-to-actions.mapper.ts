@@ -41,6 +41,8 @@ export interface ReconSummaryBlock {
   mismatch_genuinely_missing: number;
   /** Same vendor (PAN), same invoice, booked under a different GSTIN registration on each side — its own bucket, not pr_only or portal_only. */
   gstin_mismatch_count: number;
+  /** Portal or books invoice flagged as an amendment (doc type "IA" / narration AMEND) — needs CA verification against the original, never folded into credit_notes. */
+  amended_count: number;
 }
 
 export interface ReconRowDto {
@@ -59,6 +61,11 @@ export interface ReconRowDto {
   vendor_name: string | null;
   mismatch_reason: MismatchReason | null;
   explanation: string | null;
+  /** The books row's actual sheet name and Excel row number — lets the client jump to this
+   * exact cell (never the GST portal sheet; this row's provenance is always the CA's own
+   * register). Null when this row has no books-side counterpart (e.g. a pure portal-only row). */
+  books_sheet_name: string | null;
+  books_row: number | null;
 }
 
 function refLabel(ref?: SourceRef): string | null {
@@ -109,12 +116,14 @@ export function buildSummary(
     mismatch_date: countReason('date_mismatch'),
     mismatch_genuinely_missing: countReason(...GENUINELY_MISSING_REASONS),
     gstin_mismatch_count: count('GSTIN_MISMATCH'),
+    amended_count: count('AMENDED'),
   };
 }
 
 export function mapResultRows(resultRows: GstResultRow[]): ReconRowDto[] {
   return resultRows.map((r) => {
     const row = r.registerRow ?? r.portalRow ?? r.imsRow;
+    const booksRef = r.registerRow?.sourceRowRef;
     return {
       pr_ref: refLabel(r.registerRow?.sourceRowRef),
       portal_ref: refLabel(r.portalRow?.sourceRowRef ?? r.imsRow?.sourceRowRef),
@@ -131,6 +140,11 @@ export function mapResultRows(resultRows: GstResultRow[]): ReconRowDto[] {
       vendor_name: row?.narration || null,
       mismatch_reason: r.mismatchReason ?? null,
       explanation: r.explanation ?? null,
+      // documentId is the real sheet name (e.g. "Purchase Reg") regardless of the
+      // domain documentType label — see parsePurchaseRegister/parseSalesRegister,
+      // which pass `documentId: booksSheet.sheet_name` straight from the request.
+      books_sheet_name: booksRef ? String(booksRef.documentId) : null,
+      books_row: booksRef ? Number(booksRef.rowOrLine) || null : null,
     };
   });
 }
@@ -177,8 +191,8 @@ export function mapToSheetActions(params: {
   const headers = [
     'Status',
     'Pass',
-    'GSTIN',
-    'Vendor Name',
+    isSales ? 'Recipient GSTIN' : 'GSTIN',
+    isSales ? 'Customer Name' : 'Vendor Name',
     'Invoice No',
     isSales ? 'Tax Amount' : 'ITC Amount',
     'Confidence',
@@ -237,7 +251,7 @@ export function mapToSheetActions(params: {
   builder.pushRow(['  Date mismatch', summary.mismatch_date]);
   builder.pushRow(['  Genuinely missing', summary.mismatch_genuinely_missing]);
   builder.pushRow([
-    'Possible GSTIN mismatch (same vendor, different registration)',
+    `Possible GSTIN mismatch (same ${isSales ? 'customer' : 'vendor'}, different registration)`,
     summary.gstin_mismatch_count,
   ]);
   builder.pushRow(['Portal Only', summary.portal_only]);
@@ -294,35 +308,40 @@ export function mapToSheetActions(params: {
   return actions;
 }
 
-const BOOKS_ROW_SECTION_HEADERS = [
-  'GSTIN',
-  'Vendor Name',
-  'Invoice No',
-  'Invoice Date',
-  'Taxable Value',
-  'IGST',
-  'CGST',
-  'SGST',
-  'Tax Amount',
-  'Document Type',
-  'Reason',
-  'Explanation',
-  'Source Row',
-];
+/** Column headers use sales terminology ("Recipient GSTIN"/"Customer Name") for sales, purchase wording otherwise. */
+function booksRowSectionHeaders(isSales?: boolean): string[] {
+  return [
+    isSales ? 'Recipient GSTIN' : 'GSTIN',
+    isSales ? 'Customer Name' : 'Vendor Name',
+    'Invoice No',
+    'Invoice Date',
+    'Taxable Value',
+    'IGST',
+    'CGST',
+    'SGST',
+    'Tax Amount',
+    'Document Type',
+    'Reason',
+    'Explanation',
+    'Source Row',
+  ];
+}
 
-const PORTAL_ROW_SECTION_HEADERS = [
-  'GSTIN',
-  'Vendor Name',
-  'Invoice No',
-  'Invoice Date',
-  'Taxable Value',
-  'IGST',
-  'CGST',
-  'SGST',
-  'Tax Amount',
-  'Document Type',
-  'Source Row',
-];
+function portalRowSectionHeaders(isSales?: boolean): string[] {
+  return [
+    isSales ? 'Recipient GSTIN' : 'GSTIN',
+    isSales ? 'Customer Name' : 'Vendor Name',
+    'Invoice No',
+    'Invoice Date',
+    'Taxable Value',
+    'IGST',
+    'CGST',
+    'SGST',
+    'Tax Amount',
+    'Document Type',
+    'Source Row',
+  ];
+}
 
 /** Books-side sections source the vendor name from the Purchase Register's Particulars column (mapped to narration). */
 function toBooksSectionRow(r: GstResultRow): unknown[] {
@@ -362,18 +381,20 @@ function toPortalSectionRow(r: GstResultRow): unknown[] {
   ];
 }
 
-const GSTIN_MISMATCH_SECTION_HEADERS = [
-  'Vendor Name',
-  'Books GSTIN',
-  'Portal GSTIN',
-  'Invoice Date (Books)',
-  'Invoice Date (Portal)',
-  'Taxable Value',
-  'Portal Invoice No',
-  'Explanation',
-  'Books Source Row',
-  'Portal Source Row',
-];
+function gstinMismatchSectionHeaders(isSales?: boolean): string[] {
+  return [
+    isSales ? 'Customer Name' : 'Vendor Name',
+    'Books GSTIN',
+    'Portal GSTIN',
+    'Invoice Date (Books)',
+    'Invoice Date (Portal)',
+    'Taxable Value',
+    'Portal Invoice No',
+    'Explanation',
+    'Books Source Row',
+    'Portal Source Row',
+  ];
+}
 
 /** Both GSTINs shown side by side — the whole point of this section is spotting the registration mismatch at a glance. */
 function toGstinMismatchSectionRow(r: GstResultRow): unknown[] {
@@ -393,17 +414,78 @@ function toGstinMismatchSectionRow(r: GstResultRow): unknown[] {
   ];
 }
 
-const BLANK_GSTIN_LIKELY_MATCHED_HEADERS = [
-  'Vendor Name (Books)',
-  'Invoice Date',
-  'Taxable Value',
-  'Suggested GSTIN',
-  'Suggested Vendor Name',
-  'Suggested Invoice No',
-  'Explanation',
-  'Books Source Row',
-  'Portal Source Row',
-];
+function rcmSectionHeaders(isSales?: boolean): string[] {
+  return [
+    isSales ? 'Recipient GSTIN' : 'GSTIN',
+    isSales ? 'Customer Name' : 'Vendor Name',
+    'Invoice No',
+    'Invoice Date',
+    'Taxable Value',
+    'Confidence',
+    'Reason',
+    'Source Row',
+  ];
+}
+
+/** RCM rows are books-only (a books row flagged for reverse charge, never matched to a portal row). */
+function toRcmSectionRow(r: GstResultRow): unknown[] {
+  const row = r.registerRow!;
+  return [
+    row.gstin || '',
+    row.narration || '',
+    row.invoiceNumber,
+    row.invoiceDate,
+    row.taxableValue,
+    r.confidence,
+    r.difference ?? '',
+    refLabel(row.sourceRowRef) ?? '',
+  ];
+}
+
+function amendedSectionHeaders(isSales?: boolean): string[] {
+  return [
+    isSales ? 'Recipient GSTIN' : 'GSTIN',
+    isSales ? 'Customer Name' : 'Vendor Name',
+    'Books Invoice No',
+    'Portal Invoice No',
+    'Invoice Date',
+    'Taxable Value',
+    'Explanation',
+    'Books Source Row',
+    'Portal Source Row',
+  ];
+}
+
+/** Amended-invoice rows pair a books row with the portal's amendment record — both sides shown so the CA can verify against the original. */
+function toAmendedSectionRow(r: GstResultRow): unknown[] {
+  const books = r.registerRow!;
+  const portal = r.portalRow!;
+  return [
+    books.gstin || portal.gstin || '',
+    books.narration || portal.narration || '',
+    books.invoiceNumber,
+    portal.invoiceNumber,
+    books.invoiceDate,
+    books.taxableValue,
+    r.difference ?? '',
+    refLabel(books.sourceRowRef) ?? '',
+    refLabel(portal.sourceRowRef) ?? '',
+  ];
+}
+
+function blankGstinLikelyMatchedHeaders(isSales?: boolean): string[] {
+  return [
+    isSales ? 'Customer Name (Books)' : 'Vendor Name (Books)',
+    'Invoice Date',
+    'Taxable Value',
+    'Suggested GSTIN',
+    isSales ? 'Suggested Customer Name' : 'Suggested Vendor Name',
+    'Suggested Invoice No',
+    'Explanation',
+    'Books Source Row',
+    'Portal Source Row',
+  ];
+}
 
 /** The suggested GSTIN/vendor/invoice come from the unique portal_only candidate this row was resolved against (closestPortalRow). */
 function toBlankGstinLikelyMatchedRow(r: GstResultRow): unknown[] {
@@ -433,14 +515,29 @@ export function mapMissedBooksToSheetActions(params: {
   runAt: string;
   relativeTo?: string;
   resultRows: GstResultRow[];
+  isSales?: boolean;
 }): SheetActionPayload[] {
-  const { sheetName, portalLabel, booksLabel, runAt, relativeTo, resultRows } = params;
+  const { sheetName, portalLabel, booksLabel, runAt, relativeTo, resultRows, isSales } = params;
+  const gstinLabel = isSales ? 'recipient GSTIN' : 'GSTIN';
+  const partyLabel = isSales ? 'customer' : 'vendor';
   const missed = resultRows.filter((r) => r.status === 'PR_ONLY' && r.registerRow);
-  const portalOnly = resultRows.filter((r) => r.status === 'PORTAL_ONLY' && r.portalRow);
+  // Deliberately one-directional: this is the CA's own books reconciled against the
+  // portal, never the reverse. A GSTR-2B/2A sheet routinely carries invoices for OTHER
+  // clients' vendors entirely (the CA firm reuses one portal export across engagements),
+  // so reporting "exists in portal, not in books" as its own category would flag rows
+  // that were never supposed to be in the books at all — not a real discrepancy. Only
+  // PR_ONLY (a books row with no portal counterpart) and GSTIN_MISMATCH (a books
+  // row matched to a portal row under a different registration) are ever books-anchored.
   const gstinMismatchRows = resultRows.filter(
     (r) => r.status === 'GSTIN_MISMATCH' && r.registerRow && r.portalRow,
   );
-  if (!missed.length && !portalOnly.length && !gstinMismatchRows.length) return [];
+  const rcmRows = resultRows.filter((r) => r.status === 'RCM' && r.registerRow);
+  const amendedRows = resultRows.filter(
+    (r) => r.status === 'AMENDED' && r.registerRow && r.portalRow,
+  );
+  if (!missed.length && !gstinMismatchRows.length && !rcmRows.length && !amendedRows.length) {
+    return [];
+  }
 
   const byReason = (...reasons: MismatchReason[]) =>
     missed.filter((r) => r.mismatchReason && reasons.includes(r.mismatchReason));
@@ -470,7 +567,7 @@ export function mapMissedBooksToSheetActions(params: {
   const matchedPartial = resultRows.filter((r) => r.status === 'PARTIAL').length;
   const matchedCreditNote = resultRows.filter((r) => r.status === 'CREDIT_NOTE').length;
 
-  const width = BOOKS_ROW_SECTION_HEADERS.length;
+  const width = booksRowSectionHeaders(isSales).length;
   const title = `${booksLabel} vs ${portalLabel} — categorized`;
 
   const builder = new StyledSheetBuilder(width);
@@ -478,8 +575,9 @@ export function mapMissedBooksToSheetActions(params: {
   builder.pushRow([
     `Run: ${runAt}`,
     `Missed (books): ${missed.length}`,
-    `Portal-only: ${portalOnly.length}`,
     `GSTIN mismatch: ${gstinMismatchRows.length}`,
+    `Possible RCM: ${rcmRows.length}`,
+    `Amended: ${amendedRows.length}`,
   ]);
   builder.pushRow(['']);
   builder.pushRow(['SUMMARY']);
@@ -489,9 +587,9 @@ export function mapMissedBooksToSheetActions(params: {
   builder.pushRow(['Matched (partial/fuzzy)', matchedPartial]);
   builder.pushRow(['Matched (credit/debit note)', matchedCreditNote]);
   builder.pushRow(['']);
-  builder.pushRow(['Blank GSTIN in books', blankGstinRows.length]);
+  builder.pushRow([`Blank ${gstinLabel} in books`, blankGstinRows.length]);
   builder.pushRow([
-    '  ...likely matched to a portal invoice (confirm GSTIN)',
+    `  ...likely matched to a portal invoice (confirm ${gstinLabel})`,
     blankGstinLikelyMatchedRows.length,
   ]);
   builder.pushRow(['Blank taxable value', blankValueRows.length]);
@@ -500,49 +598,56 @@ export function mapMissedBooksToSheetActions(params: {
   builder.pushRow(['Date mismatch', dateMismatchRows.length]);
   builder.pushRow(['Genuinely missing', genuinelyMissingRows.length]);
   builder.pushRow([
-    'Possible GSTIN mismatch (same vendor, different registration)',
+    `Possible GSTIN mismatch (same ${partyLabel}, different registration)`,
     gstinMismatchRows.length,
   ]);
-  builder.pushRow(['Portal-only (not in books)', portalOnly.length]);
+  builder.pushRow(['Possible RCM (reverse charge — needs CA review)', rcmRows.length]);
+  builder.pushRow(['Amended invoices (verify against original)', amendedRows.length]);
   if (unclassifiedRows.length) {
     builder.pushRow(['Unclassified (needs review)', unclassifiedRows.length]);
   }
   builder.endSummaryBlock();
   builder.pushRow(['']);
 
-  builder.pushSection('Blank GSTIN rows', BOOKS_ROW_SECTION_HEADERS, blankGstinRows.map(toBooksSectionRow));
+  const booksHeaders = booksRowSectionHeaders(isSales);
+  builder.pushSection(`Blank ${gstinLabel} rows`, booksHeaders, blankGstinRows.map(toBooksSectionRow));
   builder.pushSection(
-    'Blank GSTIN — likely matched (confirm & fill in GSTIN)',
-    BLANK_GSTIN_LIKELY_MATCHED_HEADERS,
+    `Blank ${gstinLabel} — likely matched (confirm & fill in ${gstinLabel})`,
+    blankGstinLikelyMatchedHeaders(isSales),
     blankGstinLikelyMatchedRows.map(toBlankGstinLikelyMatchedRow),
   );
-  builder.pushSection('Blank taxable value rows', BOOKS_ROW_SECTION_HEADERS, blankValueRows.map(toBooksSectionRow));
+  builder.pushSection('Blank taxable value rows', booksHeaders, blankValueRows.map(toBooksSectionRow));
   builder.pushSection(
     'Ambiguous rate slab rows (needs CA review)',
-    BOOKS_ROW_SECTION_HEADERS,
+    booksHeaders,
     ambiguousRateSlabRows.map(toBooksSectionRow),
   );
-  builder.pushSection('Amount mismatch rows', BOOKS_ROW_SECTION_HEADERS, amountMismatchRows.map(toBooksSectionRow));
-  builder.pushSection('Date mismatch rows', BOOKS_ROW_SECTION_HEADERS, dateMismatchRows.map(toBooksSectionRow));
+  builder.pushSection('Amount mismatch rows', booksHeaders, amountMismatchRows.map(toBooksSectionRow));
+  builder.pushSection('Date mismatch rows', booksHeaders, dateMismatchRows.map(toBooksSectionRow));
   builder.pushSection(
     'Genuinely missing rows',
-    BOOKS_ROW_SECTION_HEADERS,
+    booksHeaders,
     genuinelyMissingRows.map(toBooksSectionRow),
   );
   builder.pushSection(
-    'Possible GSTIN mismatch (same vendor, different registration)',
-    GSTIN_MISMATCH_SECTION_HEADERS,
+    `Possible GSTIN mismatch (same ${partyLabel}, different registration)`,
+    gstinMismatchSectionHeaders(isSales),
     gstinMismatchRows.map(toGstinMismatchSectionRow),
   );
   builder.pushSection(
-    'Unclassified rows (needs review)',
-    BOOKS_ROW_SECTION_HEADERS,
-    unclassifiedRows.map(toBooksSectionRow),
+    'Possible RCM rows (reverse charge — needs CA review)',
+    rcmSectionHeaders(isSales),
+    rcmRows.map(toRcmSectionRow),
   );
   builder.pushSection(
-    `Portal-only rows (in ${portalLabel}, not in books)`,
-    PORTAL_ROW_SECTION_HEADERS,
-    portalOnly.map(toPortalSectionRow),
+    'Amended invoices (verify against original)',
+    amendedSectionHeaders(isSales),
+    amendedRows.map(toAmendedSectionRow),
+  );
+  builder.pushSection(
+    'Unclassified rows (needs review)',
+    booksHeaders,
+    unclassifiedRows.map(toBooksSectionRow),
   );
   builder.pushRow(['CELLIX | Reconciliation aid. CA to verify.']);
 
@@ -592,21 +697,23 @@ export function mapMissedBooksFlatToSheetActions(params: {
   runAt: string;
   relativeTo?: string;
   resultRows: GstResultRow[];
+  isSales?: boolean;
 }): SheetActionPayload[] {
-  const { sheetName, portalLabel, booksLabel, runAt, relativeTo, resultRows } = params;
+  const { sheetName, portalLabel, booksLabel, runAt, relativeTo, resultRows, isSales } = params;
   const missed = resultRows.filter(
     (r) => (r.status === 'PR_ONLY' || r.status === 'GSTIN_MISMATCH') && r.registerRow,
   );
   if (!missed.length) return [];
 
-  const width = BOOKS_ROW_SECTION_HEADERS.length;
+  const headers = booksRowSectionHeaders(isSales);
+  const width = headers.length;
   const title = `${booksLabel} rows missing from ${portalLabel}`;
 
   const builder = new StyledSheetBuilder(width);
   const sheetTitleRow = builder.pushRow([title]);
   builder.pushRow([`Run: ${runAt}`, `Rows: ${missed.length}`]);
   builder.pushRow(['']);
-  builder.pushSection('Missing Rows', BOOKS_ROW_SECTION_HEADERS, missed.map(toBooksSectionRow));
+  builder.pushSection('Missing Rows', headers, missed.map(toBooksSectionRow));
   builder.pushRow(['CELLIX | Reconciliation aid. CA to verify.']);
 
   const writeHeaders = builder.rows[0].map((c, i) => (i === 0 ? String(c) : `C${i + 1}`));
@@ -638,19 +745,21 @@ export function mapPortalOnlyFlatToSheetActions(params: {
   runAt: string;
   relativeTo?: string;
   resultRows: GstResultRow[];
+  isSales?: boolean;
 }): SheetActionPayload[] {
-  const { sheetName, portalLabel, booksLabel, runAt, relativeTo, resultRows } = params;
+  const { sheetName, portalLabel, booksLabel, runAt, relativeTo, resultRows, isSales } = params;
   const portalOnly = resultRows.filter((r) => r.status === 'PORTAL_ONLY' && r.portalRow);
   if (!portalOnly.length) return [];
 
-  const width = PORTAL_ROW_SECTION_HEADERS.length;
+  const headers = portalRowSectionHeaders(isSales);
+  const width = headers.length;
   const title = `${portalLabel} rows missing from ${booksLabel}`;
 
   const builder = new StyledSheetBuilder(width);
   const sheetTitleRow = builder.pushRow([title]);
   builder.pushRow([`Run: ${runAt}`, `Rows: ${portalOnly.length}`]);
   builder.pushRow(['']);
-  builder.pushSection('Missing Rows', PORTAL_ROW_SECTION_HEADERS, portalOnly.map(toPortalSectionRow));
+  builder.pushSection('Missing Rows', headers, portalOnly.map(toPortalSectionRow));
   builder.pushRow(['CELLIX | Reconciliation aid. CA to verify.']);
 
   const writeHeaders = builder.rows[0].map((c, i) => (i === 0 ? String(c) : `C${i + 1}`));

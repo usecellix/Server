@@ -74,6 +74,43 @@ export function createWorkingSet(
   };
 }
 
+/** GSTIN + Invoice Number when available, else GSTIN + Date + Amount — the same identity a human would use to say "this is the same invoice." */
+function portalRowIdentityKey(row: NormalizedInvoiceRow): string {
+  const gstin = (row.gstin || '').trim().toUpperCase();
+  const invoiceNo = (row.normalizedInvoiceNumber || '').trim();
+  if (invoiceNo) return `${gstin}|${invoiceNo}`;
+  const amount = row.taxableValue != null ? row.taxableValue.toFixed(2) : '';
+  return `${gstin}|${row.invoiceDate}|${amount}`;
+}
+
+/**
+ * Deduplicate a portal-side row set by real-world invoice identity — needed when
+ * merging two portal exports that legitimately overlap (GSTR-2B and GSTR-2A both
+ * carry most B2B invoices). Without this, the SAME invoice reaches the matching
+ * passes as two separate rows: Pass 1 consumes one copy against the books row,
+ * and the other, un-consumed twin is left in `unmatchedPortal` — landing in
+ * Portal-only as a false positive even though the invoice really did match. An
+ * invoice present in both sources with NO books match at all would likewise be
+ * counted twice in Portal-only instead of once. Deduplicating BEFORE any pass
+ * runs (rather than trying to reconcile duplicates after the fact) means the
+ * matching passes only ever see one copy per real invoice, so "unmatched after
+ * every pass" is already the correct, deduplicated Portal-only set — no separate
+ * set-difference or post-hoc dedup step needed downstream. The first occurrence
+ * of a given identity wins (2B is listed before 2A at every call site today, so
+ * 2B's copy — the ITC-eligible source — is what survives).
+ */
+export function dedupePortalRows(rows: NormalizedInvoiceRow[]): NormalizedInvoiceRow[] {
+  const seen = new Set<string>();
+  const result: NormalizedInvoiceRow[] = [];
+  for (const row of rows) {
+    const key = portalRowIdentityKey(row);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(row);
+  }
+  return result;
+}
+
 function exactKeys(row: NormalizedInvoiceRow, mode: GstMatchMode): string[] {
   const keys: string[] = [];
   if (isB2c(row, mode) && row.normalizedInvoiceNumber) {
@@ -146,10 +183,14 @@ export function runPassExact(ws: MatchWorkingSet): void {
 }
 
 /**
- * Pass 1b: fallback match on GSTIN + exact invoice date + taxable value (within tolerance).
- * Runs ONLY when the books sheet has no Invoice Number column at all — the scenario that
- * previously produced 0 matched / everything dumped into PR_ONLY. Checked once per sheet
- * by the caller (gstMatch), not per row.
+ * Pass 1b: fallback match on GSTIN + exact invoice date + taxable value (within tolerance),
+ * for books rows that have no invoice number to key on — whether that's every row (a books
+ * sheet with no Invoice Number column at all) or just some (a sheet that has the column,
+ * but left it blank for a particular row, e.g. an IGST-only interstate purchase entered
+ * without a reference). Only rows with a genuinely blank invoice number are eligible: a row
+ * that HAS an invoice number but still didn't match in Pass 1 (a probable typo) is left for
+ * the fuzzy pass instead, since fallback-matching it on GSTIN+date+amount alone — while its
+ * own invoice number goes uncompared — is a real name a coincidence could produce.
  */
 export function runPass1bFallback(ws: MatchWorkingSet, settings: GstMatchSettings): void {
   const usedPortal = new Set<number>();
@@ -166,7 +207,7 @@ export function runPass1bFallback(ws: MatchWorkingSet, settings: GstMatchSetting
   }
 
   for (const pr of ws.unmatchedPr) {
-    if (!pr.gstin || !pr.invoiceDate || pr.taxableValue == null) {
+    if (pr.normalizedInvoiceNumber || !pr.gstin || !pr.invoiceDate || pr.taxableValue == null) {
       stillPr.push(pr);
       continue;
     }
@@ -326,8 +367,9 @@ export function runPassCdn(ws: MatchWorkingSet): void {
       pr.documentType === 'debit_note' ||
       (pr.taxableValue ?? 0) < 0 ||
       /credit|cdn|debit/i.test(pr.narration);
+    const isAmended = pr.documentType === 'amended';
 
-    if (!isCdn || !pr.gstin) {
+    if ((!isCdn && !isAmended) || !pr.gstin) {
       stillPr.push(pr);
       continue;
     }
@@ -362,13 +404,21 @@ export function runPassCdn(ws: MatchWorkingSet): void {
 
     usedPortal.add(bestIdx);
     const portal = ws.unmatchedPortal[bestIdx];
+    // An amendment (either side flagged "amended" — doc type "IA" or narration containing
+    // AMEND) is not a genuine credit/debit note: it revises the original invoice rather
+    // than reversing/adjusting it, and a CA needs to verify it against the original before
+    // treating it as settled. Keep it out of CREDIT_NOTE so it doesn't read as a routine,
+    // already-understood adjustment.
+    const amended = isAmended || portal.documentType === 'amended';
     ws.results.push({
-      status: 'CREDIT_NOTE',
+      status: amended ? 'AMENDED' : 'CREDIT_NOTE',
       pass: 4,
       confidence: bestGap <= 0.01 ? 0.98 : 0.9,
-      difference: `CDN match: ${pr.invoiceNumber} ↔ ${portal.invoiceNumber}`,
-      diffType: 'CREDIT_NOTE',
-      itcAmount: -itcOf(pr),
+      difference: amended
+        ? `Amended invoice: ${pr.invoiceNumber} ↔ ${portal.invoiceNumber} — verify against the original invoice`
+        : `CDN match: ${pr.invoiceNumber} ↔ ${portal.invoiceNumber}`,
+      diffType: amended ? 'AMENDED' : 'CREDIT_NOTE',
+      itcAmount: amended ? itcOf(portal) : -itcOf(pr),
       rcmFlag: false,
       registerRow: pr,
       portalRow: portal,
@@ -383,7 +433,18 @@ export function runPassCdn(ws: MatchWorkingSet): void {
 const RCM_KEYWORDS =
   /\b(freight|gta|goods transport|advocate|legal fee|legal service|google ads|google|aws|amazon web|meta ads|facebook ads|import of service|oidar|security service|rent.*unregistered)\b/i;
 
-/** Pass 5: RCM detection on remaining PR rows. */
+/**
+ * Pass 5: RCM detection on remaining PR rows.
+ *
+ * Triggered by an RCM narration keyword — never by a blank/invalid GSTIN alone. A blank
+ * GSTIN is only *potentially* RCM-eligible (e.g. an unregistered vendor); on its own it's
+ * indistinguishable from an ordinary books data-entry gap, which already has its own
+ * correct diagnosis (`blank_counterparty_gstin`, via `finalizeUnmatched`) once this pass
+ * lets the row fall through. Pulling every blank-GSTIN row into RCM here — as an earlier
+ * version of this pass did — would silently steal rows away from that diagnosis and was
+ * exactly why this pass stayed disabled in the casual chat flow. Blank GSTIN now only
+ * raises confidence when a keyword ALSO hits, never triggers the pass by itself.
+ */
 export function runPassRcm(ws: MatchWorkingSet, settings: GstMatchSettings): void {
   if (!settings.detectRcm) return;
   const stillPr: NormalizedInvoiceRow[] = [];
@@ -391,14 +452,12 @@ export function runPassRcm(ws: MatchWorkingSet, settings: GstMatchSettings): voi
   for (const pr of ws.unmatchedPr) {
     const blankGstin = !pr.gstin || !isValidGstinFormat(pr.gstin);
     const keywordHit = RCM_KEYWORDS.test(pr.narration);
-    if (blankGstin || keywordHit) {
+    if (keywordHit) {
       ws.results.push({
         status: 'RCM',
         pass: 5,
         confidence: blankGstin && keywordHit ? 0.85 : 0.7,
-        difference: blankGstin
-          ? 'Blank/invalid GSTIN — potential URD/RCM'
-          : `RCM keyword in narration: ${pr.narration.slice(0, 80)}`,
+        difference: `RCM keyword in narration: ${pr.narration.slice(0, 80)}`,
         diffType: 'RCM',
         itcAmount: 0,
         rcmFlag: true,
@@ -575,10 +634,17 @@ function closestByDate(candidates: NormalizedInvoiceRow[], targetDate: string): 
  * reason instead of a flat "unmatched" tag. `otherSideForGstin` should be the full
  * (not just still-unmatched) set of portal rows sharing this row's GSTIN, so a genuinely
  * missing GSTIN can be told apart from one whose invoices were all already matched elsewhere.
+ *
+ * `isB2c` (sales only) — a blank/absent recipient GSTIN on a B2C row is the expected,
+ * correct state, not a data gap: it must never be diagnosed as `blank_counterparty_gstin`
+ * (the "GSTIN is blank... cannot be matched" wording would be actively misleading), and
+ * GSTIN-keyed candidate matching (`otherSideForGstin`) is meaningless for it — B2C
+ * invoices that survive every earlier pass unmatched are treated as genuinely missing.
  */
 export function diagnoseUnmatchedRow(
   row: NormalizedInvoiceRow,
   otherSideForGstin: NormalizedInvoiceRow[],
+  opts: { isB2c?: boolean } = {},
 ): Diagnosis {
   if (row.ambiguousRateSlab) {
     return {
@@ -588,7 +654,7 @@ export function diagnoseUnmatchedRow(
         'Multiple rate-slab columns are populated for this row and the correct one could not be determined automatically — needs CA review.',
     };
   }
-  if (!row.gstin) {
+  if (!opts.isB2c && !row.gstin) {
     return {
       reason: 'blank_counterparty_gstin',
       explanation: 'GSTIN is blank in the register for this row — cannot be matched.',
@@ -598,6 +664,13 @@ export function diagnoseUnmatchedRow(
     return {
       reason: 'blank_taxable_value',
       explanation: 'No taxable value found in any rate column for this row.',
+    };
+  }
+  if (opts.isB2c) {
+    return {
+      reason: 'genuinely_missing',
+      explanation:
+        'No matching B2C invoice found in the portal for this date/amount — likely not filed by the period this run covers, or filed under a different bucket.',
     };
   }
   if (otherSideForGstin.length === 0) {
@@ -646,14 +719,17 @@ function buildGstinMismatchExplanation(
   books: NormalizedInvoiceRow,
   portal: NormalizedInvoiceRow,
   pan: string,
+  mode: GstMatchMode,
 ): string {
   const sameDate = books.invoiceDate === portal.invoiceDate;
   const dateClause = sameDate
     ? 'same date and amount'
     : `same amount (but the invoice date also differs — books ${books.invoiceDate} vs portal ${portal.invoiceDate})`;
+  const partyLabel = mode === 'sales' ? 'customer' : 'vendor';
+  const portalLabel = mode === 'sales' ? 'GSTR-1' : 'GSTR-2B';
   return (
-    `Same vendor (PAN ${pan}), ${dateClause}, but booked under GSTIN ${books.gstin} in your register ` +
-    `vs GSTIN ${portal.gstin} in GSTR-2B — check which registration this vendor actually used for this invoice.`
+    `Same ${partyLabel} (PAN ${pan}), ${dateClause}, but booked under GSTIN ${books.gstin} in your register ` +
+    `vs GSTIN ${portal.gstin} in ${portalLabel} — check which registration this ${partyLabel} actually used for this invoice.`
   );
 }
 
@@ -718,7 +794,7 @@ export function runPanCrossGstinMatch(ws: MatchWorkingSet): void {
 
     usedPortal.add(chosenIdx);
     const portal = ws.unmatchedPortal[chosenIdx];
-    const explanation = buildGstinMismatchExplanation(pr, portal, pan);
+    const explanation = buildGstinMismatchExplanation(pr, portal, pan, ws.mode);
     ws.results.push({
       status: 'GSTIN_MISMATCH',
       pass: null,
@@ -742,9 +818,22 @@ export function runPanCrossGstinMatch(ws: MatchWorkingSet): void {
 /** Finalize unmatched PR / portal rows — every PR_ONLY row is diagnosed with a specific reason. */
 export function finalizeUnmatched(ws: MatchWorkingSet): void {
   runPanCrossGstinMatch(ws);
+
+  // amount_mismatch/date_mismatch diagnoses cite a specific portal invoice as this
+  // books row's near-miss counterpart (closestPortalRow) — that invoice now HAS a
+  // books-side citation, even though it isn't a clean match, and must never also be
+  // reported as Portal-only. Collect every such citation across all PR_ONLY rows
+  // before deciding what's genuinely left over on the portal side (object identity:
+  // closestPortalRow is the same row reference `ws.allPortal`/`ws.unmatchedPortal`
+  // share, never a copy).
+  const claimedPortalRows = new Set<NormalizedInvoiceRow>();
+
   for (const pr of ws.unmatchedPr) {
     const candidatesForGstin = ws.allPortal.filter((p) => p.gstin && p.gstin === pr.gstin);
-    const diagnosis = diagnoseUnmatchedRow(pr, candidatesForGstin);
+    const diagnosis = diagnoseUnmatchedRow(pr, candidatesForGstin, { isB2c: isB2c(pr, ws.mode) });
+    if (diagnosis.closestPortalRow) {
+      claimedPortalRows.add(diagnosis.closestPortalRow);
+    }
     ws.results.push({
       status: 'PR_ONLY',
       pass: null,
@@ -761,6 +850,7 @@ export function finalizeUnmatched(ws: MatchWorkingSet): void {
     });
   }
   for (const portal of ws.unmatchedPortal) {
+    if (claimedPortalRows.has(portal)) continue;
     ws.results.push({
       status: 'PORTAL_ONLY',
       pass: null,
@@ -792,9 +882,17 @@ export function finalizeUnmatched(ws: MatchWorkingSet): void {
  * the candidate's GSTIN/vendor/invoice attached as a suggestion, and drop that portal
  * row from portal_only entirely (it's the same real-world invoice, not two). Zero or
  * multiple candidates → leave both sides unchanged; never guess.
+ *
+ * Candidate portal rows exclude B2C entries (sales mode only) — a B2C portal row has no
+ * real counterparty GSTIN to suggest, so it can never be a meaningful "fill this in"
+ * candidate for a B2B blank-GSTIN row. (`blank_counterparty_gstin` itself is never
+ * assigned to a B2C books row in the first place — see diagnoseUnmatchedRow — so this is
+ * belt-and-suspenders on the candidate side, not the books-row side.)
  */
 export function resolveLikelyBlankGstinMatches(ws: MatchWorkingSet): void {
-  const portalOnlyResults = ws.results.filter((r) => r.status === 'PORTAL_ONLY' && r.portalRow);
+  const portalOnlyResults = ws.results.filter(
+    (r) => r.status === 'PORTAL_ONLY' && r.portalRow && !isB2c(r.portalRow, ws.mode),
+  );
   if (!portalOnlyResults.length) return;
 
   const usedPortalResults = new Set<GstResultRow>();
@@ -819,9 +917,10 @@ export function resolveLikelyBlankGstinMatches(ws: MatchWorkingSet): void {
     const match = candidates[0];
     usedPortalResults.add(match);
     const portal = match.portalRow!;
+    const partyLabel = ws.mode === 'sales' ? 'customer' : 'vendor';
     const explanation =
-      `GSTIN is blank in the register, but a portal invoice from ${portal.narration || 'this vendor'} ` +
-      `(GSTIN ${portal.gstin}) matches this row's date and amount — likely the correct vendor. Confirm and fill in the GSTIN.`;
+      `GSTIN is blank in the register, but a portal invoice from ${portal.narration || `this ${partyLabel}`} ` +
+      `(GSTIN ${portal.gstin}) matches this row's date and amount — likely the correct ${partyLabel}. Confirm and fill in the GSTIN.`;
     r.mismatchReason = 'blank_gstin_likely_matched';
     r.explanation = explanation;
     r.difference = explanation;

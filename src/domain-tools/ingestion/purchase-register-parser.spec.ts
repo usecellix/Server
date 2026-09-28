@@ -120,6 +120,48 @@ describe('parsePurchaseRegister — rate-slab column layout', () => {
   });
 });
 
+describe('parsePurchaseRegister — blank invoice number + blank GSTIN rows', () => {
+  const headers = [
+    'Date', 'Particulars', 'GSTIN/UIN', 'CGST', 'SGST', 'Purchase@18%', 'Purchase Interstate@18%', 'Invoice number',
+  ];
+
+  it('keeps a row with blank invoice number AND blank GSTIN when it carries real financial data (regression: silently vanished from the reconciliation entirely, not even reaching blank_counterparty_gstin diagnosis)', () => {
+    // Real repro shape: an interstate/RCM-style purchase entered before the vendor's
+    // invoice number was on hand, and the GSTIN column left blank too — but with real
+    // CGST/SGST/taxable value. The old guard treated "blank invoice + blank GSTIN" alone
+    // as a junk/subtotal row and dropped it before it ever became a NormalizedInvoiceRow.
+    const grid = [
+      headers,
+      ['2024-05-05', 'Coral Bay Logistics', '', 5400, 5400, 60000, '', ''],
+    ];
+    const rows = parsePurchaseRegister(grid);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].gstin).toBe('');
+    expect(rows[0].taxableValue).toBe(60000);
+    expect(rows[0].narration).toBe('Coral Bay Logistics');
+  });
+
+  it('still drops a genuinely empty/junk row (blank invoice, blank GSTIN, AND no financial data) — the guard\'s original intent', () => {
+    const grid = [
+      headers,
+      ['2024-05-06', '', '', '', '', '', '', ''],
+    ];
+    const rows = parsePurchaseRegister(grid);
+    expect(rows).toHaveLength(0);
+  });
+
+  it('keeps a row with blank invoice number but a populated GSTIN, as before', () => {
+    const grid = [
+      headers,
+      ['2024-05-07', 'Silverline Traders', '32SILTR9012C1Z2', 6750, 6750, 75000, '', ''],
+    ];
+    const rows = parsePurchaseRegister(grid);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].gstin).toBe('32SILTR9012C1Z2');
+    expect(rows[0].taxableValue).toBe(75000);
+  });
+});
+
 describe('parseSalesRegister — rate-slab column layout', () => {
   const headers = ['Recipient GSTIN', 'Invoice No', 'Invoice Date', 'Sales@18%', 'Sales Interstate@18%'];
 

@@ -81,9 +81,12 @@ export const gstMatch: DomainTool<GstMatchInput, GstMatchOutput> = (input) => {
   );
 
   runPassExact(ws);
-  if (input.booksHasInvoiceNumberColumn === false) {
-    runPass1bFallback(ws, settings);
-  }
+  // Row-level eligibility (blank invoice number) lives inside runPass1bFallback itself
+  // now, so this always runs — a books sheet that generally HAS invoice numbers can still
+  // have individual rows left blank (e.g. an interstate purchase entered without a
+  // reference), and those rows deserve the same GSTIN+date+amount recovery a
+  // no-invoice-number sheet gets, not an automatic PR_ONLY/amount_mismatch fallthrough.
+  runPass1bFallback(ws, settings);
   runPassFuzzy(ws, settings);
   runPassCdn(ws);
   runPassRcm(ws, settings);

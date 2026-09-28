@@ -109,6 +109,7 @@ export type GstReconStatus =
   | 'MATCHED'
   | 'PARTIAL'
   | 'CREDIT_NOTE'
+  | 'AMENDED'
   | 'PR_ONLY'
   | 'PORTAL_ONLY'
   | 'GSTIN_MISMATCH'

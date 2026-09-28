@@ -17,6 +17,6 @@ export class AuthController {
 
   @Get('health')
   authHealth() {
-    return { status: 'ok', providers: ['google', 'microsoft'] };
+    return { status: 'ok', providers: ['google', 'microsoft', 'email'] };
   }
 }

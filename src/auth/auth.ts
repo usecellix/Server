@@ -60,6 +60,14 @@ async function createAuth(): Promise<BetterAuthInstance> {
   const dbName = process.env.MONGODB_DB_NAME || 'cellix';
   const clientOrigin = process.env.CLIENT_ORIGIN || 'https://localhost:3000';
   const betterAuthUrl = process.env.BETTER_AUTH_URL || clientOrigin;
+  // Marketing site (Landing-page) — hosts /login and /register, which the
+  // Excel add-in opens in an external browser tab for email/password
+  // (client/src/auth/useAuth.ts openEmailLoginPage). Without this, Better
+  // Auth rejects sign-in/sign-up requests made from that origin.
+  const marketingSiteOrigins = (process.env.MARKETING_SITE_ORIGIN || '')
+    .split(',')
+    .map((origin) => origin.trim().replace(/\/$/, ''))
+    .filter(Boolean);
 
   // Task pane is https://localhost:3000; Google console may still list http — allow both.
   const trustedOrigins = Array.from(
@@ -68,6 +76,7 @@ async function createAuth(): Promise<BetterAuthInstance> {
       betterAuthUrl.replace(/\/$/, ''),
       'https://localhost:3000',
       'http://localhost:3000',
+      ...marketingSiteOrigins,
     ]),
   );
 
@@ -80,6 +89,10 @@ async function createAuth(): Promise<BetterAuthInstance> {
     baseURL: betterAuthUrl,
     secret: process.env.BETTER_AUTH_SECRET,
     trustedOrigins,
+    emailAndPassword: {
+      enabled: true,
+      requireEmailVerification: false,
+    },
     socialProviders: {
       google: {
         clientId: process.env.GOOGLE_CLIENT_ID as string,
@@ -107,10 +120,27 @@ async function createAuth(): Promise<BetterAuthInstance> {
       storeStateStrategy: 'database',
     },
     advanced: {
+      // Keep cookie *name* and Secure attribute aligned. Without this, baseURL
+      // https://localhost:3000 forces a `__Secure-` cookie name while
+      // defaultCookieAttributes.secure is false in development — browsers then
+      // reject the cookie (and Excel WebView claim would set the wrong name).
+      useSecureCookies: process.env.NODE_ENV === 'production',
       defaultCookieAttributes: {
         // Same-site cookies work for same-origin Vite proxy callbacks.
         sameSite: 'lax',
-        secure: betterAuthUrl.startsWith('https'),
+        // The Server backend itself only ever serves plain HTTP in local dev
+        // (Server/.env's PORT, no TLS) — HTTPS only exists on the Excel
+        // add-in's own Vite dev server, which terminates TLS in front of it.
+        // A Secure cookie is silently refused by the browser on any
+        // non-HTTPS response, which breaks every *direct* caller of Server
+        // (e.g. the Landing-page's browser tab, which talks to
+        // http://localhost:4001 with no HTTPS hop in between at all) even
+        // though the cookie appears to be set in the response headers.
+        // betterAuthUrl.startsWith('https') worked by coincidence for the
+        // Excel add-in (whose browser-facing URL genuinely is HTTPS via the
+        // Vite proxy) but breaks every other direct consumer — key this off
+        // NODE_ENV instead, since production Server is always behind HTTPS.
+        secure: process.env.NODE_ENV === 'production',
         httpOnly: true,
         path: '/',
       },

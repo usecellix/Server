@@ -14,9 +14,14 @@ import { parseGstr2a, parseGstr2b } from '../domain-tools/ingestion/gstr2b-parse
 import { parseGstr1 } from '../domain-tools/ingestion/gstr1-parser';
 import { parseImsExport } from '../domain-tools/ingestion/ims-parser';
 import { gstMatch } from '../domain-tools/gst/gst-match.tool';
+import { dedupePortalRows } from '../domain-tools/gst/match-passes';
 import { itcCompute } from '../domain-tools/gst/itc-compute.tool';
 import { gstr3bVs2b } from '../domain-tools/gst/gstr3b-vs-2b.tool';
 import { AuditService } from '../audit/audit.service';
+import {
+  sanitizeExcelSheetName,
+  stripIllegalSheetNameChars,
+} from '../excel-ai/utils/sheet-name.util';
 import { GstReconcileRequestDto, SheetPayloadDto } from './gst-recon.dto';
 import {
   buildSummary,
@@ -170,9 +175,9 @@ export class GstReconService {
       gstr3bItc: request.gstr3b_itc,
       gstr2bItc: request.gstr2b_itc,
     });
-    const sheetName =
-      request.output_sheet_name ??
-      `Recon 3B-vs-2B ${request.period ?? ''}`.trim().slice(0, 31);
+    const sheetName = sanitizeExcelSheetName(
+      request.output_sheet_name ?? `Recon 3B-vs-2B ${request.period ?? ''}`,
+    );
 
     const clientGstin = resolveClientGstin(request);
     const actions = map3bVs2bToActions({
@@ -218,6 +223,7 @@ export class GstReconService {
         mismatch_date: 0,
         mismatch_genuinely_missing: 0,
         gstin_mismatch_count: 0,
+        amended_count: 0,
       },
       rows: [],
       actions,
@@ -373,7 +379,14 @@ export class GstReconService {
         columnMapping: toColumnMapping(pf2a.column_mapping),
         headersRow: pf2a.headers_row,
       });
-      portal = [...portal, ...extra];
+      // GSTR-2B and GSTR-2A legitimately overlap (2A carries most invoices 2B
+      // does) — deduplicate by invoice identity BEFORE any matching pass runs,
+      // so an invoice present in both sources is matched at most once and, if
+      // genuinely unmatched, counted once in Portal-only. Deduplicating after
+      // the fact is too late: by then one copy may already have consumed the
+      // books match while its un-consumed twin sits in Portal-only as a false
+      // positive. 2B is listed first, so its (ITC-eligible) copy wins ties.
+      portal = dedupePortalRows([...portal, ...extra]);
       if (!portalLabels.includes('GSTR-2A')) portalLabels.push('GSTR-2A');
     }
 
@@ -423,6 +436,7 @@ export class GstReconService {
         mismatch_date: 0,
         mismatch_genuinely_missing: 0,
         gstin_mismatch_count: 0,
+        amended_count: 0,
       };
       return {
         job_id: jobId,
@@ -471,11 +485,11 @@ export class GstReconService {
       ...DEFAULT_GST_MATCH_SETTINGS,
       ...settingsFromDto(request.settings),
       useImsData: useIms,
-      detectRcm: missedBooksOnly
-        ? false
-        : isSales
-          ? false
-          : (request.settings?.detect_rcm ?? true),
+      // RCM stays off for sales (reverse charge doesn't apply to outward supply). It now
+      // runs in the casual missed-books-only flow too — runPassRcm only pulls a row out
+      // on an RCM narration keyword hit, never on a blank GSTIN alone, so it can't steal
+      // rows away from the blank_counterparty_gstin diagnosis in that flow.
+      detectRcm: isSales ? false : (request.settings?.detect_rcm ?? true),
     };
 
     const mode: GstMatchMode = isSales ? 'sales' : 'purchase';
@@ -522,20 +536,37 @@ export class GstReconService {
         vendor_name: null,
         mismatch_reason: null,
         explanation: null,
+        books_sheet_name: booksSheet.sheet_name,
+        books_row: x.rowIndex,
       });
     }
 
     const portalLabel = portalLabels.join(' / ') || (isSales ? 'GSTR-1' : 'GSTR-2B');
     const booksLabel = isSales ? 'Sales Register' : 'Purchase Register';
-    const sheetName =
-      request.output_sheet_name ??
-      (missedBooksOnly
-        ? `Missed vs ${portalLabel}`.slice(0, 31)
-        : `Recon ${request.reconciliation_type.replace(/_/g, ' ')} ${request.period ?? ''}`
-            .trim()
-            .slice(0, 31));
-
     const layout = request.layout ?? 'categorized';
+    // Each layout writes to its own sheet name so switching layouts creates a sibling
+    // sheet instead of tripping the Overwrite/Create-new collision flow — that flow is
+    // only meant to fire when the SAME layout is re-run and its own name already exists.
+    const missedBooksSheetSuffix =
+      layout === 'books_flat' ? ' — Books Only' : layout === 'portal_flat' ? ' — Portal Only' : '';
+    // Strip Excel-illegal characters BEFORE budgeting length — portalLabel can be a
+    // "GSTR-2B / GSTR-2A" join when both portal sources resolve, and "/" is illegal
+    // in a sheet name. Sanitizing first, then truncating the base (never the suffix),
+    // means the layout-distinguishing suffix always survives the 31-char limit too —
+    // otherwise a long portalLabel could truncate both layouts to the same prefix and
+    // collide anyway.
+    const missedBooksSheetBase = stripIllegalSheetNameChars(`Missed vs ${portalLabel}`).slice(
+      0,
+      31 - missedBooksSheetSuffix.length,
+    );
+    const sheetName = request.output_sheet_name
+      ? sanitizeExcelSheetName(request.output_sheet_name)
+      : missedBooksOnly
+        ? `${missedBooksSheetBase}${missedBooksSheetSuffix}`
+        : sanitizeExcelSheetName(
+            `Recon ${request.reconciliation_type.replace(/_/g, ' ')} ${request.period ?? ''}`,
+          );
+
     const missedBooksParams = {
       sheetName,
       portalLabel,
@@ -543,6 +574,7 @@ export class GstReconService {
       runAt,
       relativeTo: booksSheet.sheet_name,
       resultRows: matchResult.data.resultRows,
+      isSales,
     };
     const actions = !missedBooksOnly
       ? mapToSheetActions({
