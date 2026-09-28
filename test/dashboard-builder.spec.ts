@@ -132,6 +132,26 @@ describe('ledger dashboard — built by code (TASKS.md #327)', () => {
     expect(chart.startCell).toBe('G7');
   });
 
+  // TASKS.md #353 — the Sept 28 dashboard showed #### in its KPI and date cells.
+  it('widens every column it uses, and sizes the KPI money columns for their 14pt totals', () => {
+    const dash = pipeline().subtasks.find((s) => s.deterministicActions?.length)!;
+    const widths = dash.deterministicActions!.filter((a) => a.type === 'SET_COLUMN_WIDTH') as unknown as Array<{
+      col: number;
+      colCount: number;
+      width: number;
+    }>;
+    const byColumn = new Map<number, number>();
+    for (const w of widths) for (let i = 0; i < w.colCount; i++) byColumn.set(w.col + i, w.width);
+
+    // A..N: Month plus the 13 month-sheet columns of All Bookings — none left at Excel's default.
+    expect([...byColumn.keys()].sort((a, b) => a - b)).toEqual(Array.from({ length: 14 }, (_, i) => i));
+    // B..D hold Total Amount / Paid / Pending — the 14pt bold KPI band.
+    for (const col of [1, 2, 3]) expect(byColumn.get(col)).toBeGreaterThanOrEqual(120);
+    // Every column is wide enough for a dd-mm-yyyy date or an 11pt amount.
+    for (const width of byColumn.values()) expect(width).toBeGreaterThanOrEqual(95);
+    expect(widths.every((w) => w.colCount >= 1)).toBe(true);
+  });
+
   it('every action survives normalization — the client receives exactly what was built', () => {
     const dash = pipeline().subtasks.find((s) => s.deterministicActions?.length)!;
     const out = normalizeExecutorOutput({ subtaskId: dash.id, actions: dash.deterministicActions! }, dash);

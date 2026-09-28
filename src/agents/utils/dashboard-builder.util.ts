@@ -58,6 +58,10 @@ const BOOKINGS_FORMAT_ROWS = 1000;
 const DATE_HEADER = /date|check ?in|check ?out/i;
 const MONEY_HEADER = /amount|rate|total|balance|received|price|paid|due/i;
 const HEADER_FILL = '#1F4E78';
+/** Column widths, in points (what the client writes to `columnWidth`). */
+const DEFAULT_WIDTH_PT = 95;
+/** Fits a 14pt bold "₹ 99,99,999.00" — the KPI band's money cells. */
+const KPI_MONEY_WIDTH_PT = 125;
 const TOTAL_FILL = '#F2F2F2';
 const MUTED = '#6B7280';
 
@@ -232,6 +236,21 @@ export function buildDashboardActions(shape: DashboardShape): Action[] {
     return numberFormat ? [fmt(bookingsHeaderRow + 1, i + 1, BOOKINGS_FORMAT_ROWS, 1, { numberFormat })] : [];
   });
   const widestCol = Math.max(lastCol, bookingsHeaders.length);
+  // The summary columns carry the KPI band, which is 14pt bold and grows with
+  // the year's bookings. At the flat 95pt every other column gets, a total in
+  // lakhs ("₹ 12,34,567.00") shows #### — sized here for that, not for the
+  // empty template the build writes. TASKS.md #353.
+  const summaryWidths: Action[] = columns.map(
+    (c, i) =>
+      ({
+        type: 'SET_COLUMN_WIDTH',
+        sheetName: sheet,
+        col: i + 1,
+        colCount: 1,
+        columns: [letter(i + 2)],
+        width: c.numberFormat === CURRENCY_FORMAT ? KPI_MONEY_WIDTH_PT : DEFAULT_WIDTH_PT,
+      }) as Action,
+  );
 
   return [
     // `position` is numeric for ADD_SHEET on the wire; the payload union types it for columns.
@@ -249,14 +268,19 @@ export function buildDashboardActions(shape: DashboardShape): Action[] {
     fmt(bookingsHeaderRow, 0, 1, bookingsHeaders.length, { bold: true, fontColor: '#FFFFFF', fillColor: HEADER_FILL }),
     ...bookingsFormats,
     { type: 'SET_COLUMN_WIDTH', sheetName: sheet, col: 0, colCount: 1, columns: ['A'], width: 110 } as Action,
-    {
-      type: 'SET_COLUMN_WIDTH',
-      sheetName: sheet,
-      col: 1,
-      colCount: widestCol - 1,
-      columns: Array.from({ length: widestCol - 1 }, (_, i) => letter(i + 2)),
-      width: 95,
-    } as Action,
+    ...summaryWidths,
+    ...(widestCol > lastCol
+      ? [
+          {
+            type: 'SET_COLUMN_WIDTH',
+            sheetName: sheet,
+            col: lastCol,
+            colCount: widestCol - lastCol,
+            columns: Array.from({ length: widestCol - lastCol }, (_, i) => letter(lastCol + 1 + i)),
+            width: DEFAULT_WIDTH_PT,
+          } as Action,
+        ]
+      : []),
     { type: 'HIDE_GRIDLINES', sheetName: sheet } as Action,
     {
       type: 'CREATE_CHART',
