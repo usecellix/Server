@@ -1,7 +1,10 @@
 import { BadRequestException, Injectable, Logger, ServiceUnavailableException } from '@nestjs/common';
+import { InjectModel } from '@nestjs/mongoose';
+import { Model } from 'mongoose';
 import Razorpay from 'razorpay';
 import { AppConfigService } from '../config/app-config.service';
 import { CreditGateService } from './credit-gate.service';
+import { TopupOrder, TopupOrderDocument } from './schemas/topup-order.schema';
 import { TOPUP_PACKS, TopupPackId } from './topup-packs';
 
 export type CheckoutPlanTier = 'solo' | 'firm' | 'beta';
@@ -29,6 +32,8 @@ export class RazorpayCheckoutService {
   constructor(
     private readonly config: AppConfigService,
     private readonly creditGate: CreditGateService,
+    @InjectModel(TopupOrder.name)
+    private readonly topupOrderModel: Model<TopupOrderDocument>,
   ) {}
 
   private get razorpay(): Razorpay {
@@ -169,7 +174,9 @@ export class RazorpayCheckoutService {
         description: `${pack.credits} Cellix credits`,
         customer: email ? { email } : {},
         notify: { email: Boolean(email), sms: false },
-        notes: { billingEntityId, packId, credits: pack.credits },
+        notes: { billingEntityId, packId, credits: String(pack.credits) },
+        // Bounds how long reconcileTopups has to keep asking about the link.
+        expire_by: Math.floor(Date.now() / 1000) + 24 * 60 * 60,
         callback_url: this.config.checkoutSuccessUrl,
         callback_method: 'get',
       });
@@ -178,6 +185,16 @@ export class RazorpayCheckoutService {
         this.logger.error(`Razorpay payment link created but no short_url: ${JSON.stringify(paymentLink)}`);
         throw new ServiceUnavailableException('RAZORPAY_PAYMENT_LINK_NO_URL');
       }
+      // Recorded so a paid link can be granted without the webhook — see
+      // RazorpayWebhookService.reconcileTopups.
+      await this.topupOrderModel.create({
+        paymentLinkId: paymentLink.id,
+        billingEntityId,
+        packId,
+        credits: pack.credits,
+        priceInr: pack.priceInr,
+        status: 'created',
+      });
       this.logger.log(`Payment link created successfully: url=${paymentLink.short_url}`);
       return { url: paymentLink.short_url };
     } catch (error) {

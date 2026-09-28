@@ -6,6 +6,7 @@ import { CreditAccountQueryService } from './credit-account-query.service';
 import { CreditGateService } from './credit-gate.service';
 import { RazorpayCheckoutService, CheckoutPlanTier } from './razorpay-checkout.service';
 import { RazorpayWebhookService } from './razorpay-webhook.service';
+import { GuestAccountLinkService } from './guest-account-link.service';
 import { ListLedgerQueryDto } from './dto/list-ledger-query.dto';
 import { CreateCheckoutSessionDto } from './dto/create-checkout-session.dto';
 import { CreateGuestCheckoutSessionDto } from './dto/create-guest-checkout-session.dto';
@@ -28,10 +29,14 @@ import { CreateTopupSessionDto } from './dto/create-topup-session.dto';
 @UseGuards(AuthGuard)
 @Controller('billing')
 export class BillingController {
+  private readonly logger = new Logger(BillingController.name);
+
   constructor(
     private readonly creditAccountQueryService: CreditAccountQueryService,
     private readonly creditGate: CreditGateService,
     private readonly razorpayCheckout: RazorpayCheckoutService,
+    private readonly razorpayWebhook: RazorpayWebhookService,
+    private readonly guestAccountLink: GuestAccountLinkService,
   ) {}
 
   @Get('account')
@@ -52,6 +57,20 @@ export class BillingController {
     // `$setOnInsert` makes a race between two simultaneous first-reads a
     // no-op on the loser, not a duplicate account.
     await this.creditGate.ensureAccount(session.user.id);
+    // Both best-effort: neither may stop the balance from rendering.
+    // 1) A plan bought through guest checkout before signing in sits on an
+    //    email-keyed account; move it onto this user.
+    // 2) Land any paid top-up whose webhook never arrived.
+    try {
+      await this.guestAccountLink.claimGuestAccount(session.user.id, session.user.email);
+    } catch (error) {
+      this.logger.warn(`Guest account link failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    try {
+      await this.razorpayWebhook.reconcileTopups(session.user.id);
+    } catch (error) {
+      this.logger.warn(`Top-up reconcile failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
     const summary = await this.creditAccountQueryService.getAccountSummary(session.user.id);
     return summary;
   }

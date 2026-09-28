@@ -70,7 +70,11 @@ function buildService(initial: Balances | null) {
     return Promise.resolve();
   });
 
+  // Enforces credit_ledger's unique paymentEventId index like Mongo would.
   const create = jest.fn((doc: Record<string, unknown>) => {
+    if (doc.paymentEventId && insertedRows.some((row) => row.paymentEventId === doc.paymentEventId)) {
+      return Promise.reject(Object.assign(new Error('E11000 duplicate key'), { code: 11000 }));
+    }
     insertedRows.push(doc);
     return Promise.resolve(doc);
   });
@@ -220,5 +224,26 @@ describe('CreditLedgerService grants', () => {
     expect(insertedRows).toEqual([
       expect.objectContaining({ entryType: 'purchase', amount: 100, bucket: 'purchasedCredits' }),
     ]);
+  });
+
+  it('addPurchasedCredits grants once for a repeated paymentEventId (webhook + reconcile, or a redelivery)', async () => {
+    const { service, grants, getStored } = buildService({ planCredits: 0, purchasedCredits: 0, oneTimeCredits: 0 });
+
+    await expect(service.addPurchasedCredits('user-1', 300, 'topup:plink_1')).resolves.toBe(true);
+    await expect(service.addPurchasedCredits('user-1', 300, 'topup:plink_1')).resolves.toBe(false);
+
+    expect(grants).toHaveLength(1);
+    expect(getStored()?.purchasedCredits).toBe(300);
+  });
+
+  it('grantPlanCredits does not reset a partly-spent balance when the same cycle is granted again', async () => {
+    const { service, getStored, setLastCost } = buildService({ planCredits: 0, purchasedCredits: 0, oneTimeCredits: 0 });
+
+    await service.grantPlanCredits('user-1', 3000, 'plan:sub_1:1700000000');
+    setLastCost(8);
+    await service.debit('user-1', 'FORMULA_GENERATE_OR_FIX');
+    await expect(service.grantPlanCredits('user-1', 3000, 'plan:sub_1:1700000000')).resolves.toBe(false);
+
+    expect(getStored()?.planCredits).toBe(2992);
   });
 });

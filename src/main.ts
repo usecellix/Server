@@ -163,9 +163,13 @@ async function bootstrap(): Promise<void> {
   // /login and /register, which the add-in's Office dialog opens directly
   // for the email/password flow, so both need to pass CORS with credentials.
   const allowedOrigins = [config.clientOrigin, ...config.marketingSiteOrigins];
+  // `methods` must be explicit: @fastify/cors 11 defaults to GET,HEAD,POST,
+  // so the preflight for PATCH (rename) and DELETE (delete chat) was refused
+  // and neither request ever reached the server.
   app.enableCors({
     origin: allowedOrigins,
     credentials: true,
+    methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   });
 
   await app.listen(port, '0.0.0.0');

@@ -239,7 +239,16 @@ export class CreditLedgerService {
    * `expire` row so the ledger shows where they went, rather than a `grant`
    * row silently overstating what the renewal actually added.
    */
-  async grantPlanCredits(billingEntityId: string, amount: number, paymentEventId?: string): Promise<void> {
+  async grantPlanCredits(billingEntityId: string, amount: number, paymentEventId?: string): Promise<boolean> {
+    // The grant row goes in FIRST: its unique paymentEventId is the claim, so a
+    // duplicate or retried webhook for the same billing cycle stops here
+    // instead of resetting planCredits back to full after the user spent some.
+    if (!(await this.claimLedgerRow({
+      billingEntityId, entryType: 'grant', amount, bucket: 'planCredits', paymentEventId, createdAt: new Date(),
+    }))) {
+      return false;
+    }
+
     const before = await this.creditAccountModel
       .findOneAndUpdate(
         { billingEntityId },
@@ -249,13 +258,10 @@ export class CreditLedgerService {
       .lean();
     const forfeited = Math.max(0, before?.planCredits ?? 0);
 
-    const rows: Record<string, unknown>[] = [
-      // paymentEventId is this row's idempotency key (unique index) — the
-      // real Razorpay event id belongs on exactly one row, not both.
-      { billingEntityId, entryType: 'grant', amount, bucket: 'planCredits', paymentEventId, createdAt: new Date() },
-    ];
+    // paymentEventId is the grant row's idempotency key (unique index) — the
+    // real Razorpay event id belongs on exactly one row, never the expire row.
     if (forfeited > 0) {
-      rows.push({
+      await this.creditLedgerModel.create({
         billingEntityId,
         entryType: 'expire',
         amount: -forfeited,
@@ -263,23 +269,37 @@ export class CreditLedgerService {
         createdAt: new Date(),
       });
     }
-    await this.creditLedgerModel.insertMany(rows);
+    return true;
   }
 
-  /** Top-up pack purchase — Razorpay `payment_link.paid` call-in. */
-  async addPurchasedCredits(billingEntityId: string, amount: number, paymentEventId?: string): Promise<void> {
+  /**
+   * Top-up pack purchase — reached from both the `payment_link.paid` webhook
+   * and RazorpayWebhookService.reconcileTopups. Claims the ledger row before
+   * incrementing, so whichever path gets there second is a no-op. Returns
+   * whether this call granted.
+   */
+  async addPurchasedCredits(billingEntityId: string, amount: number, paymentEventId?: string): Promise<boolean> {
+    if (!(await this.claimLedgerRow({
+      billingEntityId, entryType: 'purchase', amount, bucket: 'purchasedCredits', paymentEventId, createdAt: new Date(),
+    }))) {
+      return false;
+    }
     await this.creditAccountModel.updateOne(
       { billingEntityId },
       { $inc: { purchasedCredits: amount } },
     );
-    await this.creditLedgerModel.create({
-      billingEntityId,
-      entryType: 'purchase',
-      amount,
-      bucket: 'purchasedCredits',
-      paymentEventId,
-      createdAt: new Date(),
-    });
+    return true;
+  }
+
+  /** Inserts a grant/purchase row; false when its paymentEventId was already recorded (duplicate key). */
+  private async claimLedgerRow(row: Record<string, unknown>): Promise<boolean> {
+    try {
+      await this.creditLedgerModel.create(row);
+      return true;
+    } catch (error) {
+      if ((error as { code?: number })?.code === 11000) return false;
+      throw error;
+    }
   }
 
   /**
