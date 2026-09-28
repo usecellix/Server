@@ -7,6 +7,10 @@ import { Subscription, SubscriptionSchema } from '../credit/schemas/subscription
 import { AdminController } from './admin.controller';
 import { AdminGuard } from './admin.guard';
 import { AdminUsersService } from './admin-users.service';
+import { AdminPromptsService } from './admin-prompts.service';
+import { AdminOverviewService } from './admin-overview.service';
+import { AdminBillingService } from './admin-billing.service';
+import { AdminModelsService } from './admin-models.service';
 
 @Module({
   imports: [
@@ -18,6 +22,6 @@ import { AdminUsersService } from './admin-users.service';
     ]),
   ],
   controllers: [AdminController],
-  providers: [AdminGuard, AdminUsersService],
+  providers: [AdminGuard, AdminUsersService, AdminPromptsService, AdminOverviewService, AdminBillingService, AdminModelsService],
 })
 export class AdminModule {}
