@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { AdminModule } from './admin/admin.module';
 import { AuditModule } from './audit/audit.module';
 import { AuthModule } from './auth/auth.module';
 import { AppConfigModule } from './config/app-config.module';
@@ -28,6 +29,7 @@ import { WebChatModule } from './web-chat/web-chat.module';
     DomainToolsModule,
     GstReconModule,
     WebChatModule,
+    AdminModule,
   ],
 })
 export class AppModule {}

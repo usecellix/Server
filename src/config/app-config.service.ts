@@ -130,6 +130,16 @@ export class AppConfigService {
     return value?.trim() ? value.trim() : undefined;
   }
 
+  /**
+   * Shared secret the Dashboard's Next.js server presents on `/admin/*`
+   * requests (AdminGuard, ADMIN_TOKEN_HEADER). Unset means the admin API
+   * refuses everything, not that it's open — see AdminGuard.
+   */
+  get adminApiToken(): string | undefined {
+    const value = this.configService.get<string>('CELLIX_ADMIN_API_TOKEN', '');
+    return value?.trim() ? value.trim() : undefined;
+  }
+
   get openRouterHttpReferer(): string {
     return this.configService.get<string>('OPENROUTER_HTTP_REFERER', 'https://cellix.local');
   }
