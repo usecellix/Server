@@ -1,5 +1,6 @@
 import mongoose from 'mongoose';
 import { AdminUsersService } from '../src/admin/admin-users.service';
+import { AdminPromptsService } from '../src/admin/admin-prompts.service';
 import { CreditAccountSchema } from '../src/credit/schemas/credit-account.schema';
 import { CreditLedgerEntrySchema } from '../src/credit/schemas/credit-ledger.schema';
 import { SubscriptionSchema } from '../src/credit/schemas/subscription.schema';
@@ -32,7 +33,8 @@ describe('AdminUsersService (live Mongo)', () => {
     const creditAccountModel = connection.model('CreditAccount', CreditAccountSchema);
     const creditLedgerModel = connection.model('CreditLedgerEntry', CreditLedgerEntrySchema);
     const subscriptionModel = connection.model('Subscription', SubscriptionSchema);
-    service = new AdminUsersService(connection, creditAccountModel as never, creditLedgerModel as never, subscriptionModel as never);
+    const adminPrompts = new AdminPromptsService(connection, { creditsPerUsd: 600 } as never);
+    service = new AdminUsersService(connection, creditAccountModel as never, creditLedgerModel as never, subscriptionModel as never, adminPrompts);
 
     const userDoc = await connection.db!.collection('user').insertOne({
       name: 'Test User',
@@ -54,11 +56,14 @@ describe('AdminUsersService (live Mongo)', () => {
       { billingEntityId: userId, entryType: 'debit', amount: -20, bucket: 'planCredits', createdAt: new Date() },
     ]);
     await connection.db!.collection('ai_prompts').insertOne({
+      promptId: 'admin-users-spec-prompt-1',
       userId,
+      prompt: 'test prompt',
       costUsd: 0.05,
       llmCalls: 3,
       totalTokens: 500,
       createdAt: new Date(),
+      lastOutcome: 'ok',
     });
   }, 20000);
 
@@ -99,6 +104,12 @@ describe('AdminUsersService (live Mongo)', () => {
       expect.objectContaining({ planTier: 'solo', total: 1000 }),
     );
     expect((detail as any).usage.allTime).toEqual(expect.objectContaining({ prompts: 1, creditsUsed: 50 }));
+    // Regression: getUser used to omit recentPrompts entirely, which crashed
+    // the Dashboard's user detail page (PromptsTable reading .length on
+    // undefined) — caught live, not by this test, the first time it ran.
+    expect((detail as any).recentPrompts).toEqual([
+      expect.objectContaining({ promptId: 'admin-users-spec-prompt-1' }),
+    ]);
   }, 20000);
 
   it('getUser returns null for a well-formed id that does not exist', async () => {

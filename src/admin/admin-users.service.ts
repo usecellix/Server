@@ -5,8 +5,11 @@ import { ObjectId } from 'mongodb';
 import { CreditAccount, CreditAccountDocument } from '../credit/schemas/credit-account.schema';
 import { CreditLedgerEntry, CreditLedgerEntryDocument } from '../credit/schemas/credit-ledger.schema';
 import { Subscription, SubscriptionDocument } from '../credit/schemas/subscription.schema';
+import { AdminPromptsService } from './admin-prompts.service';
 
 const USERS_PAGE_SIZE = 25;
+/** Matches the original Dashboard/src/lib/data/users.ts getUser's `.limit(15)` on ai_prompts. */
+const RECENT_PROMPTS_LIMIT = 15;
 
 export type UserSort = 'recent' | 'spend' | 'prompts' | 'credits' | 'creditsUsed' | 'seen';
 const SORT_FIELD: Record<UserSort, string> = {
@@ -64,6 +67,7 @@ export class AdminUsersService {
     @InjectModel(CreditAccount.name) private readonly creditAccountModel: Model<CreditAccountDocument>,
     @InjectModel(CreditLedgerEntry.name) private readonly creditLedgerModel: Model<CreditLedgerEntryDocument>,
     @InjectModel(Subscription.name) private readonly subscriptionModel: Model<SubscriptionDocument>,
+    private readonly adminPrompts: AdminPromptsService,
   ) {}
 
   async listUsers(filters: AdminUserListFilters): Promise<{ rows: AdminUserRow[]; total: number }> {
@@ -228,6 +232,7 @@ export class AdminUsersService {
         conversationId: doc2.conversationId ?? null,
         createdAt: doc2.createdAt ? new Date(doc2.createdAt).toISOString() : null,
       })),
+      recentPrompts: await this.adminPrompts.listRecentByUser(id, RECENT_PROMPTS_LIMIT),
       usage: { allTime: { ...(await this.summarize(id)), creditsUsed: usedAll }, last30: { ...(await this.summarize(id, since30)), creditsUsed: used30 } },
     };
   }

@@ -30,6 +30,23 @@ export class AdminPromptsService {
     private readonly config: AppConfigService,
   ) {}
 
+  /**
+   * The `recentPrompts` list on a user's detail page — the original
+   * `Dashboard/src/lib/data/users.ts` `getUser` queried `ai_prompts` for this
+   * directly (`.limit(15)`, no sums/credit-ledger $lookup) rather than
+   * reusing `listPrompts`'s heavier page+sums query. Kept as its own method
+   * here for the same reason: this doesn't need a total or a range sum.
+   */
+  async listRecentByUser(userId: string, limit: number) {
+    const db = this.connection.db;
+    if (!db) return [];
+    const docs = await db.collection('ai_prompts').find({ userId }).sort({ createdAt: -1 }).limit(limit).toArray();
+    if (docs.length === 0) return [];
+    const people = await usersById(this.connection, [userId]);
+    const charged = await this.creditsChargedByPrompt(docs.map((d) => d.promptId as string));
+    return docs.map((d) => this.toPromptRow(d, people, charged.get(d.promptId as string) ?? 0));
+  }
+
   async listPrompts(filters: {
     since?: Date;
     userId?: string;
