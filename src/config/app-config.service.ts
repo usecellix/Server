@@ -177,30 +177,10 @@ export class AppConfigService {
   }
 
   /**
-   * Comma-separated — Vite's dev port isn't stable (auto-increments past
-   * 5173 whenever it's already taken by another running instance), so local
-   * dev needs more than one landing-page origin allowed at once rather than
-   * chasing whichever port happened to be free this run.
-   */
-  get marketingSiteOrigins(): string[] {
-    const value = this.configService.get<string>('MARKETING_SITE_ORIGIN', '');
-    return value
-      .split(',')
-      .map((origin) => origin.trim())
-      .filter((origin) => origin.length > 0);
-  }
-
-  /** Every origin main.ts's enableCors() should allow — add-in + (if set) the marketing site. */
-  get allowedCorsOrigins(): string[] {
-    return [this.clientOrigin, ...this.marketingSiteOrigins];
-  }
-
-  /**
-   * CELLIX-landing-page dev/prod origin(s) — comma-separated. Hosts /login
-   * and /register, which the Excel add-in's Office dialog also opens
-   * directly for the email/password flow (client/src/auth/useAuth.ts
-   * openEmailLoginDialog), so this origin needs the same CORS + Better Auth
-   * trustedOrigins access as the Excel add-in's own origin (clientOrigin).
+   * CELLIX Landing-page origin(s) — comma-separated. Hosts /login and
+   * /register for the Excel email/password flow. Vite's dev port isn't
+   * stable (auto-increments past 5173), so local .env may list several.
+   * Trailing slashes are stripped for CORS / trustedOrigins matching.
    */
   get marketingSiteOrigins(): string[] {
     return this.configService
@@ -208,6 +188,11 @@ export class AppConfigService {
       .split(',')
       .map((origin) => origin.trim().replace(/\/+$/, ''))
       .filter(Boolean);
+  }
+
+  /** Every origin main.ts's enableCors() should allow — add-in + marketing site. */
+  get allowedCorsOrigins(): string[] {
+    return [this.clientOrigin, ...this.marketingSiteOrigins];
   }
 
   get googleClientId(): string | undefined {
