@@ -10,6 +10,7 @@ import { AppModule } from './app.module';
 import { AppConfigService } from './config/app-config.service';
 import { TRACE_ID_HEADER } from './common/constants/trace-id.constant';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
+import { applyRouteBodyLimits } from './common/http/route-body-limits';
 import { RequestResponseCaptureInterceptor } from './common/interceptors/request-response-capture.interceptor';
 import { ResponseEnvelopeInterceptor } from './common/interceptors/response-envelope.interceptor';
 import { RequestFileLoggerService } from './common/logging/request-file-logger.service';
@@ -121,6 +122,9 @@ async function bootstrap(): Promise<void> {
     max: 300,
     timeWindow: '1 minute',
   });
+
+  // Before app.listen registers the routes: an onRoute hook only sees routes added after it.
+  applyRouteBodyLimits(fastify);
 
   fastify.addHook('onResponse', (request, reply, done) => {
     const body = (request as { body?: { message?: unknown } }).body;

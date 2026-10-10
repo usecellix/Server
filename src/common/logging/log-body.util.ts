@@ -29,6 +29,21 @@ function summarizeSheetData(sheetData: unknown): JsonRecord | string {
   };
 }
 
+/**
+ * A decoded attachment (POST /ingest/bank-statement) is the user's own bank
+ * transactions. Only its size is logged, never a cell and never the file name.
+ */
+function summarizeRawTable(rawTable: unknown): JsonRecord | string {
+  if (!isRecord(rawTable)) {
+    return '[invalid rawTable]';
+  }
+  return {
+    source: typeof rawTable.source === 'string' ? rawTable.source : undefined,
+    layout: typeof rawTable.layout === 'string' ? rawTable.layout : undefined,
+    rows: Array.isArray(rawTable.rows) ? rawTable.rows.length : 0,
+  };
+}
+
 export function sanitizeLogBody(body: unknown): unknown {
   if (body === undefined || body === null) {
     return undefined;
@@ -45,6 +60,10 @@ export function sanitizeLogBody(body: unknown): unknown {
 
   if ('sheetData' in sanitized) {
     sanitized.sheetData = summarizeSheetData(sanitized.sheetData);
+  }
+
+  if ('rawTable' in sanitized) {
+    sanitized.rawTable = summarizeRawTable(sanitized.rawTable);
   }
 
   if (isRecord(sanitized.context) && Array.isArray(sanitized.context.previousMessages)) {

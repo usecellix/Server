@@ -13,6 +13,7 @@ import { classifyComplexity } from '../utils/complexity-classifier.util';
 import { resolveLocalFindRoute } from '../utils/find-query-parser.util';
 import { hasWriteIntent, isWorkbookScaffoldIntent } from '../utils/write-intent-guard.util';
 import { minReasoningEffort } from '../utils/reasoning-budget.util';
+import { looksLikeTableQuestion } from '../table-query/table-question';
 import { OpenRouterService } from './openrouter.service';
 
 // Regex fast lane — these NEVER go to the LLM router.
@@ -216,6 +217,21 @@ export class LlmRouterService {
           route: 'data',
           confidence: 0.85,
           reasoning: 'Matched data query keywords — SmartDataQuery (MEDIUM tier)',
+        },
+        input.message,
+      );
+    }
+
+    // A question about the rows, typed in Action mode ("which are the 10
+    // largest debits?"). It asks for no change, so it goes to the data lane,
+    // where the answer is computed in code, and not to the model router, which
+    // can hand it to the write pipeline. TASKS.md #383.
+    if (input.mode === 'action' && isReadOnlyQuestion(input.message) && looksLikeTableQuestion(input.message)) {
+      return this.applyWriteIntentGuard(
+        {
+          route: 'data',
+          confidence: 0.85,
+          reasoning: 'Read-only question about table rows — answered by query plan',
         },
         input.message,
       );

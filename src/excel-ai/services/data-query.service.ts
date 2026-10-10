@@ -22,6 +22,8 @@ export interface FindMatch {
   /** 1-based Excel row number. */
   rowNum: number;
   rawValue: string;
+  /** When set, the pointer selects from `col` to this 0-based column: a whole row, not one cell. */
+  endCol?: number;
 }
 
 export interface DataQueryResult {

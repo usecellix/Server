@@ -460,6 +460,78 @@ describe('CheckpointService (TASKS.md #26-30)', () => {
     expect((checkpointAfter as unknown as CheckpointDocument | null)?.status).toBe('active');
   });
 
+  // TASKS.md #400 — formatting is no longer flagged irreversible, so a restore has to carry
+  // its saved formatting too, or it would report success and leave the formatting in place.
+  describe('#400 — a formatting change in the chain', () => {
+    const band = {
+      type: 'FORMAT_RANGE',
+      sheetName: 'Sheet1',
+      row: 0,
+      col: 0,
+      rowCount: 1,
+      colCount: 1,
+      format: { bold: true },
+    } as unknown as Action;
+    const before = {
+      kind: 'format',
+      sheetName: 'Sheet1',
+      restorable: true,
+      row: 0,
+      col: 0,
+      rowCount: 1,
+      colCount: 1,
+      palette: [{ bold: false }],
+      grid: [[0]],
+    };
+
+    async function chainWithFormatting(snapshots?: unknown) {
+      const changeSetModel = createChangeSetModel();
+      const checkpointModel = createCheckpointModel();
+      const conversationModel = { findOne: jest.fn(() => ({ lean: () => ({ exec: () => Promise.resolve(null) }) })) };
+      const trace = workflowTraceStub();
+      const checkpointService = new CheckpointService(
+        checkpointModel as never,
+        changeSetModel as unknown as Model<ChangeSetDocument>,
+        trace,
+      );
+      const changeSetService = new ChangeSetService(
+        changeSetModel as unknown as Model<ChangeSetDocument>,
+        conversationModel as never,
+        trace,
+        checkpointService,
+      );
+      const checkpoint = await checkpointService.createManual({ workbookId: 'wb-1', conversationId: 'conv-1' });
+      const cs = await changeSetService.createPreview({
+        conversationId: 'conv-1',
+        traceId: 'trace-1',
+        prompt: 'bold the header',
+        context: buildContext([['orig0']]),
+        actions: [band],
+        workbookId: 'wb-1',
+      });
+      await changeSetService.markApplied(cs.changeSetId, undefined, undefined, undefined, snapshots);
+      return { checkpointService, changeSetService, checkpoint, cs };
+    }
+
+    it('restores the saved formatting along with everything else', async () => {
+      const { checkpointService, checkpoint, cs } = await chainWithFormatting([before]);
+
+      const result = await checkpointService.restore(checkpoint.checkpointId);
+
+      expect(result.revertedChangeSetIds).toEqual([cs.changeSetId]);
+      expect(result.inverseActions).toEqual([
+        { type: 'FORMAT_RANGE', sheetName: 'Sheet1', row: 0, col: 0, rowCount: 1, colCount: 1, format: { bold: false } },
+      ]);
+    });
+
+    it('fails closed, with nothing written, when that formatting was never saved', async () => {
+      const { checkpointService, changeSetService, checkpoint, cs } = await chainWithFormatting(undefined);
+
+      await expect(checkpointService.restore(checkpoint.checkpointId)).rejects.toThrow(RestoreVerificationError);
+      expect((await changeSetService.getById(cs.changeSetId))?.status).toBe('applied');
+    });
+  });
+
   it('#29 — restoring a checkpoint with nothing applied since the anchor is a safe no-op', async () => {
     const changeSetModel = createChangeSetModel();
     const checkpointModel = createCheckpointModel();
