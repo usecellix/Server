@@ -110,5 +110,36 @@ describe('reversibility-catalog (TASKS.md #18)', () => {
     it('still accepts plain type strings for backward compatibility', () => {
       expect(computeIrreversibleActionTypes(['CONDITIONAL_FORMAT'])).toEqual([]);
     });
+
+    // TASKS.md #400 — formatting is restored from a snapshot the add-in takes before applying.
+    describe('formatting (TASKS.md #400)', () => {
+      const band = { type: 'FORMAT_RANGE', row: 2, col: 0, rowCount: 1, colCount: 4, format: { bold: true } };
+
+      it('treats an ordinary FORMAT_RANGE and an AUTOFIT_COLUMNS as reversible', () => {
+        expect(computeIrreversibleActionTypes([band, { type: 'AUTOFIT_COLUMNS' }] as never)).toEqual([]);
+      });
+
+      it('flags FORMAT_RANGE that sets borders, which cannot be put back edge by edge', () => {
+        expect(computeIrreversibleActionTypes([{ ...band, format: { borders: 'all' } }] as never)).toEqual(['FORMAT_RANGE']);
+      });
+
+      it('flags a FORMAT_RANGE too large to snapshot', () => {
+        expect(computeIrreversibleActionTypes([{ ...band, rowCount: 1_000_000, colCount: 16 }] as never)).toEqual(['FORMAT_RANGE']);
+      });
+
+      it('flags FORMAT_RANGE when the formatting of the whole change set is more than a snapshot may hold', () => {
+        const big = { ...band, rowCount: 20_000, colCount: 1 };
+        expect(computeIrreversibleActionTypes([big, big, big] as never)).toEqual([]);
+        expect(computeIrreversibleActionTypes([big, big, big, big] as never)).toEqual(['FORMAT_RANGE']);
+      });
+
+      it('leaves the other cosmetic actions irreversible', () => {
+        expect(computeIrreversibleActionTypes(['SET_COLUMN_WIDTH', 'FREEZE_PANES', 'AUTO_FILTER'])).toEqual([
+          'SET_COLUMN_WIDTH',
+          'FREEZE_PANES',
+          'AUTO_FILTER',
+        ]);
+      });
+    });
   });
 });

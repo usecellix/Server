@@ -156,6 +156,14 @@ export class ChangeSet {
    */
   @Prop({ type: Boolean, default: false })
   hasFrontendReportedChanges?: boolean;
+
+  /**
+   * TASKS.md #400 - the formatting (and column widths) the add-in read off Excel just before
+   * applying each FORMAT_RANGE / AUTOFIT_COLUMNS, reported with the apply call. Revert turns
+   * these back into actions; see format-snapshot.ts.
+   */
+  @Prop({ type: [SchemaTypes.Mixed], default: [] })
+  formatSnapshots?: Record<string, unknown>[];
 }
 
 export const ChangeSetSchema = SchemaFactory.createForClass(ChangeSet);

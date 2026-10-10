@@ -61,7 +61,7 @@ import { ConversationEngineService, EngineResponse, LlmRequestError } from './co
 import { DataQueryService } from './data-query.service';
 import { FindExportService, FindExportSheetSlice } from './find-export.service';
 import { ContextCacheService } from '../../common/cache/context-cache.service';
-import { LlmRouterService } from './llm-router.service';
+import { isReadOnlyQuestion, LlmRouterService } from './llm-router.service';
 import { LlmCallTelemetry, OpenRouterService } from './openrouter.service';
 import { RouterDecision, RouterInput } from '../types/router.types';
 import { buildTieredToon } from '../utils/tiered-toon.util';
@@ -100,7 +100,8 @@ import {
 import { annotateExplicitOverwriteConfirmation } from '../utils/overwrite-confirmation.util';
 import { buildEnrichedPromptContext } from '../../formula/enrich-context.util';
 import { FormulaAnalyzer } from '../../formula/formula.analyzer';
-import { SmartDataQueryService } from './smart-data-query.service';
+import { NO_ANSWER_MESSAGE, SmartDataQueryService } from './smart-data-query.service';
+import { looksLikeTableQuestion } from '../table-query/table-question';
 import { SheetAnalyzerService } from './sheet-analyzer.service';
 import { Tier0DirectService, Tier0Result } from './tier0-direct.service';
 import { Tier1SingleActionService } from './tier1-single-action.service';
@@ -803,6 +804,37 @@ export class ConversationService {
             return;
           }
 
+          // A question about the rows (totals, largest, counts, a period) is
+          // computed in code over the whole sheet. Left to the model, it is
+          // answered from the first rows it can see. TASKS.md #380.
+          if (looksLikeTableQuestion(routedRequest.message)) {
+            emit('status', { message: 'Reading your sheet…' });
+            const questionSheet = this.resolveActiveSheetName(routedRequest);
+            const questionData = await this.resolveActiveSheetData(
+              routedRequest,
+              analysis,
+              questionSheet,
+              conversationId,
+              emit,
+            );
+            const computed = await this.smartDataQuery.tryTableAnswer(
+              routedRequest.message,
+              questionData,
+              resolveWorkbookContext(routedRequest, analysis, questionData),
+              questionSheet,
+            );
+            if (computed) {
+              await this.emitLocalDecision(
+                conversationId,
+                { kind: 'answer', answer: computed.answer, matches: computed.matches, autoSelectFirstMatch: false },
+                emit,
+                { traceId, route: 'ask' },
+              );
+              endSseResponse(reply);
+              return;
+            }
+          }
+
           const ambiguityOutcome = await this.checkAmbiguity(routedRequest, analysis, history);
           if (ambiguityOutcome?.clarification) {
             await this.emitClarification(
@@ -1146,12 +1178,14 @@ export class ConversationService {
       emit,
     );
     const workbookContext = resolveWorkbookContext(request, analysis, sheetData);
+    const computedPointers: { matches?: ReturnType<DataQueryService['collectMatches']> } = {};
     const answer = await this.smartDataQuery.handleQuery(
       request.message,
       sheetData,
       workbookContext,
       activeSheetName,
       emit,
+      computedPointers,
     );
 
     const findPointers = this.resolveFindPointers(
@@ -1166,8 +1200,11 @@ export class ConversationService {
       {
         kind: 'answer',
         answer,
-        matches: findPointers.matches,
+        // A computed answer points at the rows it names. It does not move the
+        // user's selection by itself, which a find does.
+        matches: computedPointers.matches?.length ? computedPointers.matches : findPointers.matches,
         selectCell: findPointers.selectCell,
+        autoSelectFirstMatch: !computedPointers.matches?.length,
       },
       emit,
       traceId ? { traceId, route: 'data' } : undefined,
@@ -1374,7 +1411,7 @@ export class ConversationService {
     const selectCell =
       decision.kind === 'answer'
         ? decision.selectCell ??
-          (matches?.[0]
+          (matches?.[0] && decision.autoSelectFirstMatch !== false
             ? {
                 sheetName: matches[0].sheetName,
                 row: matches[0].row,
@@ -3870,12 +3907,21 @@ export class ConversationService {
           return;
         }
 
-        const retryHint =
-          'I understood your request but could not parse the AI response. Please try again — e.g. "Generate 10 rows of sample GST purchase data with headers".';
-        const rawAnswer =
-          fallbackText.length > 20 && !fallbackText.startsWith('{')
-            ? `${fallbackText}\n\n${retryHint}`
-            : retryHint;
+        // A question gets told it could not be answered. Only a request for a
+        // change is told to retry it as one.
+        const isQuestion = readOnly || isReadOnlyQuestion(request.message);
+        const retryHint = isQuestion
+          ? NO_ANSWER_MESSAGE
+          : 'I understood your request but could not turn the reply into changes. Please try again, or split it into smaller steps.';
+        const hasReadableText = fallbackText.length > 20 && !fallbackText.startsWith('{');
+        // For a question, a reply in plain words IS the answer, so nothing is
+        // added to it. For a requested change, plain words mean no change was
+        // produced, and the hint says so.
+        const rawAnswer = hasReadableText
+          ? isQuestion
+            ? fallbackText
+            : `${fallbackText}\n\n${retryHint}`
+          : retryHint;
         const answer = readOnly ? sanitizeAskAnswer(rawAnswer) : rawAnswer;
         const parseFailMetadata = await this.buildAnswerPersistMetadata(
           conversationId,

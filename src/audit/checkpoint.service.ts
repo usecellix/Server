@@ -12,6 +12,12 @@ import {
   structuralOpsToInverseActions,
 } from './diff.engine';
 import { RestoreVerificationError } from './errors/restore-verification.error';
+import { RevertNoOpError } from './errors/revert-noop.error';
+import {
+  assertFormatSnapshotsComplete,
+  FormatSnapshot,
+  formatSnapshotsToInverseActions,
+} from './format-snapshot';
 import { virtualApply } from '../virtual/virtualApply';
 import { Checkpoint, CheckpointDocument } from './schemas/checkpoint.schema';
 import { ChangeSet, ChangeSetDocument } from './schemas/change-set.schema';
@@ -174,7 +180,27 @@ export class CheckpointService {
       const cellInverseActions = beforeStateToInverseActions(beforeState, changes);
       const structuralOps = (doc.structuralOps ?? []) as unknown as StructuralOp[];
       const { pre, post } = structuralOpsToInverseActions(structuralOps);
-      const inverseActions = [...pre, ...cellInverseActions, ...post];
+      // TASKS.md #400 - formatting is no longer flagged irreversible, so a restore that ignored
+      // its snapshots would report success and leave the formatting in place.
+      const formatSnapshots = (doc.formatSnapshots ?? []) as unknown as FormatSnapshot[];
+      try {
+        assertFormatSnapshotsComplete(doc.changeSetId, (doc.actions ?? []) as never, formatSnapshots);
+      } catch (error) {
+        if (error instanceof RevertNoOpError) {
+          throw new RestoreVerificationError(
+            checkpointId,
+            doc.changeSetId,
+            'a formatting change in it has no saved previous format to restore',
+          );
+        }
+        throw error;
+      }
+      const inverseActions = [
+        ...formatSnapshotsToInverseActions(formatSnapshots),
+        ...pre,
+        ...cellInverseActions,
+        ...post,
+      ];
 
       const expectedShadow = shadowFromBeforeState(beforeState);
       const originalActions = doc.actions as unknown as Action[];
