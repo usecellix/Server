@@ -655,6 +655,59 @@ describe('sales mode (mode: "sales") — B2C rows never fall into the B2B diagno
     // Both rows stay separate — no merging of a B2C row with an unrelated portal entry.
     expect(result.data.resultRows.filter((r) => r.status === 'PORTAL_ONLY')).toHaveLength(1);
   });
+
+  // Real repro: "Kairali Furnishings" — a Sales Register row explicitly marked B2B in its
+  // own Supply Type column, but with a blank GSTIN cell (a data-entry gap, not a genuine
+  // B2C sale). The old `isB2c` fell back to `!row.gstin` unconditionally whenever
+  // `supplyCategory !== 'b2c'`, which misrouted this row into the B2C-only diagnosis path —
+  // skipping `blank_counterparty_gstin` and `resolveLikelyBlankGstinMatches` entirely — even
+  // though a portal invoice with the same invoice number, date, and amount genuinely existed.
+  it('a blank-GSTIN row explicitly marked B2B (not B2C) is diagnosed as blank_counterparty_gstin, and still resolves against a matching portal row', () => {
+    const b2bBooksRowBlankGstin = row({
+      gstin: '',
+      supplyCategory: 'b2b',
+      invoiceDate: '2026-04-01',
+      taxableValue: 45000,
+      narration: 'Kairali Furnishings',
+    });
+    const portalCounterpart = row({
+      gstin: '32KAIFL8901I1Z6',
+      invoiceDate: '2026-04-01',
+      taxableValue: 45000,
+      sourceRowRef: { documentType: 'gstr1', documentId: 'gstr1', rowOrLine: 6 },
+    });
+
+    const result = gstMatch({
+      purchaseRegister: [b2bBooksRowBlankGstin],
+      gstr2b: [portalCounterpart],
+      mode: 'sales',
+      settings: { detectRcm: false },
+    });
+
+    const prRow = result.data.resultRows.find((r) => r.registerRow);
+    expect(prRow?.mismatchReason).toBe('blank_gstin_likely_matched');
+    expect(prRow?.mismatchReason).not.toBe('genuinely_missing');
+    // The matched portal row must be absorbed into the suggestion, not double-listed.
+    expect(result.data.resultRows.filter((r) => r.status === 'PORTAL_ONLY')).toHaveLength(0);
+  });
+
+  it('a blank-GSTIN row explicitly marked B2B with no portal counterpart stays blank_counterparty_gstin (not genuinely_missing)', () => {
+    const b2bBooksRowBlankGstin = row({
+      gstin: '',
+      supplyCategory: 'b2b',
+      invoiceDate: '2026-04-01',
+      taxableValue: 45000,
+    });
+
+    const result = gstMatch({
+      purchaseRegister: [b2bBooksRowBlankGstin],
+      gstr2b: [],
+      mode: 'sales',
+      settings: { detectRcm: false },
+    });
+
+    expect(result.data.resultRows[0].mismatchReason).toBe('blank_counterparty_gstin');
+  });
 });
 
 describe('sales mode GSTIN-mismatch explanation wording ("customer"/"GSTR-1", never "vendor"/"GSTR-2B")', () => {

@@ -16,8 +16,8 @@ const CURRENCY_NUMBER_FORMAT = '#,##0.00';
 const DATE_NUMBER_FORMAT = 'dd-mmm-yyyy';
 
 const CURRENCY_HEADER_RE =
-  /taxable value|\bigst\b|\bcgst\b|\bsgst\b|tax amount|itc amount|invoice value/i;
-const DATE_HEADER_RE = /invoice date/i;
+  /taxable value|\bigst\b|\bcgst\b|\bsgst\b|tax amount|itc amount|invoice value|^receipt$|^payment$|^amount$|^balance$/i;
+const DATE_HEADER_RE = /invoice date|^date$|^txn date$|^value date$/i;
 const WIDE_HEADER_RE = /vendor name|explanation|particulars|narration/i;
 const NARROW_HEADER_RE = /^gstin|gstin$|source row|^reason$|document type|^pass$|^status$|^rcm$|^confidence$/i;
 

@@ -22,7 +22,12 @@ import {
   sanitizeExcelSheetName,
   stripIllegalSheetNameChars,
 } from '../excel-ai/utils/sheet-name.util';
-import { GstReconcileRequestDto, SheetPayloadDto } from './gst-recon.dto';
+import {
+  GstReconcileRequestDto,
+  GstReconRelayoutRequestDto,
+  SheetPayloadDto,
+} from './gst-recon.dto';
+import { getMissedBooksLayoutCache, storeMissedBooksLayoutCache } from './missed-books-layout-cache';
 import {
   buildSummary,
   map3bVs2bToActions,
@@ -598,6 +603,22 @@ export class GstReconService {
           ? mapPortalOnlyFlatToSheetActions(missedBooksParams)
           : mapMissedBooksToSheetActions(missedBooksParams);
 
+    // Casual runs only — a follow-up "change the layout of Missed vs X" prompt can
+    // re-map these same matched rows into a different layout without re-reading the
+    // workbook or re-running the matcher. The full/gated report has no layout variants,
+    // so nothing worth caching there.
+    const layoutCacheId = missedBooksOnly
+      ? storeMissedBooksLayoutCache({
+          portalLabel,
+          booksLabel,
+          resultRows: matchResult.data.resultRows,
+          isSales,
+          relativeTo: booksSheet.sheet_name,
+          layout,
+          sheetName,
+        })
+      : null;
+
     let auditLogId: string | null = null;
     if (this.auditService) {
       try {
@@ -657,6 +678,55 @@ export class GstReconService {
       portal_label: portalLabel,
       books_label: booksLabel,
       period_applied: periodApplied,
+      layout_cache_id: layoutCacheId,
+    };
+  }
+
+  /**
+   * Re-map an already-completed casual run's rows into a different layout — the
+   * follow-up path for "change the layout of Missed vs X". Pulls the cached rows by
+   * `layout_cache_id` (no workbook re-read, no re-matching) and re-runs just the
+   * formatting step, same three mapper functions `reconcileInvoiceLevel` itself uses.
+   */
+  relayout(request: GstReconRelayoutRequestDto) {
+    const cached = getMissedBooksLayoutCache(request.layout_cache_id);
+    if (!cached) {
+      throw new BadRequestException(
+        'That reconciliation result is no longer available — please run the reconciliation again.',
+      );
+    }
+
+    const layout = request.layout;
+    const suffix =
+      layout === 'books_flat' ? ' — Books Only' : layout === 'portal_flat' ? ' — Portal Only' : '';
+    const base = stripIllegalSheetNameChars(`Missed vs ${cached.portalLabel}`).slice(
+      0,
+      31 - suffix.length,
+    );
+    const sheetName = request.output_sheet_name
+      ? sanitizeExcelSheetName(request.output_sheet_name)
+      : `${base}${suffix}`;
+
+    const params = {
+      sheetName,
+      portalLabel: cached.portalLabel,
+      booksLabel: cached.booksLabel,
+      runAt: new Date().toISOString(),
+      relativeTo: cached.relativeTo,
+      resultRows: cached.resultRows,
+      isSales: cached.isSales,
+    };
+    const actions =
+      layout === 'books_flat'
+        ? mapMissedBooksFlatToSheetActions(params)
+        : layout === 'portal_flat'
+          ? mapPortalOnlyFlatToSheetActions(params)
+          : mapMissedBooksToSheetActions(params);
+
+    return {
+      actions,
+      output_sheet_name: sheetName,
+      layout,
     };
   }
 }

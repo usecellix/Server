@@ -303,3 +303,23 @@ export class GstReconcileRequestDto {
   @MaxLength(60)
   period_label?: string;
 }
+
+/**
+ * Re-map an already-completed CASUAL (missed_books_only) run's rows into a different
+ * sheet layout — a follow-up to an earlier `reconcile()` call, not a fresh run: no
+ * workbook re-read, no re-matching. `layout_cache_id` is the id returned alongside the
+ * original result, naming the in-memory cache entry holding that run's matched rows.
+ */
+export class GstReconRelayoutRequestDto {
+  @IsString()
+  layout_cache_id!: string;
+
+  @IsIn([...GST_RECON_LAYOUTS])
+  layout!: GstReconLayoutDto;
+
+  /** Sheet name to write this layout to — defaults to the standard "Missed vs X [— suffix]" naming. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(31)
+  output_sheet_name?: string;
+}

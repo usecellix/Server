@@ -8,6 +8,7 @@ import { DatabaseModule } from './database/database.module';
 import { DomainToolsModule } from './domain-tools/domain-tools.module';
 import { ExcelAiModule } from './excel-ai/excel-ai.module';
 import { GstReconModule } from './gst-recon/gst-recon.module';
+import { BankReconModule } from './bank-recon/bank-recon.module';
 import { HealthModule } from './health/health.module';
 import { LlmUsageModule } from './llm-usage/llm-usage.module';
 import { SheetsModule } from './sheets/sheets.module';
@@ -27,6 +28,7 @@ import { WebChatModule } from './web-chat/web-chat.module';
     SheetsModule,
     DomainToolsModule,
     GstReconModule,
+    BankReconModule,
     WebChatModule,
   ],
 })

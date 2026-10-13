@@ -1,4 +1,5 @@
 import {
+  buildNormalizedRow,
   deriveTaxableValueFromSlabRow,
   extractRateFromColumnName,
   isRateSlabLayout,
@@ -201,5 +202,47 @@ describe('deriveTaxableValueFromSlabRow — multi-slab disambiguation (real audi
     const row = { 'Purchase@12%': 141.96, 'Purchase @ 18%': 17166.11 };
     const result = deriveTaxableValueFromSlabRow(row);
     expect(result && 'ambiguous' in result).toBe(true);
+  });
+});
+
+/**
+ * Real repro: "Deccan Traders" in a Sales Register — a genuinely blank "Taxable Value"
+ * Excel cell read through the plain (non-slab) ingestion path. `cellAt` returns `undefined`
+ * for a blank cell (never literal `null`), but `buildNormalizedRow` used to only treat a
+ * literal `null` as "no value" — so the blank cell silently became `0` via `parseAmount`,
+ * which meant `blank_taxable_value` never fired and the row was misdiagnosed as
+ * `amount_mismatch` ("books ₹0") instead.
+ */
+describe('buildNormalizedRow — blank taxable value stays null, never silently becomes 0', () => {
+  const baseParts = {
+    gstin: '32DECPL7890E1Z1',
+    invoiceNumber: 'INV/24-25/020',
+    invoiceDate: '2026-09-15',
+    sourceRowRef: { documentType: 'workbook' as const, documentId: 'sales-reg', rowOrLine: 23 },
+  };
+
+  it('a genuinely blank cell (undefined, as cellAt returns for an empty Excel cell) yields taxableValue: null', () => {
+    const result = buildNormalizedRow({ ...baseParts, taxableValue: undefined });
+    expect(result.taxableValue).toBeNull();
+  });
+
+  it('a literal null still yields taxableValue: null (slab-layout path, unchanged)', () => {
+    const result = buildNormalizedRow({ ...baseParts, taxableValue: null });
+    expect(result.taxableValue).toBeNull();
+  });
+
+  it('an empty/whitespace string cell also yields taxableValue: null', () => {
+    const result = buildNormalizedRow({ ...baseParts, taxableValue: '   ' });
+    expect(result.taxableValue).toBeNull();
+  });
+
+  it('a real zero value is preserved as 0, not confused with "no value"', () => {
+    const result = buildNormalizedRow({ ...baseParts, taxableValue: 0 });
+    expect(result.taxableValue).toBe(0);
+  });
+
+  it('a real populated value parses normally', () => {
+    const result = buildNormalizedRow({ ...baseParts, taxableValue: 45000 });
+    expect(result.taxableValue).toBe(45000);
   });
 });
