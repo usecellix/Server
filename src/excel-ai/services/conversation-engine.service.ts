@@ -76,6 +76,11 @@ export type EngineResponse =
       followUp?: string;
       selectCell?: { sheetName: string; row: number; col: number };
       matches?: FindMatch[];
+      /**
+       * False when the matches are pointers for the user to click, not a find
+       * result. The add-in then leaves the selection where it is.
+       */
+      autoSelectFirstMatch?: boolean;
     }
   | { kind: 'actions'; answer: string; actions: SheetActionPayload[]; explanation: string };
 

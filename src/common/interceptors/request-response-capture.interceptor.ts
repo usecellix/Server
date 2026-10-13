@@ -1,5 +1,6 @@
 import { CallHandler, ExecutionContext, Injectable, NestInterceptor } from '@nestjs/common';
 import { Observable, tap } from 'rxjs';
+import { SKIP_LOG_CAPTURE_KEY } from '../decorators/skip-log-capture.decorator';
 import {
   captureJsonResponse,
   captureTextResponse,
@@ -14,6 +15,12 @@ import {
 export class RequestResponseCaptureInterceptor implements NestInterceptor {
   intercept(context: ExecutionContext, next: CallHandler): Observable<unknown> {
     if (context.getType() !== 'http') {
+      return next.handle();
+    }
+
+    // Read straight off the handler: this interceptor is constructed by hand in
+    // main.ts, so it has no Reflector to ask.
+    if (Reflect.getMetadata(SKIP_LOG_CAPTURE_KEY, context.getHandler())) {
       return next.handle();
     }
 

@@ -1,6 +1,8 @@
 import { Module } from '@nestjs/common';
+import { AdminModule } from './admin/admin.module';
 import { AuditModule } from './audit/audit.module';
 import { AuthModule } from './auth/auth.module';
+import { BankStatementModule } from './bank-statement/bank-statement.module';
 import { AppConfigModule } from './config/app-config.module';
 import { CreditModule } from './credit/credit.module';
 import { LoggingModule } from './common/logging/logging.module';
@@ -29,7 +31,9 @@ import { WebChatModule } from './web-chat/web-chat.module';
     DomainToolsModule,
     GstReconModule,
     BankReconModule,
+    BankStatementModule,
     WebChatModule,
+    AdminModule,
   ],
 })
 export class AppModule {}

@@ -14,7 +14,12 @@ import {
 import { CreditLedgerService } from './credit-ledger.service';
 import { CreditGateService } from './credit-gate.service';
 import { CreditAccount, CreditAccountDocument } from './schemas/credit-account.schema';
+import { GuestAccountLinkService } from './guest-account-link.service';
+import { TopupOrder, TopupOrderDocument, TopupOrderStatus } from './schemas/topup-order.schema';
 import { TOPUP_PACKS, TopupPackId } from './topup-packs';
+
+/** How far back reconcileTopups looks for unpaid links — top-up links expire after a day (RazorpayCheckoutService). */
+const TOPUP_RECONCILE_WINDOW_MS = 2 * 24 * 60 * 60 * 1000;
 
 type PlanTier = 'solo' | 'firm' | 'beta';
 
@@ -129,6 +134,9 @@ export class RazorpayWebhookService {
     private readonly creditAccountModel: Model<CreditAccountDocument>,
     private readonly creditGate: CreditGateService,
     private readonly creditLedger: CreditLedgerService,
+    @InjectModel(TopupOrder.name)
+    private readonly topupOrderModel: Model<TopupOrderDocument>,
+    private readonly guestAccountLink: GuestAccountLinkService,
   ) {}
 
   /** Only needed by handlePaymentCredited's invoice/subscription lookup — every other handler works off the webhook payload alone. */
@@ -216,7 +224,7 @@ export class RazorpayWebhookService {
         await this.handleSubscriptionStatusChange(payload as RazorpaySubscriptionWebhookPayload);
         break;
       case 'payment_link.paid':
-        await this.handlePaymentLinkPaid(payload as RazorpayPaymentLinkWebhookPayload, eventId);
+        await this.handlePaymentLinkPaid(payload as RazorpayPaymentLinkWebhookPayload);
         break;
       case 'payment.captured':
         // Fallback path — see handlePaymentCredited's docblock. Only
@@ -312,15 +320,18 @@ export class RazorpayWebhookService {
     eventId: string,
     eventLabel: string,
   ): Promise<void> {
-    const billingEntityId = entity.notes?.billingEntityId as string | undefined;
+    const notedBillingEntityId = entity.notes?.billingEntityId as string | undefined;
     const planTier = entity.notes?.planTier as PlanTier | undefined;
 
-    if (!billingEntityId || !planTier || !PLAN_MONTHLY_CREDITS[planTier]) {
+    if (!notedBillingEntityId || !planTier || !PLAN_MONTHLY_CREDITS[planTier]) {
       this.logger.error(
         `${eventLabel} missing billingEntityId/planTier in notes (subscription ${entity.id}) — cannot grant credits`,
       );
       return;
     }
+    // A guest checkout's notes carry an email; grant to the signed-in user
+    // with that email when there is one, or the product never shows it.
+    const billingEntityId = await this.guestAccountLink.resolveBillingEntityId(notedBillingEntityId);
 
     await this.creditGate.ensureAccount(billingEntityId);
     await this.creditAccountModel.updateOne({ billingEntityId }, { $set: { planTier } });
@@ -351,7 +362,13 @@ export class RazorpayWebhookService {
       { upsert: true },
     );
 
-    await this.creditLedger.grantPlanCredits(billingEntityId, PLAN_MONTHLY_CREDITS[planTier], eventId);
+    // One grant per billing cycle, not per event: Razorpay reports a single
+    // charge as subscription.activated AND subscription.charged AND
+    // payment.captured, each with a different event id. Keyed per event, the
+    // later ones reset planCredits to full after the user had spent some.
+    const grantKey =
+      typeof entity.current_start === 'number' ? `plan:${entity.id}:${entity.current_start}` : eventId;
+    await this.creditLedger.grantPlanCredits(billingEntityId, PLAN_MONTHLY_CREDITS[planTier], grantKey);
   }
 
   /**
@@ -455,38 +472,83 @@ export class RazorpayWebhookService {
   }
 
   /** `payment_link.paid` — grants purchased (top-up) credits, never expiring. */
-  private async handlePaymentLinkPaid(
-    payload: RazorpayPaymentLinkWebhookPayload,
-    eventId: string,
-  ): Promise<void> {
+  private async handlePaymentLinkPaid(payload: RazorpayPaymentLinkWebhookPayload): Promise<void> {
     const entity = payload.payload.payment_link?.entity;
     if (!entity) {
       this.logger.error('payment_link.paid missing payment_link entity — cannot grant credits');
       return;
     }
+    await this.grantTopup(entity.id, entity.notes);
+  }
 
-    const billingEntityId = entity.notes?.billingEntityId as string | undefined;
-    const packId = entity.notes?.packId as TopupPackId | undefined;
-    const notedCredits = entity.notes?.credits;
+  /**
+   * Grants every paid-but-ungranted top-up for billingEntityId by asking
+   * Razorpay for each recent unpaid link's status. The webhook is the normal
+   * path; this is what makes a purchase land when the webhook never arrives
+   * (Razorpay cannot reach a local backend, or the dashboard webhook is
+   * missing `payment_link.paid`). Idempotent with the webhook — both grant
+   * under the same `topup:<linkId>` ledger key. Returns credits granted now.
+   */
+  async reconcileTopups(billingEntityId: string): Promise<number> {
+    const pending = await this.topupOrderModel
+      .find({
+        billingEntityId,
+        status: 'created',
+        createdAt: { $gte: new Date(Date.now() - TOPUP_RECONCILE_WINDOW_MS) },
+      })
+      .select('paymentLinkId')
+      .lean();
+
+    let granted = 0;
+    for (const order of pending) {
+      try {
+        const link = await this.razorpay.paymentLink.fetch(order.paymentLinkId);
+        if (link.status === 'paid') {
+          granted += await this.grantTopup(link.id, link.notes as Record<string, string | number> | undefined);
+        } else if (link.status === 'expired' || link.status === 'cancelled') {
+          await this.setTopupStatus(link.id, link.status);
+        }
+      } catch (error) {
+        this.logger.warn(
+          `reconcileTopups: could not check payment link ${order.paymentLinkId}: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+    }
+    return granted;
+  }
+
+  /** Shared by the webhook and reconcileTopups. Returns the credits granted (0 if already granted or invalid). */
+  private async grantTopup(paymentLinkId: string, notes: Record<string, string | number> | undefined): Promise<number> {
+    const billingEntityId = notes?.billingEntityId as string | undefined;
+    const packId = notes?.packId as TopupPackId | undefined;
+    const notedCredits = Number(notes?.credits);
 
     if (!billingEntityId || !packId || !TOPUP_PACKS[packId]) {
       this.logger.error(
-        `payment_link.paid missing billingEntityId/packId in notes (payment link ${entity.id}) — cannot grant credits`,
+        `top-up missing billingEntityId/packId in notes (payment link ${paymentLinkId}) — cannot grant credits`,
       );
-      return;
+      return 0;
     }
 
     // Prefer the pack's own catalog amount over whatever was echoed back in
     // notes — notes are just round-tripped metadata, not a trusted source of
     // the credit amount, even though this service is also what wrote them.
     const credits = TOPUP_PACKS[packId].credits;
-    if (typeof notedCredits === 'number' && notedCredits !== credits) {
+    if (Number.isFinite(notedCredits) && notedCredits !== credits) {
       this.logger.warn(
-        `payment_link.paid notes.credits (${notedCredits}) disagrees with TOPUP_PACKS[${packId}].credits (${credits}) — using the catalog value`,
+        `top-up notes.credits (${notedCredits}) disagrees with TOPUP_PACKS[${packId}].credits (${credits}) — using the catalog value`,
       );
     }
 
     await this.creditGate.ensureAccount(billingEntityId);
-    await this.creditLedger.addPurchasedCredits(billingEntityId, credits, eventId);
+    const granted = await this.creditLedger.addPurchasedCredits(billingEntityId, credits, `topup:${paymentLinkId}`);
+    await this.setTopupStatus(paymentLinkId, 'paid');
+    return granted ? credits : 0;
+  }
+
+  private async setTopupStatus(paymentLinkId: string, status: TopupOrderStatus): Promise<void> {
+    await this.topupOrderModel.updateOne({ paymentLinkId }, { $set: { status } });
   }
 }

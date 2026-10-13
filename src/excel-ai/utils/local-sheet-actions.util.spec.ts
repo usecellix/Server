@@ -1,5 +1,6 @@
 import {
   buildDeleteSheetAnswer,
+  detectDeleteSheetIntent,
   extractDeleteSheetNames,
   tryLocalDeleteSheetActions,
 } from './local-sheet-actions.util';
@@ -41,6 +42,24 @@ describe('local-sheet-actions.util', () => {
   it('returns deterministic delete actions', () => {
     const actions = tryLocalDeleteSheetActions('Delete the sheet Azhar @[Azhar]', context);
     expect(actions).toEqual([{ type: 'DELETE_SHEET', sheetName: 'Azhar' }]);
+  });
+
+  // TASKS.md #371 — "delete the @[Azhar]" contains neither "sheet" nor "tab",
+  // so this escalated past the deterministic lane to the full Tier 3 pipeline
+  // (observed live at 44.8s for what should be a no-LLM delete).
+  describe('delete requests using only an @[mention], with no "sheet"/"tab" word (#371)', () => {
+    it('detects delete intent from the mention alone', () => {
+      expect(detectDeleteSheetIntent('delete the @[Azhar]')).toBe(true);
+    });
+
+    it('resolves the delete deterministically', () => {
+      const actions = tryLocalDeleteSheetActions('delete the @[Azhar]', context);
+      expect(actions).toEqual([{ type: 'DELETE_SHEET', sheetName: 'Azhar' }]);
+    });
+
+    it('still declines when the mention is only a location', () => {
+      expect(tryLocalDeleteSheetActions('delete duplicates from @[Azhar]', context)).toBeNull();
+    });
   });
 
   it('builds delete answer text', () => {

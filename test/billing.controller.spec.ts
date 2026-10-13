@@ -15,22 +15,41 @@ describe('BillingController', () => {
     // safe to call every time, not just on a genuinely-missing account.
     const getAccountSummary = jest.fn().mockResolvedValue({ availableBalance: 42 });
     const ensureAccount = jest.fn().mockResolvedValue(undefined);
+    const reconcileTopups = jest.fn().mockResolvedValue(0);
+    const claimGuestAccount = jest.fn().mockResolvedValue(0);
     const controller = new BillingController(
       { getAccountSummary } as never,
       { ensureAccount } as never,
       {} as never,
+      { reconcileTopups } as never,
+      { claimGuestAccount } as never,
     );
 
     const result = await controller.getAccount(session('user-1'));
 
     expect(ensureAccount).toHaveBeenCalledWith('user-1');
+    expect(claimGuestAccount).toHaveBeenCalledWith('user-1', 'user@example.com');
+    expect(reconcileTopups).toHaveBeenCalledWith('user-1');
     expect(getAccountSummary).toHaveBeenCalledWith('user-1');
     expect(result).toEqual({ availableBalance: 42 });
   });
 
+  it('GET /billing/account still returns the balance when top-up reconcile fails', async () => {
+    const getAccountSummary = jest.fn().mockResolvedValue({ availableBalance: 7 });
+    const controller = new BillingController(
+      { getAccountSummary } as never,
+      { ensureAccount: jest.fn().mockResolvedValue(undefined) } as never,
+      {} as never,
+      { reconcileTopups: jest.fn().mockRejectedValue(new Error('RAZORPAY_NOT_CONFIGURED')) } as never,
+      { claimGuestAccount: jest.fn().mockRejectedValue(new Error('mongo down')) } as never,
+    );
+
+    await expect(controller.getAccount(session('user-1'))).resolves.toEqual({ availableBalance: 7 });
+  });
+
   it('GET /billing/ledger resolves billingEntityId from the session, never a request param', async () => {
     const getLedgerPage = jest.fn().mockResolvedValue({ entries: [], nextCursor: null });
-    const controller = new BillingController({ getLedgerPage } as never, {} as never, {} as never);
+    const controller = new BillingController({ getLedgerPage } as never, {} as never, {} as never, {} as never, {} as never);
 
     await controller.getLedger(session('user-1'), { limit: 10 });
 
@@ -39,7 +58,7 @@ describe('BillingController', () => {
 
   it('POST /billing/checkout/subscribe resolves billingEntityId + email from the session, never the request body', async () => {
     const createSubscriptionSession = jest.fn().mockResolvedValue({ url: 'https://rzp.io/i/x' });
-    const controller = new BillingController({} as never, {} as never, { createSubscriptionSession } as never);
+    const controller = new BillingController({} as never, {} as never, { createSubscriptionSession } as never, {} as never, {} as never);
 
     const result = await controller.createSubscribeCheckout(session('user-1', 'ca@example.com'), {
       planTier: 'solo',
@@ -56,7 +75,7 @@ describe('BillingController', () => {
 
   it('POST /billing/checkout/topup resolves billingEntityId + email from the session, never the request body', async () => {
     const createTopupSession = jest.fn().mockResolvedValue({ url: 'https://rzp.io/i/topup' });
-    const controller = new BillingController({} as never, {} as never, { createTopupSession } as never);
+    const controller = new BillingController({} as never, {} as never, { createTopupSession } as never, {} as never, {} as never);
 
     const result = await controller.createTopupCheckout(session('user-1', 'ca@example.com'), {
       packId: 'medium',

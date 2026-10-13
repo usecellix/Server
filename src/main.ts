@@ -10,6 +10,7 @@ import { AppModule } from './app.module';
 import { AppConfigService } from './config/app-config.service';
 import { TRACE_ID_HEADER } from './common/constants/trace-id.constant';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
+import { applyRouteBodyLimits } from './common/http/route-body-limits';
 import { RequestResponseCaptureInterceptor } from './common/interceptors/request-response-capture.interceptor';
 import { ResponseEnvelopeInterceptor } from './common/interceptors/response-envelope.interceptor';
 import { RequestFileLoggerService } from './common/logging/request-file-logger.service';
@@ -122,6 +123,9 @@ async function bootstrap(): Promise<void> {
     timeWindow: '1 minute',
   });
 
+  // Before app.listen registers the routes: an onRoute hook only sees routes added after it.
+  applyRouteBodyLimits(fastify);
+
   fastify.addHook('onResponse', (request, reply, done) => {
     const body = (request as { body?: { message?: unknown } }).body;
     const headerTrace = request.headers[TRACE_ID_HEADER];
@@ -163,9 +167,13 @@ async function bootstrap(): Promise<void> {
   // /login and /register, which the add-in's Office dialog opens directly
   // for the email/password flow, so both need to pass CORS with credentials.
   const allowedOrigins = [config.clientOrigin, ...config.marketingSiteOrigins];
+  // `methods` must be explicit: @fastify/cors 11 defaults to GET,HEAD,POST,
+  // so the preflight for PATCH (rename) and DELETE (delete chat) was refused
+  // and neither request ever reached the server.
   app.enableCors({
     origin: allowedOrigins,
     credentials: true,
+    methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   });
 
   await app.listen(port, '0.0.0.0');

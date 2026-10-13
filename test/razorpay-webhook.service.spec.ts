@@ -7,6 +7,10 @@ function buildService(options: {
   razorpayWebhookSecret?: string;
   invoicesFetchImpl?: (...args: unknown[]) => unknown;
   subscriptionsFetchImpl?: (...args: unknown[]) => unknown;
+  pendingTopups?: { paymentLinkId: string }[];
+  paymentLinkFetchImpl?: (...args: unknown[]) => unknown;
+  addPurchasedCreditsResult?: boolean;
+  resolvedIds?: Record<string, string>;
 } = {}) {
   const insertedEvents: Record<string, unknown>[] = [];
   const processedEventModel = {
@@ -35,8 +39,24 @@ function buildService(options: {
 
   const creditGate = { ensureAccount: jest.fn().mockResolvedValue({}) };
   const grantPlanCredits = jest.fn().mockResolvedValue(undefined);
-  const addPurchasedCredits = jest.fn().mockResolvedValue(undefined);
+  const addPurchasedCredits = jest.fn().mockResolvedValue(options.addPurchasedCreditsResult ?? true);
   const creditLedger = { grantPlanCredits, addPurchasedCredits };
+
+  const guestAccountLink = {
+    resolveBillingEntityId: jest.fn((id: string) => Promise.resolve(options.resolvedIds?.[id] ?? id)),
+  };
+
+  const topupStatusUpdates: Record<string, unknown>[] = [];
+  const topupFind = jest.fn(() => ({
+    select: () => ({ lean: () => Promise.resolve(options.pendingTopups ?? []) }),
+  }));
+  const topupOrderModel = {
+    find: topupFind,
+    updateOne: jest.fn((filter: unknown, update: unknown) => {
+      topupStatusUpdates.push({ filter, update });
+      return Promise.resolve();
+    }),
+  };
 
   const config = {
     razorpayWebhookSecret: options.razorpayWebhookSecret ?? 'whsec_x',
@@ -51,6 +71,8 @@ function buildService(options: {
     creditAccountModel as never,
     creditGate as never,
     creditLedger as never,
+    topupOrderModel as never,
+    guestAccountLink as never,
   );
 
   // Same pattern as razorpay-checkout.service.spec.ts: bypass the lazy
@@ -71,6 +93,7 @@ function buildService(options: {
           notes: { billingEntityId: 'user-1', planTier: 'beta' },
         })),
   );
+  const paymentLinkFetch = jest.fn(options.paymentLinkFetchImpl ?? (() => Promise.resolve({ status: 'created' })));
   (
     service as unknown as {
       razorpayClient?: { invoices: { fetch: unknown }; subscriptions: { fetch: unknown } };
@@ -78,6 +101,7 @@ function buildService(options: {
   ).razorpayClient = {
     invoices: { fetch: invoicesFetch },
     subscriptions: { fetch: subscriptionsFetch },
+    paymentLink: { fetch: paymentLinkFetch },
   } as never;
 
   return {
@@ -90,6 +114,9 @@ function buildService(options: {
     addPurchasedCredits,
     invoicesFetch,
     subscriptionsFetch,
+    paymentLinkFetch,
+    topupFind,
+    topupStatusUpdates,
   };
 }
 
@@ -180,7 +207,8 @@ describe('RazorpayWebhookService.handleVerifiedEvent — subscription.activated/
     expect(result).toEqual({ alreadyProcessed: false });
     expect(creditGate.ensureAccount).toHaveBeenCalledWith('user-1');
     expect(accountUpdates[0]).toEqual(expect.objectContaining({ filter: { billingEntityId: 'user-1' } }));
-    expect(grantPlanCredits).toHaveBeenCalledWith('user-1', 3000, 'subscription.activated:sub_1:pay_1');
+    // Keyed by billing cycle (subscription + current_start), not by event.
+    expect(grantPlanCredits).toHaveBeenCalledWith('user-1', 3000, 'plan:sub_1:1700000000');
     expect(insertedEvents).toEqual([
       expect.objectContaining({ paymentEventId: 'subscription.activated:sub_1:pay_1' }),
     ]);
@@ -256,6 +284,54 @@ describe('RazorpayWebhookService.handleVerifiedEvent — subscription.activated/
 
     expect(grantPlanCredits).toHaveBeenCalledTimes(2);
     expect(grantPlanCredits.mock.calls[0][2]).not.toBe(grantPlanCredits.mock.calls[1][2]);
+  });
+
+  it('activated, charged and payment.captured for ONE charge all share one grant key, so it grants once', async () => {
+    // Razorpay reports the first charge three ways. Keyed per event, each
+    // later event reset planCredits to full after the user had spent some.
+    const { service, grantPlanCredits } = buildService({
+      subscriptionsFetchImpl: () =>
+        Promise.resolve({
+          id: 'sub_1', status: 'active', customer_id: 'cust_1', current_start: 1700000000, current_end: 1702592000,
+          notes: { billingEntityId: 'user-1', planTier: 'solo' },
+        }),
+      invoicesFetchImpl: () => Promise.resolve({ subscription_id: 'sub_1' }),
+    });
+    const entity = {
+      id: 'sub_1', plan_id: 'plan_solo', status: 'active', customer_id: 'cust_1',
+      current_start: 1700000000, current_end: 1702592000,
+      notes: { billingEntityId: 'user-1', planTier: 'solo' },
+    };
+
+    await service.handleVerifiedEvent({ event: 'subscription.activated', payload: { subscription: { entity } } });
+    await service.handleVerifiedEvent({
+      event: 'subscription.charged',
+      payload: { subscription: { entity }, payment: { entity: { id: 'pay_1' } } },
+    });
+    await service.handleVerifiedEvent({
+      event: 'payment.captured',
+      payload: { payment: { entity: { id: 'pay_1', status: 'captured', invoice_id: 'inv_1' } } },
+    });
+
+    const keys = grantPlanCredits.mock.calls.map((call) => call[2]);
+    expect(new Set(keys)).toEqual(new Set(['plan:sub_1:1700000000']));
+  });
+
+  it('grants a guest (email-keyed) subscription to the signed-in user with that email', async () => {
+    const { service, grantPlanCredits, subscriptionUpdates } = buildService({ resolvedIds: { 'ca@example.com': 'user-77' } });
+
+    await service.handleVerifiedEvent({
+      event: 'subscription.charged',
+      payload: {
+        subscription: {
+          entity: { id: 'sub_g', plan_id: 'plan_solo', status: 'active', customer_id: null, notes: { billingEntityId: 'ca@example.com', planTier: 'solo' } },
+        },
+        payment: { entity: { id: 'pay_g' } },
+      },
+    });
+
+    expect(grantPlanCredits).toHaveBeenCalledWith('user-77', 3000, expect.any(String));
+    expect((subscriptionUpdates[0].update as { $set: Record<string, unknown> }).$set.billingEntityId).toBe('user-77');
   });
 
   it('writes a subscription row keyed by razorpaySubscriptionId, using the REAL current_start/current_end from the payload', async () => {
@@ -352,8 +428,25 @@ describe('RazorpayWebhookService.handleVerifiedEvent — payment_link.paid (top-
     });
 
     expect(creditGate.ensureAccount).toHaveBeenCalledWith('user-1');
-    expect(addPurchasedCredits).toHaveBeenCalledWith('user-1', 1000, 'payment_link.paid:plink_1:pay_topup_1');
+    // Keyed by the link, shared with reconcileTopups, so the two can't both grant.
+    expect(addPurchasedCredits).toHaveBeenCalledWith('user-1', 1000, 'topup:plink_1');
     expect(result).toEqual({ alreadyProcessed: false });
+  });
+
+  it('marks the topup order paid', async () => {
+    const { service, topupStatusUpdates } = buildService();
+
+    await service.handleVerifiedEvent({
+      event: 'payment_link.paid',
+      payload: {
+        payment_link: { entity: { id: 'plink_1', notes: { billingEntityId: 'user-1', packId: 'small', credits: '300' } } },
+        payment: { entity: { id: 'pay_topup_1' } },
+      },
+    });
+
+    expect(topupStatusUpdates).toEqual([
+      { filter: { paymentLinkId: 'plink_1' }, update: { $set: { status: 'paid' } } },
+    ]);
   });
 
   it('trusts TOPUP_PACKS over a tampered/disagreeing notes.credits value', async () => {
@@ -415,7 +508,7 @@ describe('RazorpayWebhookService.handleVerifiedEvent — payment.captured (subsc
     expect(invoicesFetch).toHaveBeenCalledWith('inv_1');
     expect(subscriptionsFetch).toHaveBeenCalledWith('sub_from_invoice');
     expect(creditGate.ensureAccount).toHaveBeenCalledWith('user-1');
-    expect(grantPlanCredits).toHaveBeenCalledWith('user-1', 500, 'payment.captured:pay_1');
+    expect(grantPlanCredits).toHaveBeenCalledWith('user-1', 500, 'plan:sub_from_invoice:1700000000');
     expect(result).toEqual({ alreadyProcessed: false });
   });
 
@@ -548,5 +641,67 @@ describe('RazorpayWebhookService.handleEvent (idempotency-only entry point)', ()
     const result = await service.handleEvent('evt_new');
     expect(result).toEqual({ alreadyProcessed: false });
     expect(insertedEvents).toEqual([expect.objectContaining({ paymentEventId: 'evt_new' })]);
+  });
+});
+
+describe('RazorpayWebhookService.reconcileTopups (no-webhook fallback)', () => {
+  const paidLink = {
+    id: 'plink_9',
+    status: 'paid',
+    notes: { billingEntityId: 'user-1', packId: 'medium', credits: '1000' },
+  };
+
+  it('grants a paid link the webhook never delivered, under the same key the webhook uses', async () => {
+    const { service, addPurchasedCredits, paymentLinkFetch, topupStatusUpdates } = buildService({
+      pendingTopups: [{ paymentLinkId: 'plink_9' }],
+      paymentLinkFetchImpl: () => Promise.resolve(paidLink),
+    });
+
+    const granted = await service.reconcileTopups('user-1');
+
+    expect(paymentLinkFetch).toHaveBeenCalledWith('plink_9');
+    expect(addPurchasedCredits).toHaveBeenCalledWith('user-1', 1000, 'topup:plink_9');
+    expect(granted).toBe(1000);
+    expect(topupStatusUpdates[0]).toEqual({ filter: { paymentLinkId: 'plink_9' }, update: { $set: { status: 'paid' } } });
+  });
+
+  it('reports 0 when the webhook already granted it (ledger claim lost)', async () => {
+    const { service } = buildService({
+      pendingTopups: [{ paymentLinkId: 'plink_9' }],
+      paymentLinkFetchImpl: () => Promise.resolve(paidLink),
+      addPurchasedCreditsResult: false,
+    });
+
+    await expect(service.reconcileTopups('user-1')).resolves.toBe(0);
+  });
+
+  it('leaves an unpaid link alone and marks an expired one', async () => {
+    const statuses: Record<string, string> = { plink_open: 'created', plink_old: 'expired' };
+    const { service, addPurchasedCredits, topupStatusUpdates } = buildService({
+      pendingTopups: [{ paymentLinkId: 'plink_open' }, { paymentLinkId: 'plink_old' }],
+      paymentLinkFetchImpl: (id: unknown) => Promise.resolve({ id, status: statuses[id as string] }),
+    });
+
+    await service.reconcileTopups('user-1');
+
+    expect(addPurchasedCredits).not.toHaveBeenCalled();
+    expect(topupStatusUpdates).toEqual([
+      { filter: { paymentLinkId: 'plink_old' }, update: { $set: { status: 'expired' } } },
+    ]);
+  });
+
+  it('skips a link Razorpay fails to return instead of throwing', async () => {
+    const { service } = buildService({
+      pendingTopups: [{ paymentLinkId: 'plink_9' }],
+      paymentLinkFetchImpl: () => Promise.reject(new Error('network')),
+    });
+
+    await expect(service.reconcileTopups('user-1')).resolves.toBe(0);
+  });
+
+  it('never touches Razorpay when nothing is pending', async () => {
+    const { service, paymentLinkFetch } = buildService();
+    await service.reconcileTopups('user-1');
+    expect(paymentLinkFetch).not.toHaveBeenCalled();
   });
 });

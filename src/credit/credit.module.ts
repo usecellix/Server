@@ -9,11 +9,13 @@ import {
   Subscription,
   SubscriptionSchema,
 } from './schemas/subscription.schema';
+import { TopupOrder, TopupOrderSchema } from './schemas/topup-order.schema';
 import { CreditGateService } from './credit-gate.service';
 import { CreditLedgerService } from './credit-ledger.service';
 import { CreditAccountQueryService } from './credit-account-query.service';
 import { RazorpayCheckoutService } from './razorpay-checkout.service';
 import { RazorpayWebhookService } from './razorpay-webhook.service';
+import { GuestAccountLinkService } from './guest-account-link.service';
 import { SubscriptionIndexMigrationService } from './subscription-index-migration.service';
 import { UsageBillingService } from './usage-billing.service';
 import { BillingController, PublicBillingController, RazorpayWebhookController } from './billing.controller';
@@ -26,6 +28,7 @@ import { BillingController, PublicBillingController, RazorpayWebhookController }
       { name: CreditLedgerEntry.name, schema: CreditLedgerEntrySchema },
       { name: Subscription.name, schema: SubscriptionSchema },
       { name: ProcessedRazorpayEvent.name, schema: ProcessedRazorpayEventSchema },
+      { name: TopupOrder.name, schema: TopupOrderSchema },
     ]),
   ],
   providers: [
@@ -34,6 +37,7 @@ import { BillingController, PublicBillingController, RazorpayWebhookController }
     CreditAccountQueryService,
     RazorpayCheckoutService,
     RazorpayWebhookService,
+    GuestAccountLinkService,
     SubscriptionIndexMigrationService,
     UsageBillingService,
   ],

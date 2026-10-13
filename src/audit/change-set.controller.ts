@@ -69,6 +69,8 @@ export class ChangeSetController {
       createdConditionalFormatIds?: { sheetName: string; range: string; ruleId: string }[];
       createdChartIds?: { sheetName: string; sourceRange: string; chartId: string }[];
       sortedRangeChanges?: CellChange[];
+      // TASKS.md #400 - validated in ChangeSetService.markApplied, not here.
+      formatSnapshots?: unknown;
     },
   ) {
     const changeSet = await this.changeSetService.markApplied(
@@ -76,6 +78,7 @@ export class ChangeSetController {
       body?.createdConditionalFormatIds,
       body?.createdChartIds,
       body?.sortedRangeChanges,
+      body?.formatSnapshots,
     );
     return { changeSet };
   }

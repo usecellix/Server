@@ -22,13 +22,22 @@ function buildService(options: {
   const ensureAccount = jest.fn().mockResolvedValue({});
   const creditGate = { ensureAccount };
 
-  const service = new RazorpayCheckoutService(config as never, creditGate as never);
+  const topupOrders: Record<string, unknown>[] = [];
+  const topupOrderModel = {
+    create: jest.fn((doc: Record<string, unknown>) => {
+      topupOrders.push(doc);
+      return Promise.resolve(doc);
+    }),
+  };
+
+  const service = new RazorpayCheckoutService(config as never, creditGate as never, topupOrderModel as never);
 
   const createSubscription = jest.fn(
     options.createSubscriptionImpl ?? (() => Promise.resolve({ short_url: 'https://rzp.io/i/sub_x' })),
   );
   const createPaymentLink = jest.fn(
-    options.createPaymentLinkImpl ?? (() => Promise.resolve({ short_url: 'https://rzp.io/i/link_x' })),
+    options.createPaymentLinkImpl ??
+      (() => Promise.resolve({ id: 'plink_x', short_url: 'https://rzp.io/i/link_x' })),
   );
   (
     service as unknown as {
@@ -42,7 +51,7 @@ function buildService(options: {
     paymentLink: { create: createPaymentLink },
   } as never;
 
-  return { service, ensureAccount, createSubscription, createPaymentLink };
+  return { service, ensureAccount, createSubscription, createPaymentLink, topupOrders };
 }
 
 describe('RazorpayCheckoutService.createSubscriptionSession', () => {
@@ -148,9 +157,25 @@ describe('RazorpayCheckoutService.createTopupSession', () => {
         amount: 39900,
         currency: 'INR',
         description: '1000 Cellix credits',
-        notes: { billingEntityId: 'user-1', packId: 'medium', credits: 1000 },
+        notes: { billingEntityId: 'user-1', packId: 'medium', credits: '1000' },
+        expire_by: expect.any(Number),
       }),
     );
+  });
+
+  it('records a topup_orders row so a paid link can be granted without the webhook', async () => {
+    const { service, topupOrders } = buildService();
+    await service.createTopupSession('user-1', 'ca@example.com', 'medium');
+
+    expect(topupOrders).toEqual([
+      expect.objectContaining({
+        paymentLinkId: 'plink_x',
+        billingEntityId: 'user-1',
+        packId: 'medium',
+        credits: 1000,
+        status: 'created',
+      }),
+    ]);
   });
 
   it('returns the payment link short_url', async () => {

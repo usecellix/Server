@@ -23,6 +23,12 @@ import {
   structuralOpsToInverseActions,
 } from './diff.engine';
 import { RevertNoOpError } from './errors/revert-noop.error';
+import {
+  assertFormatSnapshotsComplete,
+  FormatSnapshot,
+  formatSnapshotsToInverseActions,
+  sanitizeFormatSnapshots,
+} from './format-snapshot';
 import { RevertVerificationError } from './errors/revert-verification.error';
 import { computeIrreversibleActionTypes } from './reversibility-catalog';
 import { ChangeSet, ChangeSetDocument } from './schemas/change-set.schema';
@@ -190,6 +196,12 @@ export class ChangeSetService {
      * has real data to build an inverse from.
      */
     frontendChanges?: CellChange[],
+    /**
+     * TASKS.md #400 - the formatting state read off Excel just before each FORMAT_RANGE /
+     * AUTOFIT_COLUMNS ran. Re-validated here: this body comes from the add-in, and what it
+     * holds is later turned into actions that write to the workbook.
+     */
+    formatSnapshots?: unknown,
   ): Promise<ChangeSetRecord> {
     const existing = await this.changeSetModel.findOne({ changeSetId }).exec();
     if (existing?.status === 'applied') {
@@ -220,6 +232,11 @@ export class ChangeSetService {
         }
         return op;
       });
+    }
+
+    const cleanSnapshots = sanitizeFormatSnapshots(formatSnapshots);
+    if (existing && cleanSnapshots.length > 0) {
+      update.formatSnapshots = cleanSnapshots;
     }
 
     if (existing && frontendChanges && frontendChanges.length > 0) {
@@ -297,7 +314,13 @@ export class ChangeSetService {
     const cellInverseActions = bulkInverseActions ?? beforeStateToInverseActions(beforeState, changes);
     const structuralOps = (doc.structuralOps ?? []) as unknown as StructuralOp[];
     const { pre, post } = structuralOpsToInverseActions(structuralOps);
-    const inverseActions = [...pre, ...cellInverseActions, ...post];
+    // TASKS.md #400 - formatting goes back first: it must reach a sheet this same change set
+    // created before that sheet's own inverse (a delete) removes it. Refuses, never partly
+    // reverts, when a formatting action has no usable snapshot.
+    const formatSnapshots = (doc.formatSnapshots ?? []) as unknown as FormatSnapshot[];
+    assertFormatSnapshotsComplete(changeSetId, (doc.actions ?? []) as never, formatSnapshots);
+    const formatInverseActions = formatSnapshotsToInverseActions(formatSnapshots);
+    const inverseActions = [...formatInverseActions, ...pre, ...cellInverseActions, ...post];
 
     // Fail-closed "no false success" (mirrors TASKS.md #19 below, one step earlier): a
     // change set that recorded forward actions but produced zero inverse actions has

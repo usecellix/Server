@@ -48,6 +48,13 @@ export class CreditAccount {
   @Prop({ type: [String] })
   seatUserIds?: string[];
 
+  /**
+   * Set on an email-keyed guest-checkout account once its credits have been
+   * moved onto the signed-in user's account (GuestAccountLinkService).
+   */
+  @Prop({ type: String })
+  linkedToUserId?: string;
+
   createdAt!: Date;
   updatedAt!: Date;
 }

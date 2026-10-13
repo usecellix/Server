@@ -16,4 +16,6 @@ export { parseImsExport } from './ingestion/ims-parser';
 export { detectPortalFileType, inferColumnMapping } from './ingestion/portal-file-detector';
 export { parseForm26as } from './ingestion/form26as-parser';
 export { parseTallyExport } from './ingestion/tally-export-parser';
-export { parseBankStatement } from './ingestion/bank-statement-parser';
+export { parseBankStatement, BankStatementParseError } from './ingestion/bank-statement-parser';
+export { verifyBankStatement } from './ingestion/bank-statement-verifier';
+export type { RawTable, RawTableCell, RawTableRow } from './ingestion/raw-table.types';

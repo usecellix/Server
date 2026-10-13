@@ -4,10 +4,12 @@ import { extractSheetMentions, stripSheetMentions } from './sheet-mentions.util'
 
 export function detectDeleteSheetIntent(message: string): boolean {
   const lower = message.toLowerCase();
-  return (
-    /\b(delete|remove|drop)\b/.test(lower) &&
-    (/\bsheets?\b/.test(lower) || /\btab(s)?\b/.test(lower))
-  );
+  if (!/\b(delete|remove|drop)\b/.test(lower)) return false;
+  if (/\bsheets?\b/.test(lower) || /\btab(s)?\b/.test(lower)) return true;
+  // "delete the @[Bank Statement]" never contains the word "sheet"/"tab" —
+  // the composer's @-mention syntax already names a sheet by itself.
+  // TASKS.md #371.
+  return extractSheetMentions(message).length > 0;
 }
 
 /**
@@ -32,14 +34,23 @@ const SHEET_AS_LOCATION = /\b(in|from|on|within|inside|across)\b/i;
  */
 export function isSheetTheDeleteObject(message: string, availableSheets: string[]): boolean {
   const match = /\b(?:delete|remove|drop)\b([\s\S]*?)\b(?:sheets?|tabs?)\b/i.exec(message);
-  if (!match) return false;
+  if (match) {
+    let objectPhrase = stripSheetMentions(match[1]);
+    const sortedSheets = [...availableSheets].sort((a, b) => b.length - a.length);
+    for (const sheet of sortedSheets) {
+      objectPhrase = objectPhrase.replace(new RegExp(`\\b${escapeRegex(sheet)}\\b`, 'gi'), ' ');
+    }
 
-  let objectPhrase = stripSheetMentions(match[1]);
-  const sortedSheets = [...availableSheets].sort((a, b) => b.length - a.length);
-  for (const sheet of sortedSheets) {
-    objectPhrase = objectPhrase.replace(new RegExp(`\\b${escapeRegex(sheet)}\\b`, 'gi'), ' ');
+    return !NON_SHEET_DELETE_OBJECT.test(objectPhrase) && !SHEET_AS_LOCATION.test(objectPhrase);
   }
 
+  // No "sheet"/"tab" word at all, e.g. "delete the @[Bank Statement]" via the
+  // composer's @-mention syntax, which already names a sheet on its own.
+  // Same object-vs-location check, against the text between the delete verb
+  // and the mention. TASKS.md #371.
+  const mentionMatch = /\b(?:delete|remove|drop)\b([\s\S]*?)@\[[^\]]+\]/i.exec(message);
+  if (!mentionMatch) return false;
+  const objectPhrase = mentionMatch[1];
   return !NON_SHEET_DELETE_OBJECT.test(objectPhrase) && !SHEET_AS_LOCATION.test(objectPhrase);
 }
 

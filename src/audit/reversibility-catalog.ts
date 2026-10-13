@@ -1,4 +1,5 @@
 import { SheetActionType } from '../excel-ai/types/sheet-actions.types';
+import { formatActionsExceedTotalCap, isFormatActionRestorable } from './format-snapshot';
 
 /**
  * Whether a real, working revert path exists TODAY for each action type — checked at
@@ -112,7 +113,11 @@ export const REVERSIBILITY_CATALOG: Record<SheetActionType, ReversibilityCatalog
   },
 
   // ---- Formatting-only — not simulated, so no before/after state is ever captured ----
-  FORMAT_RANGE: { reversible: false, reason: 'Formatting-only; not simulated, so no format state is captured to restore.' },
+  // TASKS.md #400 - the add-in reads the previous format off Excel just before applying and
+  // reports it to POST /audit/apply (format-snapshot.ts), so a plain FORMAT_RANGE has a real
+  // inverse. Per instance, like CONDITIONAL_FORMAT: borders, or a range too large to snapshot,
+  // stay irreversible - decided in computeIrreversibleActionTypes() below, not by this flat entry.
+  FORMAT_RANGE: { reversible: true },
   FORMAT_MATCHING_ROWS: { reversible: false, reason: 'Formatting-only; not simulated, so no format state is captured to restore.' },
   HIGHLIGHT_CELL: { reversible: false, reason: 'Fill colour only; not simulated, so no prior fill state is captured.' },
   CLEAR_FORMAT: { reversible: false, reason: 'Formatting-only; not simulated, so no format state is captured to restore.' },
@@ -164,7 +169,7 @@ export const REVERSIBILITY_CATALOG: Record<SheetActionType, ReversibilityCatalog
   FREEZE_PANES: { reversible: false, reason: COSMETIC_NOT_CAPTURED },
   UNFREEZE_PANES: { reversible: false, reason: COSMETIC_NOT_CAPTURED },
   AUTO_FILTER: { reversible: false, reason: COSMETIC_NOT_CAPTURED },
-  AUTOFIT_COLUMNS: { reversible: false, reason: COSMETIC_NOT_CAPTURED },
+  AUTOFIT_COLUMNS: { reversible: true }, // TASKS.md #400 - previous column widths are snapshotted at apply time
   SET_ZOOM: { reversible: false, reason: COSMETIC_NOT_CAPTURED },
   PROTECT_SHEET: { reversible: false, reason: COSMETIC_NOT_CAPTURED },
   UNPROTECT_SHEET: { reversible: false, reason: COSMETIC_NOT_CAPTURED },
@@ -209,12 +214,21 @@ export function computeIrreversibleActionTypes(
   actionTypes: IrreversibilityCheckInput[],
 ): string[] {
   const irreversible = new Set<string>();
+  const objects = actionTypes.filter((e): e is Exclude<IrreversibilityCheckInput, string> => typeof e !== 'string');
+  if (formatActionsExceedTotalCap(objects as never)) irreversible.add('FORMAT_RANGE');
   for (const entry of actionTypes) {
     const type = typeof entry === 'string' ? entry : entry.type;
     const existingRuleId = typeof entry === 'string' ? undefined : entry.existingRuleId;
 
     if (type === 'CONDITIONAL_FORMAT' && existingRuleId) {
       irreversible.add(type);
+      continue;
+    }
+
+    // TASKS.md #400 - a formatting action is restorable only when its snapshot can be taken.
+    // A bare type string carries no geometry, so it is judged by the catalog entry alone.
+    if ((type === 'FORMAT_RANGE' || type === 'AUTOFIT_COLUMNS') && typeof entry !== 'string') {
+      if (!isFormatActionRestorable(entry as never)) irreversible.add(type);
       continue;
     }
 

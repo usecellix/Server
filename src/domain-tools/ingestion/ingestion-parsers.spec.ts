@@ -3,7 +3,6 @@ import * as path from 'path';
 import { parseGstr2b } from './gstr2b-parser';
 import { parseForm26as } from './form26as-parser';
 import { parseTallyExport } from './tally-export-parser';
-import { parseBankStatement } from './bank-statement-parser';
 
 const fixturesDir = path.join(__dirname, 'fixtures');
 
@@ -53,7 +52,9 @@ describe('ingestion parsers (synthetic fixtures)', () => {
     expect(() => parseTallyExport(JSON.stringify(fixture))).toThrow(/Not implemented/i);
   });
 
-  it('loads synthetic bank statement fixture and stub throws Not implemented', () => {
+  // The parser itself is covered by bank-statement-parser.spec.ts; this only pins the
+  // normalized row shape that bank_recon consumes.
+  it('loads synthetic bank statement fixture', () => {
     const fixture = loadSyntheticFixture('synthetic-bank-statement.json');
     expect(fixture.rows[0]).toEqual(
       expect.objectContaining({
@@ -62,6 +63,5 @@ describe('ingestion parsers (synthetic fixtures)', () => {
         amount: expect.any(Number),
       }),
     );
-    expect(() => parseBankStatement(JSON.stringify(fixture))).toThrow(/Not implemented/i);
   });
 });
