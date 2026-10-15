@@ -8,6 +8,8 @@
 export const ROUTE_BODY_LIMITS: Record<string, number> = {
   // A decoded bank statement: six months measures about 0.4 MB, so this covers many years.
   '/ingest/bank-statement': 16 * 1024 * 1024,
+  // Bank reconciliation takes the same decoded statement (attached file) plus the ledger sheet.
+  '/bank/reconcile': 16 * 1024 * 1024,
 };
 
 interface RouteOptionsLike {

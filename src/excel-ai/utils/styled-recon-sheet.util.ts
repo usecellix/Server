@@ -16,8 +16,8 @@ const CURRENCY_NUMBER_FORMAT = '#,##0.00';
 const DATE_NUMBER_FORMAT = 'dd-mmm-yyyy';
 
 const CURRENCY_HEADER_RE =
-  /taxable value|\bigst\b|\bcgst\b|\bsgst\b|tax amount|itc amount|invoice value/i;
-const DATE_HEADER_RE = /invoice date/i;
+  /taxable value|\bigst\b|\bcgst\b|\bsgst\b|tax amount|itc amount|invoice value|^receipt$|^payment$|^amount$|^balance$/i;
+const DATE_HEADER_RE = /invoice date|^date$|^txn date$|^value date$/i;
 const WIDE_HEADER_RE = /vendor name|explanation|particulars|narration/i;
 const NARROW_HEADER_RE = /^gstin|gstin$|source row|^reason$|document type|^pass$|^status$|^rcm$|^confidence$/i;
 
@@ -215,14 +215,14 @@ export class StyledSheetBuilder {
    * spacer — and record its boundaries for styling. No-ops (and records nothing) when
    * `dataRows` is empty, matching the existing "omit empty sections" sheet behavior.
    */
-  pushSection(title: string, headers: string[], dataRows: unknown[][]): void {
+  pushSection(title: string, headers: string[], dataRows: unknown[][], gapRows = 1): void {
     if (!dataRows.length) return;
     const titleRow = this.pushRow([title]);
     const headerRow = this.pushRow(headers);
     const dataStart = this.rows.length;
     for (const row of dataRows) this.pushRow(row);
     const dataEnd = this.rows.length - 1;
-    this.pushRow(['']);
+    for (let i = 0; i < Math.max(1, gapRows); i++) this.pushRow(['']);
     this.sections.push({ titleRow, headerRow, headers, dataRowRange: [dataStart, dataEnd] });
   }
 }

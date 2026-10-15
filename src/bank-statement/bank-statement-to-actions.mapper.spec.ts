@@ -148,3 +148,22 @@ describe('pickBankStatementSheetName', () => {
     expect(pickBankStatementSheetName(['bank statement ', 'BANK STATEMENT 2'])).toBe('Bank Statement 3');
   });
 });
+
+describe('pickBankStatementSheetName with a preferred name', () => {
+  it('uses the preferred name made legal for Excel', () => {
+    expect(pickBankStatementSheetName([], 'statement:sep/2026?.csv')).not.toMatch(/[:\\/?*[\]]/);
+  });
+  it('keeps within 31 characters and numbers a taken name', () => {
+    const long = 'bank_statement_sep2026_A_drcr_utf8bom';
+    const first = pickBankStatementSheetName([], long);
+    expect(first.length).toBeLessThanOrEqual(31);
+    const second = pickBankStatementSheetName([first], long);
+    expect(second).not.toBe(first);
+    expect(second.length).toBeLessThanOrEqual(31);
+    expect(second.endsWith(' 2')).toBe(true);
+  });
+  it('falls back to "Bank Statement" for a blank or unusable name', () => {
+    expect(pickBankStatementSheetName([], '   ')).toBe('Bank Statement');
+    expect(pickBankStatementSheetName([], '///')).toBe('Bank Statement');
+  });
+});

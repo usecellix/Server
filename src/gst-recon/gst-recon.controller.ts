@@ -8,7 +8,7 @@ import {
   ValidateNested,
 } from 'class-validator';
 import { Type } from 'class-transformer';
-import { GstReconcileRequestDto } from './gst-recon.dto';
+import { GstReconcileRequestDto, GstReconRelayoutRequestDto } from './gst-recon.dto';
 import { GstReconService } from './gst-recon.service';
 import { GstReconOrchestrator } from './orchestrator';
 import { GstReconIntent, GstReconIntentPayload } from './orchestrator.types';
@@ -66,6 +66,16 @@ export class GstReconController {
   @Post('reconcile')
   reconcile(@Body() body: GstReconcileRequestDto) {
     return this.gstReconService.reconcile(body);
+  }
+
+  /**
+   * Follow-up to an earlier casual `reconcile()` call — "change the layout of Missed
+   * vs X" re-maps that run's already-matched rows into a different sheet layout, no
+   * workbook re-read, no re-matching.
+   */
+  @Post('reconcile/relayout')
+  relayout(@Body() body: GstReconRelayoutRequestDto) {
+    return this.gstReconService.relayout(body);
   }
 
   @Post('reconcile/conversational')

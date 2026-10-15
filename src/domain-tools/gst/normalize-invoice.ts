@@ -290,7 +290,9 @@ export function buildNormalizedRow(parts: {
   gstin: unknown;
   invoiceNumber: unknown;
   invoiceDate: unknown;
-  /** Pass literal `null` (not `undefined`/blank) to mean "no value found" — kept as null, never defaulted to 0. */
+  /** `null`, `undefined`, or an empty/whitespace string all mean "no value found" — kept as
+   *  null, never defaulted to 0. A genuinely blank Excel cell reads back as `undefined` via
+   *  `cellAt`, not literal `null`, so all three must be treated as the same "no value" case. */
   taxableValue: unknown;
   taxRatePercent?: number | null;
   ambiguousRateSlab?: boolean;
@@ -310,7 +312,11 @@ export function buildNormalizedRow(parts: {
 }): NormalizedInvoiceRow {
   const gstin = normalizeGstin(String(parts.gstin ?? ''));
   const invoiceNumber = String(parts.invoiceNumber ?? '').trim();
-  const taxableValue = parts.taxableValue === null ? null : parseAmount(parts.taxableValue);
+  const isBlankTaxableValue =
+    parts.taxableValue === null ||
+    parts.taxableValue === undefined ||
+    (typeof parts.taxableValue === 'string' && parts.taxableValue.trim() === '');
+  const taxableValue = isBlankTaxableValue ? null : parseAmount(parts.taxableValue);
   const igst = parseAmount(parts.igst);
   const cgst = parseAmount(parts.cgst);
   const sgst = parseAmount(parts.sgst);

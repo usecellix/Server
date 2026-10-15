@@ -56,6 +56,10 @@ function itcOf(row: NormalizedInvoiceRow): number {
 function isB2c(row: NormalizedInvoiceRow, mode: GstMatchMode): boolean {
   if (mode !== 'sales') return false;
   if (row.supplyCategory === 'b2c') return true;
+  // An explicit non-B2C category (e.g. 'b2b') is authoritative — a blank recipient
+  // GSTIN on a row the books themselves labeled B2B is a real data gap to diagnose
+  // (blank_counterparty_gstin), not an expected B2C pattern to wave through.
+  if (row.supplyCategory) return false;
   return !row.gstin;
 }
 

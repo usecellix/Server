@@ -124,7 +124,7 @@ export class BankStatementService {
     }
 
     const { rows, verification } = verifyBankStatement(parsed);
-    const outputSheetName = pickBankStatementSheetName(request.existingSheetNames);
+    const outputSheetName = pickBankStatementSheetName(request.existingSheetNames, request.preferredSheetName);
     const actions = mapBankStatementToActions({
       sheetName: outputSheetName,
       rows,
