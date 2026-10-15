@@ -1,6 +1,7 @@
 import { SheetActionPayload } from '../excel-ai/types/sheet-actions.types';
 import { NormalizedBankStatementRow } from '../domain-tools/ingestion/bank-statement-parser';
 import { isoDateToExcelSerial } from '../domain-tools/ingestion/statement-values';
+import { sanitizeExcelSheetName } from '../excel-ai/utils/sheet-name.util';
 
 /**
  * The fixed sheet layout for an imported statement
@@ -109,11 +110,15 @@ const BASE_SHEET_NAME = 'Bank Statement';
  * that the workbook does not already have. An import never targets an existing
  * sheet. Excel compares sheet names without regard to case.
  */
-export function pickBankStatementSheetName(existingSheetNames: string[] = []): string {
+export function pickBankStatementSheetName(existingSheetNames: string[] = [], preferredName?: string): string {
   const taken = new Set(existingSheetNames.map((name) => name.trim().toLowerCase()));
-  if (!taken.has(BASE_SHEET_NAME.toLowerCase())) return BASE_SHEET_NAME;
+  // The caller may name the sheet (the attached file's name). It is made a legal Excel name first;
+  // when it is taken, " 2", " 3"… are added, trimming the base so the 31-character limit holds.
+  const base = preferredName?.trim() ? sanitizeExcelSheetName(preferredName.trim(), BASE_SHEET_NAME) : BASE_SHEET_NAME;
+  if (!taken.has(base.toLowerCase())) return base;
   for (let n = 2; ; n++) {
-    const candidate = `${BASE_SHEET_NAME} ${n}`;
+    const suffix = ` ${n}`;
+    const candidate = `${base.slice(0, 31 - suffix.length).trim()}${suffix}`;
     if (!taken.has(candidate.toLowerCase())) return candidate;
   }
 }

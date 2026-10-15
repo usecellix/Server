@@ -31,12 +31,30 @@ export class BankSheetPayloadDto {
   @IsNumber()
   headers_row?: number;
 
+  /** Sheet contents. Omit when `raw_table` (an attached file) is sent instead. */
+  @IsOptional()
   @IsArray()
-  data!: unknown[][];
+  data?: unknown[][];
+
+  /**
+   * An attached CSV / Excel / PDF, decoded in the task pane (same contract as
+   * POST /ingest/bank-statement). Read directly — never written to a sheet first.
+   */
+  @IsOptional()
+  @IsObject()
+  raw_table?: Record<string, unknown>;
 
   @IsOptional()
   @IsIn(['XLSX', 'CSV'])
   file_type?: 'XLSX' | 'CSV';
+
+  /**
+   * This sheet was written from an attached file (the "Add as sheet" choice). It is then held to the same
+   * standard as the file itself: refused when the balance checks show it was read incompletely.
+   */
+  @IsOptional()
+  @IsBoolean()
+  strict?: boolean;
 }
 
 export class BankReconSettingsDto {

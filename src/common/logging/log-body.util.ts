@@ -62,6 +62,17 @@ export function sanitizeLogBody(body: unknown): unknown {
     sanitized.sheetData = summarizeSheetData(sanitized.sheetData);
   }
 
+  // Bank reconciliation bodies are the user's ledger and statement: sizes only, never cells.
+  for (const key of ['books_ledger', 'bank_statement', 'prior_brs']) {
+    const sheet = sanitized[key];
+    if (isRecord(sheet)) {
+      sanitized[key] = {
+        rows: Array.isArray(sheet.data) ? sheet.data.length : undefined,
+        raw_table: 'raw_table' in sheet ? summarizeRawTable(sheet.raw_table) : undefined,
+      };
+    }
+  }
+
   if ('rawTable' in sanitized) {
     sanitized.rawTable = summarizeRawTable(sanitized.rawTable);
   }

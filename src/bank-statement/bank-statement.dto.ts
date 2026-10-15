@@ -16,6 +16,12 @@ export class ImportBankStatementDto {
   @IsString({ each: true })
   existingSheetNames?: string[];
 
+  /** Name for the new sheet (e.g. the attached file's name). Falls back to "Bank Statement". */
+  @IsOptional()
+  @IsString()
+  @MaxLength(120)
+  preferredSheetName?: string;
+
   /** Place the new sheet after this one. */
   @IsOptional()
   @IsString()

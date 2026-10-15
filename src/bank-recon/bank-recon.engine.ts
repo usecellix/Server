@@ -25,6 +25,8 @@ export interface EngineSheet {
 export interface EngineInput {
   books: EngineSheet;
   bank: EngineSheet;
+  /** The bank statement came from an attached file: sheet row → place in that file. */
+  bankSourceRefs?: Map<number, string>;
   /** Previous period's BRS — its uncleared items are injected as opening ledger entries. */
   priorBrs?: EngineSheet;
   periodStart?: string;
@@ -95,6 +97,14 @@ export function runBankReconEngine(input: EngineInput): EngineOutput {
     headersRow: bankSheet.headersRow,
     sourceFormat: fmt(bankSheet),
   });
+
+  if (input.bankSourceRefs) {
+    // Attached file: there is no sheet row to jump to, only a place in the file.
+    const refs = input.bankSourceRefs;
+    for (const t of bankParsed.txns) {
+      t.sourceLocation = { ...t.sourceLocation, external: true, ref: refs.get(t.sourceLocation.row) };
+    }
+  }
 
   const dedup = dedupeRepeatedRows(bankParsed.txns);
   if (dedup.removed.length) {

@@ -78,6 +78,12 @@ export function parseNarration(narration: string): ParsedNarration {
     if (utr && /\d/.test(utr[1])) out.referenceNo = utr[1];
   }
 
+  // Batch / order references such as "BATCH SAL0925" (bulk salary, gateway settlements).
+  if (!out.referenceNo) {
+    const batch = upper.match(/\b(?:BATCH|SETTLEMENT)\s*[:#-]?\s*([A-Z]{2,}\d{3,}[A-Z0-9]*)\b/);
+    if (batch) out.referenceNo = batch[1];
+  }
+
   // Cheque number: 6 digits (occasionally 5-8) near a cheque keyword.
   const chq =
     upper.match(/\b(?:CHQ|CHEQUE|CHECK|CLG|INST(?:RUMENT)?)\.?\s*(?:DEP(?:OSIT)?\.?|NO\.?|NUM(?:BER)?|#)?\s*[:\-]?\s*(\d{3,8})\b/) ??

@@ -215,14 +215,14 @@ export class StyledSheetBuilder {
    * spacer — and record its boundaries for styling. No-ops (and records nothing) when
    * `dataRows` is empty, matching the existing "omit empty sections" sheet behavior.
    */
-  pushSection(title: string, headers: string[], dataRows: unknown[][]): void {
+  pushSection(title: string, headers: string[], dataRows: unknown[][], gapRows = 1): void {
     if (!dataRows.length) return;
     const titleRow = this.pushRow([title]);
     const headerRow = this.pushRow(headers);
     const dataStart = this.rows.length;
     for (const row of dataRows) this.pushRow(row);
     const dataEnd = this.rows.length - 1;
-    this.pushRow(['']);
+    for (let i = 0; i < Math.max(1, gapRows); i++) this.pushRow(['']);
     this.sections.push({ titleRow, headerRow, headers, dataRowRange: [dataStart, dataEnd] });
   }
 }

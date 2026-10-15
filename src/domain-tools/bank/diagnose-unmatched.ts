@@ -39,6 +39,14 @@ function dupKey(t: BankTxn): string {
 /** Bank-originated item classification from narration keywords (plan §6 Pass 6). */
 export function classifyBankOnly(t: BankTxn): { reason: BankReason; explanation: string } {
   const n = t.narration.toUpperCase();
+  // A return CHARGE (and the GST on it) is a bank charge — only the returned instrument itself is the bounce.
+  if (t.direction === 'OUT' && /\b(CHG|CHGS|CHRG|CHARGES?)\b/.test(n)) {
+    const gst = /\b(GST|IGST|CGST|SGST)\b/.test(n);
+    return {
+      reason: 'bank_charges_not_booked',
+      explanation: gst ? 'GST on bank charges — book along with the charges.' : 'Bank charge not yet booked in the ledger.',
+    };
+  }
   if (/(CHQ|CHEQUE|CLG|INW|OUTW|ECS|NACH).*(RET|RTN|RETURN|BOUNCE|UNPAID|DISHON)|(RET|RETURN|BOUNCE|UNPAID|DISHON).*(CHQ|CHEQUE|CHG|CHARGE)/.test(n)) {
     return {
       reason: 'cheque_bounce_not_booked',
@@ -117,6 +125,9 @@ export function diagnoseUnmatched(input: DiagnoseInput): {
   const booksGroups = new Map<string, BankTxn[]>();
   for (const b of input.allBooks) (booksGroups.get(dupKey(b)) ?? booksGroups.set(dupKey(b), []).get(dupKey(b))!).push(b);
 
+  // Bank rows already explained by a books-side mismatch — they carry the same mismatch on the bank side.
+  const bankMismatch = new Map<string, { reason: 'amount_mismatch' | 'date_mismatch_outside_window'; explanation: string }>();
+
   const unmatchedBooks: UnmatchedItem<BooksReason>[] = input.freeBooks.map((b) => {
     const mk = (reason: BooksReason, explanation: string): UnmatchedItem<BooksReason> => ({ txn: b, reason, explanation });
 
@@ -134,6 +145,12 @@ export function diagnoseUnmatched(input: DiagnoseInput): {
       (k) => k.direction === b.direction && input.refMatch(b, k) && Math.round(k.amount * 100) !== Math.round(b.amount * 100),
     );
     if (refHit) {
+      if (!bankMismatch.has(refHit.id)) {
+        bankMismatch.set(refHit.id, {
+          reason: 'amount_mismatch',
+          explanation: `Books entry (row ${b.sourceLocation.row}, ${b.txnDate}) has the same reference for ${inr(b.amount)} — amount differs by ${inr(Math.abs(refHit.amount - b.amount))}.`,
+        });
+      }
       return mk(
         'amount_mismatch',
         `Same cheque/reference appears in the bank for ${inr(refHit.amount)} but is ${inr(b.amount)} in books (difference ${inr(Math.abs(refHit.amount - b.amount))}).`,
@@ -148,6 +165,12 @@ export function diagnoseUnmatched(input: DiagnoseInput): {
       return (g > settings.clearingWindowDays && g <= FAR_WINDOW_DAYS) || (g < -settings.earlyWindowDays && g >= -FAR_WINDOW_DAYS);
     });
     if (far) {
+      if (!bankMismatch.has(far.id)) {
+        bankMismatch.set(far.id, {
+          reason: 'date_mismatch_outside_window',
+          explanation: `Books entry (row ${b.sourceLocation.row}) for the same amount is dated ${b.txnDate}, ${Math.abs(input.gapOf(b, far))} days away — check the date posted.`,
+        });
+      }
       return mk(
         'date_mismatch_outside_window',
         `A bank entry for ${inr(far.amount)} exists on ${far.txnDate}, ${Math.abs(input.gapOf(b, far))} days from the books date — check the date posted.`,
@@ -195,6 +218,8 @@ export function diagnoseUnmatched(input: DiagnoseInput): {
     if (twins.length > 1 && (otherTwinMatched || twins.findIndex((t) => t.id === k.id) > 0)) {
       return { txn: k, reason: 'possible_duplicate_in_bank' as const, explanation: 'The same debit/credit appears twice on the statement (same date, amount and reference/merchant) — check for a double charge.' };
     }
+    const mismatch = bankMismatch.get(k.id);
+    if (mismatch) return { txn: k, reason: mismatch.reason, explanation: mismatch.explanation };
     const c = classifyBankOnly(k);
     // Hint when a books row looks like the same transaction but sits outside the window.
     const near = input.freeBooks.find(

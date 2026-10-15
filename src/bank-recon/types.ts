@@ -43,7 +43,11 @@ export interface BankTxn {
   runningBalance?: number;
   /** 0..1 — below 0.9 means the row is listed under "Please verify". */
   parseConfidence: number;
-  sourceLocation: { sheet: string; row: number };
+  /**
+   * Where the row came from. `external` rows come from an attached file rather than a sheet
+   * in the workbook, so there is no cell to jump to; `ref` is the place in the file ("p3 l12").
+   */
+  sourceLocation: { sheet: string; row: number; ref?: string; external?: boolean };
 }
 
 export interface ParsedTable {
@@ -76,7 +80,9 @@ export type BankReason =
   | 'return_credit_not_booked'
   | 'cheque_bounce_not_booked'
   | 'unidentified_transaction'
-  | 'possible_duplicate_in_bank';
+  | 'possible_duplicate_in_bank'
+  | 'amount_mismatch'
+  | 'date_mismatch_outside_window';
 
 export type MatchKind = 'ONE_TO_ONE' | 'GROUP' | 'REVERSAL';
 

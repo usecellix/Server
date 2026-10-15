@@ -4,6 +4,7 @@ import { sanitizeExcelSheetName } from '../excel-ai/utils/sheet-name.util';
 import { DEFAULT_BANK_MATCH_SETTINGS, BankMatchSettings } from './types';
 import { BankReconRelayoutRequestDto, BankReconcileRequestDto } from './bank-recon.dto';
 import { runBankReconEngine } from './bank-recon.engine';
+import { AttachedStatement, readAttachedStatement } from './attachment-statement';
 import { getBankLayoutCache, storeBankLayoutCache } from './layout-cache';
 import {
   BANK_REASON_LABEL,
@@ -41,6 +42,10 @@ export interface BankReconRowDto {
   reason: string;
   reason_label: string;
   explanation: string;
+  /** True when the row is from an attached file (no workbook cell to jump to). */
+  external?: boolean;
+  /** Place in the attached file, e.g. "p3 l12". */
+  source_ref?: string;
 }
 
 @Injectable()
@@ -54,8 +59,15 @@ export class BankReconService {
     if (!request.books_ledger?.data?.length) {
       throw new BadRequestException('books_ledger.data (the bank ledger from your books) is required.');
     }
-    if (!request.bank_statement?.data?.length) {
-      throw new BadRequestException('bank_statement.data is required.');
+    // The statement is either a sheet in the workbook or an attached file read directly.
+    let attached: AttachedStatement | undefined;
+    if (request.bank_statement?.raw_table) {
+      attached = readAttachedStatement(request.bank_statement.raw_table);
+    }
+    const bankData = attached ? attached.grid : request.bank_statement?.data;
+    const bankName = attached ? attached.fileName : request.bank_statement?.sheet_name;
+    if (!bankData?.length || !bankName) {
+      throw new BadRequestException('bank_statement.data or bank_statement.raw_table is required.');
     }
 
     const out = runBankReconEngine({
@@ -66,18 +78,19 @@ export class BankReconService {
         fileType: request.books_ledger.file_type,
       },
       bank: {
-        sheetName: request.bank_statement.sheet_name,
-        data: request.bank_statement.data,
-        headersRow: request.bank_statement.headers_row,
-        fileType: request.bank_statement.file_type,
+        sheetName: bankName,
+        data: bankData,
+        headersRow: attached ? 1 : request.bank_statement.headers_row,
+        fileType: attached ? (attached.source === 'csv' ? 'CSV' : 'XLSX') : request.bank_statement.file_type,
       },
+      bankSourceRefs: attached?.sourceRefs,
       priorBrs: request.prior_brs?.data?.length
         ? { sheetName: request.prior_brs.sheet_name, data: request.prior_brs.data }
         : undefined,
       periodStart: request.period_start,
       periodEnd: request.period_end,
       booksOpeningBalance: request.books_opening_balance,
-      bankOpeningBalance: request.bank_opening_balance,
+      bankOpeningBalance: request.bank_opening_balance ?? attached?.openingBalance,
       accountNumber: request.casual === false ? request.account_number : undefined,
       settings: { ...DEFAULT_BANK_MATCH_SETTINGS, ...settingsFromDto(request.settings) },
     });
@@ -97,7 +110,26 @@ export class BankReconService {
         end: out.periodEnd,
       },
       carry_forward_items: out.carryForwardCount,
-      validation: { errors: validationErrors, warnings, notes: out.notes },
+      bank_source: attached
+        ? {
+            kind: 'attachment' as const,
+            file_name: attached.fileName,
+            file_type: attached.source,
+            transactions: attached.transactionCount,
+            verification: attached.verification.state,
+            account_masked: attached.accountNumberMasked ?? null,
+          }
+        : { kind: 'sheet' as const, file_name: bankName },
+      validation: {
+        errors: validationErrors,
+        warnings,
+        notes: [
+          ...out.notes,
+          ...(attached && attached.verification.state !== 'verified'
+            ? [`Statement read from ${attached.fileName}: ${attached.verification.notes.slice(0, 3).join(' ')}`]
+            : []),
+        ],
+      },
     };
 
     if (out.periodZeroMessage) {
@@ -111,6 +143,23 @@ export class BankReconService {
         layout_cache_id: null as string | null,
         period_zero_message: out.periodZeroMessage,
       };
+    }
+
+    // An attached file that fails the balance checks was read incompletely (an image-only page, a
+    // dropped row). Reconciling it would report dozens of false mismatches, so it is refused even
+    // in a casual run — unlike a sheet the user can see and correct.
+    // The same holds for a sheet that was itself written from an attached file (`strict`).
+    const fromFile = Boolean(attached) || request.bank_statement?.strict === true;
+    const incompleteAttachment = fromFile && out.bankValidation.errors.some((e) => e.code.startsWith('BALANCE_'));
+    if (incompleteAttachment) {
+      const isPdf = attached ? attached.source === 'pdf' : true; // a sheet from a file: assume the harder case
+      throw new BadRequestException(
+        `The statement in "${attached?.fileName ?? bankName}" could not be read completely, so I haven't reconciled it:\n\n` +
+          `${out.bankValidation.errors.map((e) => `• ${e.message}`).join('\n')}\n\n` +
+          (isPdf
+            ? 'If a page is a scan or photo, download the statement from your bank as Excel or CSV instead — those read exactly.'
+            : 'Check the file against the bank statement, or download it again.'),
+      );
     }
 
     // Gated (full) runs must not produce a misleading reconciliation from data that fails
@@ -137,7 +186,7 @@ export class BankReconService {
       runAt,
       relativeTo: request.books_ledger.sheet_name,
       booksSheet: out.booksParsed.txns[0]?.sourceLocation.sheet ?? request.books_ledger.sheet_name,
-      bankSheet: out.bankParsed.txns[0]?.sourceLocation.sheet ?? request.bank_statement.sheet_name,
+      bankSheet: out.bankParsed.txns[0]?.sourceLocation.sheet ?? bankName,
     };
 
     // The "not cleared" view lists only timing items; the cached full result keeps everything for relayout.
@@ -266,6 +315,8 @@ function toRows(model: BankSheetModel): BankReconRowDto[] {
     side,
     sheet_name: t.sourceLocation.sheet,
     row: t.sourceLocation.row,
+    external: t.sourceLocation.external,
+    source_ref: t.sourceLocation.ref,
     date: t.txnDate,
     direction: t.direction,
     amount: t.amount,

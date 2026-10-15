@@ -1,0 +1,4313 @@
+{
+  "meta": {
+    "company": "Sree Meenakshi Agro Foods Pvt Ltd",
+    "bank": "Demo Bank of India Ltd.",
+    "account_no": "50100987654321",
+    "ifsc": "DEMO0000042",
+    "period": "2026-09-01..2026-09-30",
+    "extension_statement": "2026-10-01..2026-10-10",
+    "currency": "INR",
+    "bank_opening": 1245000.0,
+    "bank_closing": 2478981.05,
+    "books_opening": 1252750.0,
+    "books_closing": 2810451.75,
+    "sign_convention": "Books bank-ledger DEBIT = money IN (receipt); bank statement CREDIT/Deposit = money IN. direction IN/OUT is the normalised field. amount is always positive.",
+    "clearing_window_days_assumed": 15,
+    "pdf_password": "DEMO@2026"
+  },
+  "carry_forward": [
+    {
+      "id": "CF1",
+      "kind": "OC",
+      "date": "2026-08-28",
+      "cheque_no": "004781",
+      "party": "Kovai Packaging Supplies",
+      "amount": 48500.0,
+      "note": "Cheque issued 28-Aug, presented 03-Sep"
+    },
+    {
+      "id": "CF2",
+      "kind": "DIT",
+      "date": "2026-08-29",
+      "cheque_no": "229014",
+      "party": "Anand Electricals",
+      "amount": 72000.0,
+      "note": "Cheque deposited 29-Aug, credited 02-Sep"
+    },
+    {
+      "id": "CF3",
+      "kind": "OC",
+      "date": "2026-05-12",
+      "cheque_no": "004512",
+      "party": "Orchid Printers",
+      "amount": 15750.0,
+      "note": "STALE: issued 12-May-2026 (>3 months), still not presented"
+    }
+  ],
+  "books": [
+    {
+      "id": "L001",
+      "scenario": "D-DATE",
+      "date": "2026-09-02",
+      "direction": "IN",
+      "amount": 38000.0,
+      "amount_paise": 3800000,
+      "reference": "DBIN26092900777",
+      "instrument_no": "",
+      "narration": "Received from Vasanth Super Mart UTR DBIN26092900777",
+      "counterparty": "Vasanth Super Mart",
+      "voucher_type": "Receipt",
+      "voucher_no": "RV/26-27/0412",
+      "value_date": null,
+      "running_balance": 1290750.0,
+      "expected": {
+        "status": "UNRECONCILED",
+        "category": "date_mismatch_outside_window",
+        "pass_": null,
+        "match_id": null,
+        "linked_ids": [],
+        "related_id": "B056",
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "L002",
+      "scenario": "M2",
+      "date": "2026-09-02",
+      "direction": "OUT",
+      "amount": 18350.0,
+      "amount_paise": 1835000,
+      "reference": "",
+      "instrument_no": "004790",
+      "narration": "Chq No. 004790 issued to Sundaram Stationers",
+      "counterparty": "Sundaram Stationers",
+      "voucher_type": "Payment",
+      "voucher_no": "PV/26-27/2290",
+      "value_date": null,
+      "running_balance": 1272400.0,
+      "expected": {
+        "status": "MATCHED",
+        "category": null,
+        "pass_": "P1_REF",
+        "match_id": "MS17a-1",
+        "linked_ids": [
+          "B013"
+        ],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "L003",
+      "scenario": "R-IN",
+      "date": "2026-09-02",
+      "direction": "IN",
+      "amount": 262015.0,
+      "amount_paise": 26201500,
+      "reference": "DBIN26090200114",
+      "instrument_no": "",
+      "narration": "Received from Annapoorna Wholesale Mart vide NEFT UTR DBIN26090200114 against Inv 5203",
+      "counterparty": "Annapoorna Wholesale Mart",
+      "voucher_type": "Receipt",
+      "voucher_no": "RV/26-27/0413",
+      "value_date": null,
+      "running_balance": 1534415.0,
+      "expected": {
+        "status": "MATCHED",
+        "category": null,
+        "pass_": "P1_REF",
+        "match_id": "MR04-1",
+        "linked_ids": [
+          "B002"
+        ],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "L004",
+      "scenario": "M1",
+      "date": "2026-09-03",
+      "direction": "IN",
+      "amount": 125000.0,
+      "amount_paise": 12500000,
+      "reference": "DBIN26090300124",
+      "instrument_no": "",
+      "narration": "Received from Southern Spices Exports vide NEFT UTR DBIN26090300124 against Inv 4410",
+      "counterparty": "Southern Spices Exports",
+      "voucher_type": "Receipt",
+      "voucher_no": "RV/26-27/0414",
+      "value_date": null,
+      "running_balance": 1659415.0,
+      "expected": {
+        "status": "MATCHED",
+        "category": null,
+        "pass_": "P1_REF",
+        "match_id": "MS01-1",
+        "linked_ids": [
+          "B004"
+        ],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "L005",
+      "scenario": "R-IN",
+      "date": "2026-09-03",
+      "direction": "IN",
+      "amount": 31065.25,
+      "amount_paise": 3106525,
+      "reference": "622985165160",
+      "instrument_no": "",
+      "narration": "UPI receipt 622985165160 - Southern Spices Exports",
+      "counterparty": "Southern Spices Exports",
+      "voucher_type": "Receipt",
+      "voucher_no": "RV/26-27/0415",
+      "value_date": null,
+      "running_balance": 1690480.25,
+      "expected": {
+        "status": "MATCHED",
+        "category": null,
+        "pass_": "P1_REF",
+        "match_id": "MR01-1",
+        "linked_ids": [
+          "B005"
+        ],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "L006",
+      "scenario": "R-IN",
+      "date": "2026-09-03",
+      "direction": "IN",
+      "amount": 103575.75,
+      "amount_paise": 10357575,
+      "reference": "620424660041",
+      "instrument_no": "",
+      "narration": "UPI receipt 620424660041 - Pearl Fisheries",
+      "counterparty": "Pearl Fisheries",
+      "voucher_type": "Receipt",
+      "voucher_no": "RV/26-27/0416",
+      "value_date": null,
+      "running_balance": 1794056.0,
+      "expected": {
+        "status": "MATCHED",
+        "category": null,
+        "pass_": "P1_REF",
+        "match_id": "MR12-1",
+        "linked_ids": [
+          "B006"
+        ],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "L007",
+      "scenario": "M1",
+      "date": "2026-09-04",
+      "direction": "IN",
+      "amount": 450000.0,
+      "amount_paise": 45000000,
+      "reference": "DBIR26090400987",
+      "instrument_no": "",
+      "narration": "RTGS received from Chola Cold Storage UTR DBIR26090400987 Inv 4415",
+      "counterparty": "Chola Cold Storage",
+      "voucher_type": "Receipt",
+      "voucher_no": "RV/26-27/0417",
+      "value_date": null,
+      "running_balance": 2244056.0,
+      "expected": {
+        "status": "MATCHED",
+        "category": null,
+        "pass_": "P1_REF",
+        "match_id": "MS02-1",
+        "linked_ids": [
+          "B007"
+        ],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "L008",
+      "scenario": "M1",
+      "date": "2026-09-04",
+      "direction": "OUT",
+      "amount": 85000.0,
+      "amount_paise": 8500000,
+      "reference": "DBIN26090400012",
+      "instrument_no": "",
+      "narration": "Rent for Sep 2026 paid vide NEFT UTR DBIN26090400012",
+      "counterparty": "R. Venkatesh (Landlord)",
+      "voucher_type": "Payment",
+      "voucher_no": "PV/26-27/2291",
+      "value_date": null,
+      "running_balance": 2159056.0,
+      "expected": {
+        "status": "MATCHED",
+        "category": null,
+        "pass_": "P1_REF",
+        "match_id": "MS15-1",
+        "linked_ids": [
+          "B008"
+        ],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "L009",
+      "scenario": "M2",
+      "date": "2026-09-04",
+      "direction": "OUT",
+      "amount": 42780.0,
+      "amount_paise": 4278000,
+      "reference": "",
+      "instrument_no": "004791",
+      "narration": "Chq No. 004791 issued to Vel Murugan Transport",
+      "counterparty": "Vel Murugan Transport",
+      "voucher_type": "Payment",
+      "voucher_no": "PV/26-27/2292",
+      "value_date": null,
+      "running_balance": 2116276.0,
+      "expected": {
+        "status": "MATCHED",
+        "category": null,
+        "pass_": "P1_REF",
+        "match_id": "MS17b-1",
+        "linked_ids": [
+          "B022"
+        ],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "L010",
+      "scenario": "R-CHQ-OUT",
+      "date": "2026-09-04",
+      "direction": "OUT",
+      "amount": 65540.5,
+      "amount_paise": 6554050,
+      "reference": "",
+      "instrument_no": "004799",
+      "narration": "Chq No. 004799 issued to Vel Murugan Transport",
+      "counterparty": "Vel Murugan Transport",
+      "voucher_type": "Payment",
+      "voucher_no": "PV/26-27/2293",
+      "value_date": null,
+      "running_balance": 2050735.5,
+      "expected": {
+        "status": "MATCHED",
+        "category": null,
+        "pass_": "P1_REF",
+        "match_id": "MP10-1",
+        "linked_ids": [
+          "B020"
+        ],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "L011",
+      "scenario": "B-BOUNCE",
+      "date": "2026-09-05",
+      "direction": "IN",
+      "amount": 64000.0,
+      "amount_paise": 6400000,
+      "reference": "",
+      "instrument_no": "220145",
+      "narration": "Chq No. 220145 received from Thalir Retail LLP",
+      "counterparty": "Thalir Retail LLP",
+      "voucher_type": "Receipt",
+      "voucher_no": "RV/26-27/0418",
+      "value_date": null,
+      "running_balance": 2114735.5,
+      "expected": {
+        "status": "MATCHED",
+        "category": null,
+        "pass_": "P1_REF",
+        "match_id": "MS06-1",
+        "linked_ids": [
+          "B012"
+        ],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "L012",
+      "scenario": "M2",
+      "date": "2026-09-07",
+      "direction": "IN",
+      "amount": 95500.0,
+      "amount_paise": 9550000,
+      "reference": "",
+      "instrument_no": "118233",
+      "narration": "Chq No. 118233 dt 07-09-2026 received from Annapoorna Wholesale Mart",
+      "counterparty": "Annapoorna Wholesale Mart",
+      "voucher_type": "Receipt",
+      "voucher_no": "RV/26-27/0419",
+      "value_date": null,
+      "running_balance": 2210235.5,
+      "expected": {
+        "status": "MATCHED",
+        "category": null,
+        "pass_": "P1_REF",
+        "match_id": "MS03-1",
+        "linked_ids": [
+          "B015"
+        ],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "L013",
+      "scenario": "R-OUT",
+      "date": "2026-09-08",
+      "direction": "OUT",
+      "amount": 86160.0,
+      "amount_paise": 8616000,
+      "reference": "DBIN26090800198",
+      "instrument_no": "",
+      "narration": "Paid to Sundaram Stationers vide NEFT UTR DBIN26090800198 - Inv 5222",
+      "counterparty": "Sundaram Stationers",
+      "voucher_type": "Payment",
+      "voucher_no": "PV/26-27/2294",
+      "value_date": null,
+      "running_balance": 2124075.5,
+      "expected": {
+        "status": "MATCHED",
+        "category": null,
+        "pass_": "P1_REF",
+        "match_id": "MP11-1",
+        "linked_ids": [
+          "B014"
+        ],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "L014",
+      "scenario": "D-DUP-BOOKS",
+      "date": "2026-09-09",
+      "direction": "IN",
+      "amount": 12500.0,
+      "amount_paise": 1250000,
+      "reference": "624812345678",
+      "instrument_no": "",
+      "narration": "UPI receipt 624812345678 Hari Om Traders",
+      "counterparty": "Hari Om Traders",
+      "voucher_type": "Receipt",
+      "voucher_no": "RV/26-27/0420",
+      "value_date": null,
+      "running_balance": 2136575.5,
+      "expected": {
+        "status": "MATCHED",
+        "category": null,
+        "pass_": "P1_REF",
+        "match_id": "MS04-1",
+        "linked_ids": [
+          "B016"
+        ],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": "either of the two identical books rows may be the matched one"
+      }
+    },
+    {
+      "id": "L015",
+      "scenario": "D-DUP-BOOKS",
+      "date": "2026-09-09",
+      "direction": "IN",
+      "amount": 12500.0,
+      "amount_paise": 1250000,
+      "reference": "624812345678",
+      "instrument_no": "",
+      "narration": "UPI receipt 624812345678 Hari Om Traders",
+      "counterparty": "Hari Om Traders",
+      "voucher_type": "Receipt",
+      "voucher_no": "RV/26-27/0421",
+      "value_date": null,
+      "running_balance": 2149075.5,
+      "expected": {
+        "status": "UNRECONCILED",
+        "category": "duplicate_in_books",
+        "pass_": null,
+        "match_id": null,
+        "linked_ids": [],
+        "related_id": "L014",
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "L016",
+      "scenario": "R-CHQ-OUT",
+      "date": "2026-09-09",
+      "direction": "OUT",
+      "amount": 14740.0,
+      "amount_paise": 1474000,
+      "reference": "",
+      "instrument_no": "004800",
+      "narration": "Chq No. 004800 issued to Nila Logistics",
+      "counterparty": "Nila Logistics",
+      "voucher_type": "Payment",
+      "voucher_no": "PV/26-27/2295",
+      "value_date": null,
+      "running_balance": 2134335.5,
+      "expected": {
+        "status": "MATCHED",
+        "category": null,
+        "pass_": "P1_REF",
+        "match_id": "MP12-1",
+        "linked_ids": [
+          "B041"
+        ],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "L017",
+      "scenario": "M4",
+      "date": "2026-09-10",
+      "direction": "IN",
+      "amount": 25000.0,
+      "amount_paise": 2500000,
+      "reference": "",
+      "instrument_no": "",
+      "narration": "Receipt from Pearl Fisheries - Inv 5120",
+      "counterparty": "Pearl Fisheries",
+      "voucher_type": "Receipt",
+      "voucher_no": "RV/26-27/0422",
+      "value_date": null,
+      "running_balance": 2159335.5,
+      "expected": {
+        "status": "MATCHED",
+        "category": null,
+        "pass_": "P3_NARR|P4_TIEBREAK",
+        "match_id": "MS05-1",
+        "linked_ids": [
+          "B018"
+        ],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "L018",
+      "scenario": "M4",
+      "date": "2026-09-10",
+      "direction": "IN",
+      "amount": 25000.0,
+      "amount_paise": 2500000,
+      "reference": "",
+      "instrument_no": "",
+      "narration": "Receipt from Kaveri Plastics - Inv 5121",
+      "counterparty": "Kaveri Plastics",
+      "voucher_type": "Receipt",
+      "voucher_no": "RV/26-27/0423",
+      "value_date": null,
+      "running_balance": 2184335.5,
+      "expected": {
+        "status": "MATCHED",
+        "category": null,
+        "pass_": "P3_NARR|P4_TIEBREAK",
+        "match_id": "MS05-2",
+        "linked_ids": [
+          "B017"
+        ],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "L019",
+      "scenario": "M5-ONE-TO-MANY",
+      "date": "2026-09-10",
+      "direction": "OUT",
+      "amount": 62000.0,
+      "amount_paise": 6200000,
+      "reference": "",
+      "instrument_no": "",
+      "narration": "Payment against Inv 2201",
+      "counterparty": "Kovai Packaging Supplies",
+      "voucher_type": "Payment",
+      "voucher_no": "PV/26-27/2296",
+      "value_date": null,
+      "running_balance": 2122335.5,
+      "expected": {
+        "status": "GROUP_MATCH",
+        "category": null,
+        "pass_": "P5_GROUP",
+        "match_id": "MS16-1",
+        "linked_ids": [
+          "B021"
+        ],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "L020",
+      "scenario": "M5-ONE-TO-MANY",
+      "date": "2026-09-11",
+      "direction": "OUT",
+      "amount": 71400.0,
+      "amount_paise": 7140000,
+      "reference": "",
+      "instrument_no": "",
+      "narration": "Payment against Inv 2202",
+      "counterparty": "Kovai Packaging Supplies",
+      "voucher_type": "Payment",
+      "voucher_no": "PV/26-27/2297",
+      "value_date": null,
+      "running_balance": 2050935.5,
+      "expected": {
+        "status": "GROUP_MATCH",
+        "category": null,
+        "pass_": "P5_GROUP",
+        "match_id": "MS16-1",
+        "linked_ids": [
+          "B021"
+        ],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "L021",
+      "scenario": "M5-ONE-TO-MANY",
+      "date": "2026-09-11",
+      "direction": "OUT",
+      "amount": 53000.0,
+      "amount_paise": 5300000,
+      "reference": "",
+      "instrument_no": "",
+      "narration": "Payment against Inv 2203",
+      "counterparty": "Kovai Packaging Supplies",
+      "voucher_type": "Payment",
+      "voucher_no": "PV/26-27/2298",
+      "value_date": null,
+      "running_balance": 1997935.5,
+      "expected": {
+        "status": "GROUP_MATCH",
+        "category": null,
+        "pass_": "P5_GROUP",
+        "match_id": "MS16-1",
+        "linked_ids": [
+          "B021"
+        ],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "L022",
+      "scenario": "R-IN",
+      "date": "2026-09-11",
+      "direction": "IN",
+      "amount": 20245.5,
+      "amount_paise": 2024550,
+      "reference": "627881398245",
+      "instrument_no": "",
+      "narration": "UPI receipt 627881398245 - Hari Om Traders",
+      "counterparty": "Hari Om Traders",
+      "voucher_type": "Receipt",
+      "voucher_no": "RV/26-27/0424",
+      "value_date": null,
+      "running_balance": 2018181.0,
+      "expected": {
+        "status": "MATCHED",
+        "category": null,
+        "pass_": "P1_REF",
+        "match_id": "MR02-1",
+        "linked_ids": [
+          "B023"
+        ],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "L023",
+      "scenario": "R-IN",
+      "date": "2026-09-11",
+      "direction": "IN",
+      "amount": 154415.5,
+      "amount_paise": 15441550,
+      "reference": "",
+      "instrument_no": "",
+      "narration": "Receipt from Vasanth Super Mart - Inv 5202",
+      "counterparty": "Vasanth Super Mart",
+      "voucher_type": "Receipt",
+      "voucher_no": "RV/26-27/0425",
+      "value_date": null,
+      "running_balance": 2172596.5,
+      "expected": {
+        "status": "MATCHED",
+        "category": null,
+        "pass_": "P2_AMT_DATE",
+        "match_id": "MR03-1",
+        "linked_ids": [
+          "B024"
+        ],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "L024",
+      "scenario": "R-IN",
+      "date": "2026-09-11",
+      "direction": "IN",
+      "amount": 192585.0,
+      "amount_paise": 19258500,
+      "reference": "DBIN26091100128",
+      "instrument_no": "",
+      "narration": "Received from Anand Electricals vide NEFT UTR DBIN26091100128 against Inv 5205",
+      "counterparty": "Anand Electricals",
+      "voucher_type": "Receipt",
+      "voucher_no": "RV/26-27/0426",
+      "value_date": null,
+      "running_balance": 2365181.5,
+      "expected": {
+        "status": "MATCHED",
+        "category": null,
+        "pass_": "P1_REF",
+        "match_id": "MR06-1",
+        "linked_ids": [
+          "B025"
+        ],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "L025",
+      "scenario": "R-IN",
+      "date": "2026-09-11",
+      "direction": "IN",
+      "amount": 136930.5,
+      "amount_paise": 13693050,
+      "reference": "DBIN26091100135",
+      "instrument_no": "",
+      "narration": "Received from Annapoorna Wholesale Mart vide NEFT UTR DBIN26091100135 against Inv 5208",
+      "counterparty": "Annapoorna Wholesale Mart",
+      "voucher_type": "Receipt",
+      "voucher_no": "RV/26-27/0427",
+      "value_date": null,
+      "running_balance": 2502112.0,
+      "expected": {
+        "status": "MATCHED",
+        "category": null,
+        "pass_": "P1_REF",
+        "match_id": "MR09-1",
+        "linked_ids": [
+          "B026"
+        ],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "L026",
+      "scenario": "D-MISSING-OUT",
+      "date": "2026-09-14",
+      "direction": "OUT",
+      "amount": 9320.0,
+      "amount_paise": 932000,
+      "reference": "DBIN26091400222",
+      "instrument_no": "",
+      "narration": "Paid to Sundaram Stationers vide NEFT UTR DBIN26091400222",
+      "counterparty": "Sundaram Stationers",
+      "voucher_type": "Payment",
+      "voucher_no": "PV/26-27/2299",
+      "value_date": null,
+      "running_balance": 2492792.0,
+      "expected": {
+        "status": "UNRECONCILED",
+        "category": "genuinely_missing",
+        "pass_": null,
+        "match_id": null,
+        "linked_ids": [],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "L027",
+      "scenario": "R-CHQ-IN",
+      "date": "2026-09-14",
+      "direction": "IN",
+      "amount": 22065.5,
+      "amount_paise": 2206550,
+      "reference": "",
+      "instrument_no": "300382",
+      "narration": "Chq No. 300382 received from Thalir Retail LLP",
+      "counterparty": "Thalir Retail LLP",
+      "voucher_type": "Receipt",
+      "voucher_no": "RV/26-27/0428",
+      "value_date": null,
+      "running_balance": 2514857.5,
+      "expected": {
+        "status": "MATCHED",
+        "category": null,
+        "pass_": "P1_REF",
+        "match_id": "MR07-1",
+        "linked_ids": [
+          "B039"
+        ],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "L028",
+      "scenario": "R-CHQ-OUT",
+      "date": "2026-09-14",
+      "direction": "OUT",
+      "amount": 25800.0,
+      "amount_paise": 2580000,
+      "reference": "",
+      "instrument_no": "004798",
+      "narration": "Chq No. 004798 issued to Sundaram Stationers",
+      "counterparty": "Sundaram Stationers",
+      "voucher_type": "Payment",
+      "voucher_no": "PV/26-27/2300",
+      "value_date": null,
+      "running_balance": 2489057.5,
+      "expected": {
+        "status": "MATCHED",
+        "category": null,
+        "pass_": "P1_REF",
+        "match_id": "MP08-1",
+        "linked_ids": [
+          "B049"
+        ],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "L029",
+      "scenario": "D-AMT",
+      "date": "2026-09-15",
+      "direction": "IN",
+      "amount": 58900.0,
+      "amount_paise": 5890000,
+      "reference": "DBIN26091500456",
+      "instrument_no": "",
+      "narration": "Received from Malabar Cashew Co UTR DBIN26091500456",
+      "counterparty": "Malabar Cashew Co",
+      "voucher_type": "Receipt",
+      "voucher_no": "RV/26-27/0429",
+      "value_date": null,
+      "running_balance": 2547957.5,
+      "expected": {
+        "status": "UNRECONCILED",
+        "category": "amount_mismatch",
+        "pass_": null,
+        "match_id": null,
+        "linked_ids": [],
+        "related_id": "B031",
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "L030",
+      "scenario": "M2",
+      "date": "2026-09-15",
+      "direction": "OUT",
+      "amount": 20000.0,
+      "amount_paise": 2000000,
+      "reference": "",
+      "instrument_no": "004793",
+      "narration": "Cash withdrawn vide self cheque 004793",
+      "counterparty": "Cash",
+      "voucher_type": "Contra",
+      "voucher_no": "CV/26-27/0062",
+      "value_date": null,
+      "running_balance": 2527957.5,
+      "expected": {
+        "status": "MATCHED",
+        "category": null,
+        "pass_": "P1_REF",
+        "match_id": "MS24-1",
+        "linked_ids": [
+          "B032"
+        ],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "L031",
+      "scenario": "R-IN",
+      "date": "2026-09-15",
+      "direction": "IN",
+      "amount": 169110.0,
+      "amount_paise": 16911000,
+      "reference": "DBIN26091500142",
+      "instrument_no": "",
+      "narration": "Received from Greenleaf Organics vide NEFT UTR DBIN26091500142 against Inv 5209",
+      "counterparty": "Greenleaf Organics",
+      "voucher_type": "Receipt",
+      "voucher_no": "RV/26-27/0430",
+      "value_date": null,
+      "running_balance": 2697067.5,
+      "expected": {
+        "status": "MATCHED",
+        "category": null,
+        "pass_": "P1_REF",
+        "match_id": "MR10-1",
+        "linked_ids": [
+          "B033"
+        ],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "L032",
+      "scenario": "R-OUT",
+      "date": "2026-09-15",
+      "direction": "OUT",
+      "amount": 27795.0,
+      "amount_paise": 2779500,
+      "reference": "DBIN26091500163",
+      "instrument_no": "",
+      "narration": "Paid to State Power Utility vide NEFT UTR DBIN26091500163 - Inv 5213",
+      "counterparty": "State Power Utility",
+      "voucher_type": "Payment",
+      "voucher_no": "PV/26-27/2301",
+      "value_date": null,
+      "running_balance": 2669272.5,
+      "expected": {
+        "status": "MATCHED",
+        "category": null,
+        "pass_": "P1_REF",
+        "match_id": "MP02-1",
+        "linked_ids": [
+          "B034"
+        ],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "L033",
+      "scenario": "R-CHQ-OUT",
+      "date": "2026-09-15",
+      "direction": "OUT",
+      "amount": 92360.0,
+      "amount_paise": 9236000,
+      "reference": "",
+      "instrument_no": "004797",
+      "narration": "Chq No. 004797 issued to Coastal Cold Chain Services",
+      "counterparty": "Coastal Cold Chain Services",
+      "voucher_type": "Payment",
+      "voucher_no": "PV/26-27/2302",
+      "value_date": null,
+      "running_balance": 2576912.5,
+      "expected": {
+        "status": "MATCHED",
+        "category": null,
+        "pass_": "P1_REF",
+        "match_id": "MP07-1",
+        "linked_ids": [
+          "B043"
+        ],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "L034",
+      "scenario": "B-DUP-BANK",
+      "date": "2026-09-16",
+      "direction": "OUT",
+      "amount": 2150.0,
+      "amount_paise": 215000,
+      "reference": "",
+      "instrument_no": "",
+      "narration": "Diesel for delivery van - card payment",
+      "counterparty": "Fuel Expense",
+      "voucher_type": "Payment",
+      "voucher_no": "PV/26-27/2303",
+      "value_date": null,
+      "running_balance": 2574762.5,
+      "expected": {
+        "status": "MATCHED",
+        "category": null,
+        "pass_": "P2_AMT_DATE",
+        "match_id": "MS21-1",
+        "linked_ids": [
+          "B035"
+        ],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "L035",
+      "scenario": "R-CHQ-IN",
+      "date": "2026-09-16",
+      "direction": "IN",
+      "amount": 231480.0,
+      "amount_paise": 23148000,
+      "reference": "",
+      "instrument_no": "169999",
+      "narration": "Chq No. 169999 received from Kaveri Plastics",
+      "counterparty": "Kaveri Plastics",
+      "voucher_type": "Receipt",
+      "voucher_no": "RV/26-27/0431",
+      "value_date": null,
+      "running_balance": 2806242.5,
+      "expected": {
+        "status": "MATCHED",
+        "category": null,
+        "pass_": "P1_REF",
+        "match_id": "MR08-1",
+        "linked_ids": [
+          "B040"
+        ],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "L036",
+      "scenario": "R-OUT",
+      "date": "2026-09-16",
+      "direction": "OUT",
+      "amount": 93725.0,
+      "amount_paise": 9372500,
+      "reference": "DBIN26091600184",
+      "instrument_no": "",
+      "narration": "Paid to Surya Machinery Spares vide NEFT UTR DBIN26091600184 - Inv 5217",
+      "counterparty": "Surya Machinery Spares",
+      "voucher_type": "Payment",
+      "voucher_no": "PV/26-27/2304",
+      "value_date": null,
+      "running_balance": 2712517.5,
+      "expected": {
+        "status": "MATCHED",
+        "category": null,
+        "pass_": "P1_REF",
+        "match_id": "MP06-1",
+        "linked_ids": [
+          "B037"
+        ],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "L037",
+      "scenario": "M5-MANY-TO-ONE",
+      "date": "2026-09-17",
+      "direction": "IN",
+      "amount": 38500.0,
+      "amount_paise": 3850000,
+      "reference": "",
+      "instrument_no": "",
+      "narration": "Online sale Order A1182 (PayEasy)",
+      "counterparty": "Online Sales - PayEasy Gateway",
+      "voucher_type": "Receipt",
+      "voucher_no": "RV/26-27/0432",
+      "value_date": null,
+      "running_balance": 2751017.5,
+      "expected": {
+        "status": "GROUP_MATCH",
+        "category": null,
+        "pass_": "P5_GROUP",
+        "match_id": "MS10-1",
+        "linked_ids": [
+          "B045"
+        ],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "L038",
+      "scenario": "M7-RETURN",
+      "date": "2026-09-17",
+      "direction": "OUT",
+      "amount": 22000.0,
+      "amount_paise": 2200000,
+      "reference": "DBIN26091700888",
+      "instrument_no": "",
+      "narration": "Freight Aug paid vide NEFT UTR DBIN26091700888",
+      "counterparty": "Nila Logistics",
+      "voucher_type": "Payment",
+      "voucher_no": "PV/26-27/2305",
+      "value_date": null,
+      "running_balance": 2729017.5,
+      "expected": {
+        "status": "MATCHED",
+        "category": null,
+        "pass_": "P1_REF",
+        "match_id": "MS19a-1",
+        "linked_ids": [
+          "B038"
+        ],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "L039",
+      "scenario": "M5-MANY-TO-ONE",
+      "date": "2026-09-18",
+      "direction": "IN",
+      "amount": 41200.0,
+      "amount_paise": 4120000,
+      "reference": "",
+      "instrument_no": "",
+      "narration": "Online sale Order A1190 (PayEasy)",
+      "counterparty": "Online Sales - PayEasy Gateway",
+      "voucher_type": "Receipt",
+      "voucher_no": "RV/26-27/0433",
+      "value_date": null,
+      "running_balance": 2770217.5,
+      "expected": {
+        "status": "GROUP_MATCH",
+        "category": null,
+        "pass_": "P5_GROUP",
+        "match_id": "MS10-1",
+        "linked_ids": [
+          "B045"
+        ],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "L040",
+      "scenario": "D-MISSING-IN",
+      "date": "2026-09-18",
+      "direction": "IN",
+      "amount": 17640.0,
+      "amount_paise": 1764000,
+      "reference": "DBIN26091800321",
+      "instrument_no": "",
+      "narration": "Received from Kerala Spice Hub UTR DBIN26091800321",
+      "counterparty": "Kerala Spice Hub",
+      "voucher_type": "Receipt",
+      "voucher_no": "RV/26-27/0434",
+      "value_date": null,
+      "running_balance": 2787857.5,
+      "expected": {
+        "status": "UNRECONCILED",
+        "category": "genuinely_missing",
+        "pass_": null,
+        "match_id": null,
+        "linked_ids": [],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "L041",
+      "scenario": "M5-MANY-TO-ONE",
+      "date": "2026-09-19",
+      "direction": "IN",
+      "amount": 29800.0,
+      "amount_paise": 2980000,
+      "reference": "",
+      "instrument_no": "",
+      "narration": "Online sale Order A1197 (PayEasy)",
+      "counterparty": "Online Sales - PayEasy Gateway",
+      "voucher_type": "Receipt",
+      "voucher_no": "RV/26-27/0435",
+      "value_date": null,
+      "running_balance": 2817657.5,
+      "expected": {
+        "status": "GROUP_MATCH",
+        "category": null,
+        "pass_": "P5_GROUP",
+        "match_id": "MS10-1",
+        "linked_ids": [
+          "B045"
+        ],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "L042",
+      "scenario": "M1",
+      "date": "2026-09-19",
+      "direction": "OUT",
+      "amount": 22000.0,
+      "amount_paise": 2200000,
+      "reference": "DBIN26091900901",
+      "instrument_no": "",
+      "narration": "Freight Aug re-paid vide NEFT UTR DBIN26091900901",
+      "counterparty": "Nila Logistics",
+      "voucher_type": "Payment",
+      "voucher_no": "PV/26-27/2306",
+      "value_date": null,
+      "running_balance": 2795657.5,
+      "expected": {
+        "status": "MATCHED",
+        "category": null,
+        "pass_": "P1_REF",
+        "match_id": "MS19b-1",
+        "linked_ids": [
+          "B044"
+        ],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "L043",
+      "scenario": "M5-MANY-TO-ONE",
+      "date": "2026-09-20",
+      "direction": "IN",
+      "amount": 35800.0,
+      "amount_paise": 3580000,
+      "reference": "",
+      "instrument_no": "",
+      "narration": "Online sale Order A1203 (PayEasy)",
+      "counterparty": "Online Sales - PayEasy Gateway",
+      "voucher_type": "Receipt",
+      "voucher_no": "RV/26-27/0436",
+      "value_date": null,
+      "running_balance": 2831457.5,
+      "expected": {
+        "status": "GROUP_MATCH",
+        "category": null,
+        "pass_": "P5_GROUP",
+        "match_id": "MS10-1",
+        "linked_ids": [
+          "B045"
+        ],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "L044",
+      "scenario": "M3",
+      "date": "2026-09-22",
+      "direction": "IN",
+      "amount": 7850.0,
+      "amount_paise": 785000,
+      "reference": "",
+      "instrument_no": "",
+      "narration": "UPI collections - counter sales 22-Sep",
+      "counterparty": "Counter Sales - UPI",
+      "voucher_type": "Receipt",
+      "voucher_no": "RV/26-27/0437",
+      "value_date": null,
+      "running_balance": 2839307.5,
+      "expected": {
+        "status": "MATCHED",
+        "category": null,
+        "pass_": "P2_AMT_DATE",
+        "match_id": "MS26-1",
+        "linked_ids": [
+          "B047"
+        ],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "L045",
+      "scenario": "R-OUT",
+      "date": "2026-09-22",
+      "direction": "OUT",
+      "amount": 48345.0,
+      "amount_paise": 4834500,
+      "reference": "DBIN26092200177",
+      "instrument_no": "",
+      "narration": "Paid to Sundaram Stationers vide NEFT UTR DBIN26092200177 - Inv 5216",
+      "counterparty": "Sundaram Stationers",
+      "voucher_type": "Payment",
+      "voucher_no": "PV/26-27/2307",
+      "value_date": null,
+      "running_balance": 2790962.5,
+      "expected": {
+        "status": "MATCHED",
+        "category": null,
+        "pass_": "P1_REF",
+        "match_id": "MP05-1",
+        "linked_ids": [
+          "B048"
+        ],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "L046",
+      "scenario": "M3",
+      "date": "2026-09-24",
+      "direction": "IN",
+      "amount": 60000.0,
+      "amount_paise": 6000000,
+      "reference": "",
+      "instrument_no": "",
+      "narration": "Cash deposited at branch",
+      "counterparty": "Cash",
+      "voucher_type": "Contra",
+      "voucher_no": "CV/26-27/0063",
+      "value_date": null,
+      "running_balance": 2850962.5,
+      "expected": {
+        "status": "MATCHED",
+        "category": null,
+        "pass_": "P2_AMT_DATE",
+        "match_id": "MS25-1",
+        "linked_ids": [
+          "B051"
+        ],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "L047",
+      "scenario": "R-IN",
+      "date": "2026-09-24",
+      "direction": "IN",
+      "amount": 225955.0,
+      "amount_paise": 22595500,
+      "reference": "DBIR26092400149",
+      "instrument_no": "",
+      "narration": "RTGS received from Malabar Cashew Co UTR DBIR26092400149 Inv 5210",
+      "counterparty": "Malabar Cashew Co",
+      "voucher_type": "Receipt",
+      "voucher_no": "RV/26-27/0438",
+      "value_date": null,
+      "running_balance": 3076917.5,
+      "expected": {
+        "status": "MATCHED",
+        "category": null,
+        "pass_": "P1_REF",
+        "match_id": "MR11-1",
+        "linked_ids": [
+          "B052"
+        ],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "L048",
+      "scenario": "M1",
+      "date": "2026-09-25",
+      "direction": "OUT",
+      "amount": 342600.0,
+      "amount_paise": 34260000,
+      "reference": "SAL0925",
+      "instrument_no": "",
+      "narration": "Salary for Sep 2026 - bulk NEFT batch SAL0925",
+      "counterparty": "Salary Payable",
+      "voucher_type": "Payment",
+      "voucher_no": "PV/26-27/2308",
+      "value_date": null,
+      "running_balance": 2734317.5,
+      "expected": {
+        "status": "MATCHED",
+        "category": null,
+        "pass_": "P1_REF",
+        "match_id": "MS23-1",
+        "linked_ids": [
+          "B053"
+        ],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "L049",
+      "scenario": "R-OUT",
+      "date": "2026-09-25",
+      "direction": "OUT",
+      "amount": 68890.25,
+      "amount_paise": 6889025,
+      "reference": "DBIN26092500156",
+      "instrument_no": "",
+      "narration": "Paid to State Power Utility vide NEFT UTR DBIN26092500156 - Inv 5212",
+      "counterparty": "State Power Utility",
+      "voucher_type": "Payment",
+      "voucher_no": "PV/26-27/2309",
+      "value_date": null,
+      "running_balance": 2665427.25,
+      "expected": {
+        "status": "MATCHED",
+        "category": null,
+        "pass_": "P1_REF",
+        "match_id": "MP01-1",
+        "linked_ids": [
+          "B054"
+        ],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "L050",
+      "scenario": "R-CHQ-OUT",
+      "date": "2026-09-25",
+      "direction": "OUT",
+      "amount": 66495.0,
+      "amount_paise": 6649500,
+      "reference": "",
+      "instrument_no": "004796",
+      "narration": "Chq No. 004796 issued to Nila Logistics",
+      "counterparty": "Nila Logistics",
+      "voucher_type": "Payment",
+      "voucher_no": "PV/26-27/2310",
+      "value_date": null,
+      "running_balance": 2598932.25,
+      "expected": {
+        "status": "MATCHED",
+        "category": null,
+        "pass_": "P1_REF",
+        "match_id": "MP04-1",
+        "linked_ids": [
+          "B055"
+        ],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "L051",
+      "scenario": "D-OC",
+      "date": "2026-09-28",
+      "direction": "OUT",
+      "amount": 27450.0,
+      "amount_paise": 2745000,
+      "reference": "",
+      "instrument_no": "004812",
+      "narration": "Chq No. 004812 issued to Orchid Printers",
+      "counterparty": "Orchid Printers",
+      "voucher_type": "Payment",
+      "voucher_no": "PV/26-27/2311",
+      "value_date": null,
+      "running_balance": 2571482.25,
+      "expected": {
+        "status": "UNRECONCILED",
+        "category": "cheque_issued_not_cleared",
+        "pass_": null,
+        "match_id": null,
+        "linked_ids": [],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": "presented 03-Oct-2026 per extension statement"
+      }
+    },
+    {
+      "id": "L052",
+      "scenario": "D-DIT",
+      "date": "2026-09-29",
+      "direction": "IN",
+      "amount": 110000.0,
+      "amount_paise": 11000000,
+      "reference": "",
+      "instrument_no": "330412",
+      "narration": "Chq No. 330412 received from Kaveri Plastics",
+      "counterparty": "Kaveri Plastics",
+      "voucher_type": "Receipt",
+      "voucher_no": "RV/26-27/0439",
+      "value_date": null,
+      "running_balance": 2681482.25,
+      "expected": {
+        "status": "UNRECONCILED",
+        "category": "deposit_in_transit",
+        "pass_": null,
+        "match_id": null,
+        "linked_ids": [],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": "credited 01-Oct-2026 per extension statement"
+      }
+    },
+    {
+      "id": "L053",
+      "scenario": "R-IN",
+      "date": "2026-09-29",
+      "direction": "IN",
+      "amount": 31170.25,
+      "amount_paise": 3117025,
+      "reference": "DBIN26092900121",
+      "instrument_no": "",
+      "narration": "Received from Greenleaf Organics vide NEFT UTR DBIN26092900121 against Inv 5204",
+      "counterparty": "Greenleaf Organics",
+      "voucher_type": "Receipt",
+      "voucher_no": "RV/26-27/0440",
+      "value_date": null,
+      "running_balance": 2712652.5,
+      "expected": {
+        "status": "MATCHED",
+        "category": null,
+        "pass_": "P1_REF",
+        "match_id": "MR05-1",
+        "linked_ids": [
+          "B057"
+        ],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "L054",
+      "scenario": "R-OUT",
+      "date": "2026-09-29",
+      "direction": "OUT",
+      "amount": 14565.5,
+      "amount_paise": 1456550,
+      "reference": "DBIN26092900170",
+      "instrument_no": "",
+      "narration": "Paid to Surya Machinery Spares vide NEFT UTR DBIN26092900170 - Inv 5214",
+      "counterparty": "Surya Machinery Spares",
+      "voucher_type": "Payment",
+      "voucher_no": "PV/26-27/2312",
+      "value_date": null,
+      "running_balance": 2698087.0,
+      "expected": {
+        "status": "MATCHED",
+        "category": null,
+        "pass_": "P1_REF",
+        "match_id": "MP03-1",
+        "linked_ids": [
+          "B058"
+        ],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "L055",
+      "scenario": "R-OUT",
+      "date": "2026-09-29",
+      "direction": "OUT",
+      "amount": 73735.25,
+      "amount_paise": 7373525,
+      "reference": "DBIN26092900191",
+      "instrument_no": "",
+      "narration": "Paid to Sundaram Stationers vide NEFT UTR DBIN26092900191 - Inv 5220",
+      "counterparty": "Sundaram Stationers",
+      "voucher_type": "Payment",
+      "voucher_no": "PV/26-27/2313",
+      "value_date": null,
+      "running_balance": 2624351.75,
+      "expected": {
+        "status": "MATCHED",
+        "category": null,
+        "pass_": "P1_REF",
+        "match_id": "MP09-1",
+        "linked_ids": [
+          "B059"
+        ],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "L056",
+      "scenario": "D-DIT",
+      "date": "2026-09-30",
+      "direction": "IN",
+      "amount": 220000.0,
+      "amount_paise": 22000000,
+      "reference": "",
+      "instrument_no": "330998",
+      "narration": "Chq No. 330998 received from Chola Cold Storage",
+      "counterparty": "Chola Cold Storage",
+      "voucher_type": "Receipt",
+      "voucher_no": "RV/26-27/0441",
+      "value_date": null,
+      "running_balance": 2844351.75,
+      "expected": {
+        "status": "UNRECONCILED",
+        "category": "deposit_in_transit",
+        "pass_": null,
+        "match_id": null,
+        "linked_ids": [],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": "credited 06-Oct-2026 per extension statement"
+      }
+    },
+    {
+      "id": "L057",
+      "scenario": "D-OC",
+      "date": "2026-09-30",
+      "direction": "OUT",
+      "amount": 33900.0,
+      "amount_paise": 3390000,
+      "reference": "",
+      "instrument_no": "004813",
+      "narration": "Chq No. 004813 issued to BlueWave Digital Ads",
+      "counterparty": "BlueWave Digital Ads",
+      "voucher_type": "Payment",
+      "voucher_no": "PV/26-27/2314",
+      "value_date": null,
+      "running_balance": 2810451.75,
+      "expected": {
+        "status": "UNRECONCILED",
+        "category": "cheque_issued_not_cleared",
+        "pass_": null,
+        "match_id": null,
+        "linked_ids": [],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": "not presented even by 10-Oct-2026"
+      }
+    }
+  ],
+  "bank": [
+    {
+      "id": "B001",
+      "scenario": "CF-DIT",
+      "date": "2026-09-02",
+      "direction": "IN",
+      "amount": 72000.0,
+      "amount_paise": 7200000,
+      "reference": "229014",
+      "instrument_no": "",
+      "narration": "CHQ DEP-229014-ANAND ELECTRICALS",
+      "counterparty": "",
+      "voucher_type": null,
+      "voucher_no": null,
+      "value_date": "2026-09-02",
+      "running_balance": 1317000.0,
+      "expected": {
+        "status": "CF_MATCHED",
+        "category": null,
+        "pass_": "CARRY_FORWARD",
+        "match_id": null,
+        "linked_ids": [],
+        "related_id": null,
+        "carry_forward_id": "CF2",
+        "note": ""
+      }
+    },
+    {
+      "id": "B002",
+      "scenario": "R-IN",
+      "date": "2026-09-02",
+      "direction": "IN",
+      "amount": 262015.0,
+      "amount_paise": 26201500,
+      "reference": "DBIN26090200114",
+      "instrument_no": "",
+      "narration": "NEFT CR-DBIN26090200114-ANNAPOORNA WHOLESALE MART-INV 5203",
+      "counterparty": "",
+      "voucher_type": null,
+      "voucher_no": null,
+      "value_date": "2026-09-02",
+      "running_balance": 1579015.0,
+      "expected": {
+        "status": "MATCHED",
+        "category": null,
+        "pass_": "P1_REF",
+        "match_id": "MR04-1",
+        "linked_ids": [
+          "L003"
+        ],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "B003",
+      "scenario": "CF-OC",
+      "date": "2026-09-03",
+      "direction": "OUT",
+      "amount": 48500.0,
+      "amount_paise": 4850000,
+      "reference": "004781",
+      "instrument_no": "",
+      "narration": "CHQ PAID-004781-KOVAI PACKAGING SUPPLIES",
+      "counterparty": "",
+      "voucher_type": null,
+      "voucher_no": null,
+      "value_date": "2026-09-03",
+      "running_balance": 1530515.0,
+      "expected": {
+        "status": "CF_MATCHED",
+        "category": null,
+        "pass_": "CARRY_FORWARD",
+        "match_id": null,
+        "linked_ids": [],
+        "related_id": null,
+        "carry_forward_id": "CF1",
+        "note": ""
+      }
+    },
+    {
+      "id": "B004",
+      "scenario": "M1",
+      "date": "2026-09-03",
+      "direction": "IN",
+      "amount": 125000.0,
+      "amount_paise": 12500000,
+      "reference": "DBIN26090300124",
+      "instrument_no": "",
+      "narration": "NEFT CR-DBIN26090300124-SOUTHERN SPICES EXPORTS-INV 4410",
+      "counterparty": "",
+      "voucher_type": null,
+      "voucher_no": null,
+      "value_date": "2026-09-03",
+      "running_balance": 1655515.0,
+      "expected": {
+        "status": "MATCHED",
+        "category": null,
+        "pass_": "P1_REF",
+        "match_id": "MS01-1",
+        "linked_ids": [
+          "L004"
+        ],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "B005",
+      "scenario": "R-IN",
+      "date": "2026-09-03",
+      "direction": "IN",
+      "amount": 31065.25,
+      "amount_paise": 3106525,
+      "reference": "622985165160",
+      "instrument_no": "",
+      "narration": "UPI/CR/622985165160/SOUTHERN SPICES EXPORTS/southern@ybl",
+      "counterparty": "",
+      "voucher_type": null,
+      "voucher_no": null,
+      "value_date": "2026-09-03",
+      "running_balance": 1686580.25,
+      "expected": {
+        "status": "MATCHED",
+        "category": null,
+        "pass_": "P1_REF",
+        "match_id": "MR01-1",
+        "linked_ids": [
+          "L005"
+        ],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "B006",
+      "scenario": "R-IN",
+      "date": "2026-09-03",
+      "direction": "IN",
+      "amount": 103575.75,
+      "amount_paise": 10357575,
+      "reference": "620424660041",
+      "instrument_no": "",
+      "narration": "UPI/CR/620424660041/PEARL FISHERIES/pearl@ybl",
+      "counterparty": "",
+      "voucher_type": null,
+      "voucher_no": null,
+      "value_date": "2026-09-03",
+      "running_balance": 1790156.0,
+      "expected": {
+        "status": "MATCHED",
+        "category": null,
+        "pass_": "P1_REF",
+        "match_id": "MR12-1",
+        "linked_ids": [
+          "L006"
+        ],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "B007",
+      "scenario": "M1",
+      "date": "2026-09-04",
+      "direction": "IN",
+      "amount": 450000.0,
+      "amount_paise": 45000000,
+      "reference": "DBIR26090400987",
+      "instrument_no": "",
+      "narration": "RTGS CR-DBIR26090400987-CHOLA COLD STORAGE-INV 4415",
+      "counterparty": "",
+      "voucher_type": null,
+      "voucher_no": null,
+      "value_date": "2026-09-04",
+      "running_balance": 2240156.0,
+      "expected": {
+        "status": "MATCHED",
+        "category": null,
+        "pass_": "P1_REF",
+        "match_id": "MS02-1",
+        "linked_ids": [
+          "L007"
+        ],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "B008",
+      "scenario": "M1",
+      "date": "2026-09-04",
+      "direction": "OUT",
+      "amount": 85000.0,
+      "amount_paise": 8500000,
+      "reference": "DBIN26090400012",
+      "instrument_no": "",
+      "narration": "NEFT DR-DBIN26090400012-R VENKATESH-RENT SEP 2026",
+      "counterparty": "",
+      "voucher_type": null,
+      "voucher_no": null,
+      "value_date": "2026-09-04",
+      "running_balance": 2155156.0,
+      "expected": {
+        "status": "MATCHED",
+        "category": null,
+        "pass_": "P1_REF",
+        "match_id": "MS15-1",
+        "linked_ids": [
+          "L008"
+        ],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "B009",
+      "scenario": "B-CHARGES",
+      "date": "2026-09-04",
+      "direction": "OUT",
+      "amount": 250.0,
+      "amount_paise": 25000,
+      "reference": "",
+      "instrument_no": "",
+      "narration": "CHQ BOOK ISSUE CHG 25 LVS",
+      "counterparty": "",
+      "voucher_type": null,
+      "voucher_no": null,
+      "value_date": "2026-09-04",
+      "running_balance": 2154906.0,
+      "expected": {
+        "status": "UNRECONCILED",
+        "category": "bank_charges_not_booked",
+        "pass_": "P6_BANK_ORIGINATED",
+        "match_id": null,
+        "linked_ids": [],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "B010",
+      "scenario": "B-CHARGES",
+      "date": "2026-09-04",
+      "direction": "OUT",
+      "amount": 45.0,
+      "amount_paise": 4500,
+      "reference": "",
+      "instrument_no": "",
+      "narration": "GST @18% ON CHQ BK ISSUE CHG",
+      "counterparty": "",
+      "voucher_type": null,
+      "voucher_no": null,
+      "value_date": "2026-09-04",
+      "running_balance": 2154861.0,
+      "expected": {
+        "status": "UNRECONCILED",
+        "category": "bank_charges_not_booked",
+        "pass_": "P6_BANK_ORIGINATED",
+        "match_id": null,
+        "linked_ids": [],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "B011",
+      "scenario": "B-DIRECT-DR",
+      "date": "2026-09-05",
+      "direction": "OUT",
+      "amount": 38250.0,
+      "amount_paise": 3825000,
+      "reference": "NACH0905",
+      "instrument_no": "",
+      "narration": "NACH DR-LOAN A/C 778100234-EMI SEP 2026",
+      "counterparty": "",
+      "voucher_type": null,
+      "voucher_no": null,
+      "value_date": "2026-09-05",
+      "running_balance": 2116611.0,
+      "expected": {
+        "status": "UNRECONCILED",
+        "category": "direct_debit_not_booked",
+        "pass_": "P6_BANK_ORIGINATED",
+        "match_id": null,
+        "linked_ids": [],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "B012",
+      "scenario": "B-BOUNCE",
+      "date": "2026-09-08",
+      "direction": "IN",
+      "amount": 64000.0,
+      "amount_paise": 6400000,
+      "reference": "220145",
+      "instrument_no": "",
+      "narration": "CHQ DEP-220145-THALIR RETAIL LLP",
+      "counterparty": "",
+      "voucher_type": null,
+      "voucher_no": null,
+      "value_date": "2026-09-08",
+      "running_balance": 2180611.0,
+      "expected": {
+        "status": "MATCHED",
+        "category": null,
+        "pass_": "P1_REF",
+        "match_id": "MS06-1",
+        "linked_ids": [
+          "L011"
+        ],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "B013",
+      "scenario": "M2",
+      "date": "2026-09-08",
+      "direction": "OUT",
+      "amount": 18350.0,
+      "amount_paise": 1835000,
+      "reference": "004790",
+      "instrument_no": "",
+      "narration": "CHQ PAID-004790-SUNDARAM STATIONERS",
+      "counterparty": "",
+      "voucher_type": null,
+      "voucher_no": null,
+      "value_date": "2026-09-08",
+      "running_balance": 2162261.0,
+      "expected": {
+        "status": "MATCHED",
+        "category": null,
+        "pass_": "P1_REF",
+        "match_id": "MS17a-1",
+        "linked_ids": [
+          "L002"
+        ],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "B014",
+      "scenario": "R-OUT",
+      "date": "2026-09-08",
+      "direction": "OUT",
+      "amount": 86160.0,
+      "amount_paise": 8616000,
+      "reference": "DBIN26090800198",
+      "instrument_no": "",
+      "narration": "NEFT DR-DBIN26090800198-SUNDARAM STATIONERS-INV 5222",
+      "counterparty": "",
+      "voucher_type": null,
+      "voucher_no": null,
+      "value_date": "2026-09-08",
+      "running_balance": 2076101.0,
+      "expected": {
+        "status": "MATCHED",
+        "category": null,
+        "pass_": "P1_REF",
+        "match_id": "MP11-1",
+        "linked_ids": [
+          "L013"
+        ],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "B015",
+      "scenario": "M2",
+      "date": "2026-09-09",
+      "direction": "IN",
+      "amount": 95500.0,
+      "amount_paise": 9550000,
+      "reference": "118233",
+      "instrument_no": "",
+      "narration": "CHQ DEP-118233-ANNAPOORNA WHOLESALE MART",
+      "counterparty": "",
+      "voucher_type": null,
+      "voucher_no": null,
+      "value_date": "2026-09-09",
+      "running_balance": 2171601.0,
+      "expected": {
+        "status": "MATCHED",
+        "category": null,
+        "pass_": "P1_REF",
+        "match_id": "MS03-1",
+        "linked_ids": [
+          "L012"
+        ],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "B016",
+      "scenario": "D-DUP-BOOKS",
+      "date": "2026-09-09",
+      "direction": "IN",
+      "amount": 12500.0,
+      "amount_paise": 1250000,
+      "reference": "624812345678",
+      "instrument_no": "",
+      "narration": "UPI/CR/624812345678/HARI OM TRADERS/hariom@okicici",
+      "counterparty": "",
+      "voucher_type": null,
+      "voucher_no": null,
+      "value_date": "2026-09-09",
+      "running_balance": 2184101.0,
+      "expected": {
+        "status": "MATCHED",
+        "category": null,
+        "pass_": "P1_REF",
+        "match_id": "MS04-1",
+        "linked_ids": [
+          "L014"
+        ],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "B017",
+      "scenario": "M4",
+      "date": "2026-09-10",
+      "direction": "IN",
+      "amount": 25000.0,
+      "amount_paise": 2500000,
+      "reference": "DBIN26091000311",
+      "instrument_no": "",
+      "narration": "NEFT CR-DBIN26091000311-KAVERI PLASTICS-INV 5121",
+      "counterparty": "",
+      "voucher_type": null,
+      "voucher_no": null,
+      "value_date": "2026-09-10",
+      "running_balance": 2209101.0,
+      "expected": {
+        "status": "MATCHED",
+        "category": null,
+        "pass_": "P3_NARR|P4_TIEBREAK",
+        "match_id": "MS05-2",
+        "linked_ids": [
+          "L018"
+        ],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "B018",
+      "scenario": "M4",
+      "date": "2026-09-10",
+      "direction": "IN",
+      "amount": 25000.0,
+      "amount_paise": 2500000,
+      "reference": "DBIN26091000208",
+      "instrument_no": "",
+      "narration": "NEFT CR-DBIN26091000208-PEARL FISHERIES-INV 5120",
+      "counterparty": "",
+      "voucher_type": null,
+      "voucher_no": null,
+      "value_date": "2026-09-10",
+      "running_balance": 2234101.0,
+      "expected": {
+        "status": "MATCHED",
+        "category": null,
+        "pass_": "P3_NARR|P4_TIEBREAK",
+        "match_id": "MS05-1",
+        "linked_ids": [
+          "L017"
+        ],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "B019",
+      "scenario": "B-DIRECT-DR",
+      "date": "2026-09-10",
+      "direction": "OUT",
+      "amount": 12400.0,
+      "amount_paise": 1240000,
+      "reference": "ECS0910",
+      "instrument_no": "",
+      "narration": "ECS DR-SAFEGUARD GENERAL INSURANCE-POLICY 551-PREM",
+      "counterparty": "",
+      "voucher_type": null,
+      "voucher_no": null,
+      "value_date": "2026-09-10",
+      "running_balance": 2221701.0,
+      "expected": {
+        "status": "UNRECONCILED",
+        "category": "direct_debit_not_booked",
+        "pass_": "P6_BANK_ORIGINATED",
+        "match_id": null,
+        "linked_ids": [],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "B020",
+      "scenario": "R-CHQ-OUT",
+      "date": "2026-09-10",
+      "direction": "OUT",
+      "amount": 65540.5,
+      "amount_paise": 6554050,
+      "reference": "004799",
+      "instrument_no": "",
+      "narration": "CHQ PAID-004799-VEL MURUGAN TRANSPORT",
+      "counterparty": "",
+      "voucher_type": null,
+      "voucher_no": null,
+      "value_date": "2026-09-10",
+      "running_balance": 2156160.5,
+      "expected": {
+        "status": "MATCHED",
+        "category": null,
+        "pass_": "P1_REF",
+        "match_id": "MP10-1",
+        "linked_ids": [
+          "L010"
+        ],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "B021",
+      "scenario": "M5-ONE-TO-MANY",
+      "date": "2026-09-11",
+      "direction": "OUT",
+      "amount": 186400.0,
+      "amount_paise": 18640000,
+      "reference": "DBIN26091100654",
+      "instrument_no": "",
+      "narration": "NEFT DR-DBIN26091100654-KOVAI PACKAGING SUPPLIES-INV2201 2202 2203",
+      "counterparty": "",
+      "voucher_type": null,
+      "voucher_no": null,
+      "value_date": "2026-09-11",
+      "running_balance": 1969760.5,
+      "expected": {
+        "status": "GROUP_MATCH",
+        "category": null,
+        "pass_": "P5_GROUP",
+        "match_id": "MS16-1",
+        "linked_ids": [
+          "L019",
+          "L020",
+          "L021"
+        ],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "B022",
+      "scenario": "M2",
+      "date": "2026-09-11",
+      "direction": "OUT",
+      "amount": 42780.0,
+      "amount_paise": 4278000,
+      "reference": "004791",
+      "instrument_no": "",
+      "narration": "CHQ PAID-004791-VEL MURUGAN TRANSPORT",
+      "counterparty": "",
+      "voucher_type": null,
+      "voucher_no": null,
+      "value_date": "2026-09-11",
+      "running_balance": 1926980.5,
+      "expected": {
+        "status": "MATCHED",
+        "category": null,
+        "pass_": "P1_REF",
+        "match_id": "MS17b-1",
+        "linked_ids": [
+          "L009"
+        ],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "B023",
+      "scenario": "R-IN",
+      "date": "2026-09-11",
+      "direction": "IN",
+      "amount": 20245.5,
+      "amount_paise": 2024550,
+      "reference": "627881398245",
+      "instrument_no": "",
+      "narration": "UPI/CR/627881398245/HARI OM TRADERS/hari@ybl",
+      "counterparty": "",
+      "voucher_type": null,
+      "voucher_no": null,
+      "value_date": "2026-09-11",
+      "running_balance": 1947226.0,
+      "expected": {
+        "status": "MATCHED",
+        "category": null,
+        "pass_": "P1_REF",
+        "match_id": "MR02-1",
+        "linked_ids": [
+          "L022"
+        ],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "B024",
+      "scenario": "R-IN",
+      "date": "2026-09-11",
+      "direction": "IN",
+      "amount": 154415.5,
+      "amount_paise": 15441550,
+      "reference": "DBIN26091100107",
+      "instrument_no": "",
+      "narration": "NEFT CR-DBIN26091100107-VASANTH SUPER MART-INV 5202",
+      "counterparty": "",
+      "voucher_type": null,
+      "voucher_no": null,
+      "value_date": "2026-09-11",
+      "running_balance": 2101641.5,
+      "expected": {
+        "status": "MATCHED",
+        "category": null,
+        "pass_": "P2_AMT_DATE",
+        "match_id": "MR03-1",
+        "linked_ids": [
+          "L023"
+        ],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "B025",
+      "scenario": "R-IN",
+      "date": "2026-09-11",
+      "direction": "IN",
+      "amount": 192585.0,
+      "amount_paise": 19258500,
+      "reference": "DBIN26091100128",
+      "instrument_no": "",
+      "narration": "NEFT CR-DBIN26091100128-ANAND ELECTRICALS-INV 5205",
+      "counterparty": "",
+      "voucher_type": null,
+      "voucher_no": null,
+      "value_date": "2026-09-11",
+      "running_balance": 2294226.5,
+      "expected": {
+        "status": "MATCHED",
+        "category": null,
+        "pass_": "P1_REF",
+        "match_id": "MR06-1",
+        "linked_ids": [
+          "L024"
+        ],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "B026",
+      "scenario": "R-IN",
+      "date": "2026-09-11",
+      "direction": "IN",
+      "amount": 136930.5,
+      "amount_paise": 13693050,
+      "reference": "DBIN26091100135",
+      "instrument_no": "",
+      "narration": "NEFT CR-DBIN26091100135-ANNAPOORNA WHOLESALE MART-INV 5208",
+      "counterparty": "",
+      "voucher_type": null,
+      "voucher_no": null,
+      "value_date": "2026-09-11",
+      "running_balance": 2431157.0,
+      "expected": {
+        "status": "MATCHED",
+        "category": null,
+        "pass_": "P1_REF",
+        "match_id": "MR09-1",
+        "linked_ids": [
+          "L025"
+        ],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "B027",
+      "scenario": "B-BOUNCE",
+      "date": "2026-09-14",
+      "direction": "OUT",
+      "amount": 64000.0,
+      "amount_paise": 6400000,
+      "reference": "220145",
+      "instrument_no": "",
+      "narration": "CHQ RET-220145-INSUFFICIENT FUNDS",
+      "counterparty": "",
+      "voucher_type": null,
+      "voucher_no": null,
+      "value_date": "2026-09-14",
+      "running_balance": 2367157.0,
+      "expected": {
+        "status": "UNRECONCILED",
+        "category": "cheque_bounce_not_booked",
+        "pass_": "P7_REVERSAL",
+        "match_id": null,
+        "linked_ids": [],
+        "related_id": "B012",
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "B028",
+      "scenario": "B-BOUNCE",
+      "date": "2026-09-14",
+      "direction": "OUT",
+      "amount": 500.0,
+      "amount_paise": 50000,
+      "reference": "220145",
+      "instrument_no": "",
+      "narration": "CHQ RETURN CHG-220145",
+      "counterparty": "",
+      "voucher_type": null,
+      "voucher_no": null,
+      "value_date": "2026-09-14",
+      "running_balance": 2366657.0,
+      "expected": {
+        "status": "UNRECONCILED",
+        "category": "bank_charges_not_booked",
+        "pass_": "P6_BANK_ORIGINATED",
+        "match_id": null,
+        "linked_ids": [],
+        "related_id": "B027",
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "B029",
+      "scenario": "B-BOUNCE",
+      "date": "2026-09-14",
+      "direction": "OUT",
+      "amount": 90.0,
+      "amount_paise": 9000,
+      "reference": "220145",
+      "instrument_no": "",
+      "narration": "GST @18% ON CHQ RETURN CHG-220145",
+      "counterparty": "",
+      "voucher_type": null,
+      "voucher_no": null,
+      "value_date": "2026-09-14",
+      "running_balance": 2366567.0,
+      "expected": {
+        "status": "UNRECONCILED",
+        "category": "bank_charges_not_booked",
+        "pass_": "P6_BANK_ORIGINATED",
+        "match_id": null,
+        "linked_ids": [],
+        "related_id": "B027",
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "B030",
+      "scenario": "B-DIRECT-CR",
+      "date": "2026-09-14",
+      "direction": "IN",
+      "amount": 86450.0,
+      "amount_paise": 8645000,
+      "reference": "DBIN26091400567",
+      "instrument_no": "",
+      "narration": "NEFT CR-DBIN26091400567-GREENLEAF ORGANICS-INV 5502",
+      "counterparty": "",
+      "voucher_type": null,
+      "voucher_no": null,
+      "value_date": "2026-09-14",
+      "running_balance": 2453017.0,
+      "expected": {
+        "status": "UNRECONCILED",
+        "category": "direct_credit_not_booked",
+        "pass_": null,
+        "match_id": null,
+        "linked_ids": [],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "B031",
+      "scenario": "D-AMT",
+      "date": "2026-09-15",
+      "direction": "IN",
+      "amount": 58090.0,
+      "amount_paise": 5809000,
+      "reference": "DBIN26091500456",
+      "instrument_no": "",
+      "narration": "NEFT CR-DBIN26091500456-MALABAR CASHEW CO-INV 5188",
+      "counterparty": "",
+      "voucher_type": null,
+      "voucher_no": null,
+      "value_date": "2026-09-15",
+      "running_balance": 2511107.0,
+      "expected": {
+        "status": "UNRECONCILED",
+        "category": "amount_mismatch",
+        "pass_": null,
+        "match_id": null,
+        "linked_ids": [],
+        "related_id": "L029",
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "B032",
+      "scenario": "M2",
+      "date": "2026-09-15",
+      "direction": "OUT",
+      "amount": 20000.0,
+      "amount_paise": 2000000,
+      "reference": "004793",
+      "instrument_no": "",
+      "narration": "CHQ PAID-004793-SELF",
+      "counterparty": "",
+      "voucher_type": null,
+      "voucher_no": null,
+      "value_date": "2026-09-15",
+      "running_balance": 2491107.0,
+      "expected": {
+        "status": "MATCHED",
+        "category": null,
+        "pass_": "P1_REF",
+        "match_id": "MS24-1",
+        "linked_ids": [
+          "L030"
+        ],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "B033",
+      "scenario": "R-IN",
+      "date": "2026-09-15",
+      "direction": "IN",
+      "amount": 169110.0,
+      "amount_paise": 16911000,
+      "reference": "DBIN26091500142",
+      "instrument_no": "",
+      "narration": "NEFT CR-DBIN26091500142-GREENLEAF ORGANICS-INV 5209",
+      "counterparty": "",
+      "voucher_type": null,
+      "voucher_no": null,
+      "value_date": "2026-09-15",
+      "running_balance": 2660217.0,
+      "expected": {
+        "status": "MATCHED",
+        "category": null,
+        "pass_": "P1_REF",
+        "match_id": "MR10-1",
+        "linked_ids": [
+          "L031"
+        ],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "B034",
+      "scenario": "R-OUT",
+      "date": "2026-09-15",
+      "direction": "OUT",
+      "amount": 27795.0,
+      "amount_paise": 2779500,
+      "reference": "DBIN26091500163",
+      "instrument_no": "",
+      "narration": "NEFT DR-DBIN26091500163-STATE POWER UTILITY-INV 5213",
+      "counterparty": "",
+      "voucher_type": null,
+      "voucher_no": null,
+      "value_date": "2026-09-15",
+      "running_balance": 2632422.0,
+      "expected": {
+        "status": "MATCHED",
+        "category": null,
+        "pass_": "P1_REF",
+        "match_id": "MP02-1",
+        "linked_ids": [
+          "L032"
+        ],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "B035",
+      "scenario": "B-DUP-BANK",
+      "date": "2026-09-16",
+      "direction": "OUT",
+      "amount": 2150.0,
+      "amount_paise": 215000,
+      "reference": "RRN0916A",
+      "instrument_no": "",
+      "narration": "POS 4121XXXXXXXX9988 HP FUEL STATION RRN 0916A",
+      "counterparty": "",
+      "voucher_type": null,
+      "voucher_no": null,
+      "value_date": "2026-09-16",
+      "running_balance": 2630272.0,
+      "expected": {
+        "status": "MATCHED",
+        "category": null,
+        "pass_": "P2_AMT_DATE",
+        "match_id": "MS21-1",
+        "linked_ids": [
+          "L034"
+        ],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": "either of the two identical bank rows may be the matched one"
+      }
+    },
+    {
+      "id": "B036",
+      "scenario": "B-DUP-BANK",
+      "date": "2026-09-16",
+      "direction": "OUT",
+      "amount": 2150.0,
+      "amount_paise": 215000,
+      "reference": "RRN0916B",
+      "instrument_no": "",
+      "narration": "POS 4121XXXXXXXX9988 HP FUEL STATION RRN 0916B",
+      "counterparty": "",
+      "voucher_type": null,
+      "voucher_no": null,
+      "value_date": "2026-09-16",
+      "running_balance": 2628122.0,
+      "expected": {
+        "status": "UNRECONCILED",
+        "category": "possible_duplicate_in_bank",
+        "pass_": null,
+        "match_id": null,
+        "linked_ids": [],
+        "related_id": "B035",
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "B037",
+      "scenario": "R-OUT",
+      "date": "2026-09-16",
+      "direction": "OUT",
+      "amount": 93725.0,
+      "amount_paise": 9372500,
+      "reference": "DBIN26091600184",
+      "instrument_no": "",
+      "narration": "NEFT DR-DBIN26091600184-SURYA MACHINERY SPARES-INV 5217",
+      "counterparty": "",
+      "voucher_type": null,
+      "voucher_no": null,
+      "value_date": "2026-09-16",
+      "running_balance": 2534397.0,
+      "expected": {
+        "status": "MATCHED",
+        "category": null,
+        "pass_": "P1_REF",
+        "match_id": "MP06-1",
+        "linked_ids": [
+          "L036"
+        ],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "B038",
+      "scenario": "M7-RETURN",
+      "date": "2026-09-17",
+      "direction": "OUT",
+      "amount": 22000.0,
+      "amount_paise": 2200000,
+      "reference": "DBIN26091700888",
+      "instrument_no": "",
+      "narration": "NEFT DR-DBIN26091700888-NILA LOGISTICS-FREIGHT AUG",
+      "counterparty": "",
+      "voucher_type": null,
+      "voucher_no": null,
+      "value_date": "2026-09-17",
+      "running_balance": 2512397.0,
+      "expected": {
+        "status": "MATCHED",
+        "category": null,
+        "pass_": "P1_REF",
+        "match_id": "MS19a-1",
+        "linked_ids": [
+          "L038"
+        ],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "B039",
+      "scenario": "R-CHQ-IN",
+      "date": "2026-09-17",
+      "direction": "IN",
+      "amount": 22065.5,
+      "amount_paise": 2206550,
+      "reference": "300382",
+      "instrument_no": "",
+      "narration": "CHQ DEP-300382-THALIR RETAIL LLP",
+      "counterparty": "",
+      "voucher_type": null,
+      "voucher_no": null,
+      "value_date": "2026-09-17",
+      "running_balance": 2534462.5,
+      "expected": {
+        "status": "MATCHED",
+        "category": null,
+        "pass_": "P1_REF",
+        "match_id": "MR07-1",
+        "linked_ids": [
+          "L027"
+        ],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "B040",
+      "scenario": "R-CHQ-IN",
+      "date": "2026-09-17",
+      "direction": "IN",
+      "amount": 231480.0,
+      "amount_paise": 23148000,
+      "reference": "169999",
+      "instrument_no": "",
+      "narration": "CHQ DEP-169999-KAVERI PLASTICS",
+      "counterparty": "",
+      "voucher_type": null,
+      "voucher_no": null,
+      "value_date": "2026-09-17",
+      "running_balance": 2765942.5,
+      "expected": {
+        "status": "MATCHED",
+        "category": null,
+        "pass_": "P1_REF",
+        "match_id": "MR08-1",
+        "linked_ids": [
+          "L035"
+        ],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "B041",
+      "scenario": "R-CHQ-OUT",
+      "date": "2026-09-17",
+      "direction": "OUT",
+      "amount": 14740.0,
+      "amount_paise": 1474000,
+      "reference": "004800",
+      "instrument_no": "",
+      "narration": "CHQ PAID-004800-NILA LOGISTICS",
+      "counterparty": "",
+      "voucher_type": null,
+      "voucher_no": null,
+      "value_date": "2026-09-17",
+      "running_balance": 2751202.5,
+      "expected": {
+        "status": "MATCHED",
+        "category": null,
+        "pass_": "P1_REF",
+        "match_id": "MP12-1",
+        "linked_ids": [
+          "L016"
+        ],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "B042",
+      "scenario": "M7-RETURN",
+      "date": "2026-09-18",
+      "direction": "IN",
+      "amount": 22000.0,
+      "amount_paise": 2200000,
+      "reference": "DBIN26091700888",
+      "instrument_no": "",
+      "narration": "NEFT RET-DBIN26091700888-ACCOUNT CLOSED",
+      "counterparty": "",
+      "voucher_type": null,
+      "voucher_no": null,
+      "value_date": "2026-09-18",
+      "running_balance": 2773202.5,
+      "expected": {
+        "status": "UNRECONCILED",
+        "category": "return_credit_not_booked",
+        "pass_": "P7_REVERSAL",
+        "match_id": null,
+        "linked_ids": [],
+        "related_id": "B038",
+        "carry_forward_id": null,
+        "note": "category not in plan v1 - proposed addition"
+      }
+    },
+    {
+      "id": "B043",
+      "scenario": "R-CHQ-OUT",
+      "date": "2026-09-18",
+      "direction": "OUT",
+      "amount": 92360.0,
+      "amount_paise": 9236000,
+      "reference": "004797",
+      "instrument_no": "",
+      "narration": "CHQ PAID-004797-COASTAL COLD CHAIN SERVICES",
+      "counterparty": "",
+      "voucher_type": null,
+      "voucher_no": null,
+      "value_date": "2026-09-18",
+      "running_balance": 2680842.5,
+      "expected": {
+        "status": "MATCHED",
+        "category": null,
+        "pass_": "P1_REF",
+        "match_id": "MP07-1",
+        "linked_ids": [
+          "L033"
+        ],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "B044",
+      "scenario": "M1",
+      "date": "2026-09-19",
+      "direction": "OUT",
+      "amount": 22000.0,
+      "amount_paise": 2200000,
+      "reference": "DBIN26091900901",
+      "instrument_no": "",
+      "narration": "NEFT DR-DBIN26091900901-NILA LOGISTICS-FREIGHT AUG",
+      "counterparty": "",
+      "voucher_type": null,
+      "voucher_no": null,
+      "value_date": "2026-09-19",
+      "running_balance": 2658842.5,
+      "expected": {
+        "status": "MATCHED",
+        "category": null,
+        "pass_": "P1_REF",
+        "match_id": "MS19b-1",
+        "linked_ids": [
+          "L042"
+        ],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "B045",
+      "scenario": "M5-MANY-TO-ONE",
+      "date": "2026-09-21",
+      "direction": "IN",
+      "amount": 145300.0,
+      "amount_paise": 14530000,
+      "reference": "PEZY0921SETL",
+      "instrument_no": "",
+      "narration": "NEFT CR-PEZY0921SETL-PAYEASY GATEWAY SERVICES-SETTLEMENT 0921",
+      "counterparty": "",
+      "voucher_type": null,
+      "voucher_no": null,
+      "value_date": "2026-09-21",
+      "running_balance": 2804142.5,
+      "expected": {
+        "status": "GROUP_MATCH",
+        "category": null,
+        "pass_": "P5_GROUP",
+        "match_id": "MS10-1",
+        "linked_ids": [
+          "L037",
+          "L039",
+          "L041",
+          "L043"
+        ],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "B046",
+      "scenario": "B-DIRECT-DR",
+      "date": "2026-09-21",
+      "direction": "OUT",
+      "amount": 52000.0,
+      "amount_paise": 5200000,
+      "reference": "26092100123456",
+      "instrument_no": "",
+      "narration": "GST PMT-06 CIN 26092100123456 ",
+      "counterparty": "",
+      "voucher_type": null,
+      "voucher_no": null,
+      "value_date": "2026-09-21",
+      "running_balance": 2752142.5,
+      "expected": {
+        "status": "UNRECONCILED",
+        "category": "direct_debit_not_booked",
+        "pass_": "P6_BANK_ORIGINATED",
+        "match_id": null,
+        "linked_ids": [],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "B047",
+      "scenario": "M3",
+      "date": "2026-09-22",
+      "direction": "IN",
+      "amount": 7850.0,
+      "amount_paise": 785000,
+      "reference": "624700112233",
+      "instrument_no": "",
+      "narration": "UPI/CR/624700112233/NANDINI RETAIL CHAIN/nandini@ybl",
+      "counterparty": "",
+      "voucher_type": null,
+      "voucher_no": null,
+      "value_date": "2026-09-22",
+      "running_balance": 2759992.5,
+      "expected": {
+        "status": "MATCHED",
+        "category": null,
+        "pass_": "P2_AMT_DATE",
+        "match_id": "MS26-1",
+        "linked_ids": [
+          "L044"
+        ],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "B048",
+      "scenario": "R-OUT",
+      "date": "2026-09-22",
+      "direction": "OUT",
+      "amount": 48345.0,
+      "amount_paise": 4834500,
+      "reference": "DBIN26092200177",
+      "instrument_no": "",
+      "narration": "NEFT DR-DBIN26092200177-SUNDARAM STATIONERS-INV 5216",
+      "counterparty": "",
+      "voucher_type": null,
+      "voucher_no": null,
+      "value_date": "2026-09-22",
+      "running_balance": 2711647.5,
+      "expected": {
+        "status": "MATCHED",
+        "category": null,
+        "pass_": "P1_REF",
+        "match_id": "MP05-1",
+        "linked_ids": [
+          "L045"
+        ],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "B049",
+      "scenario": "R-CHQ-OUT",
+      "date": "2026-09-22",
+      "direction": "OUT",
+      "amount": 25800.0,
+      "amount_paise": 2580000,
+      "reference": "004798",
+      "instrument_no": "",
+      "narration": "CHQ PAID-004798-SUNDARAM STATIONERS",
+      "counterparty": "",
+      "voucher_type": null,
+      "voucher_no": null,
+      "value_date": "2026-09-22",
+      "running_balance": 2685847.5,
+      "expected": {
+        "status": "MATCHED",
+        "category": null,
+        "pass_": "P1_REF",
+        "match_id": "MP08-1",
+        "linked_ids": [
+          "L028"
+        ],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "B050",
+      "scenario": "B-UNIDENT",
+      "date": "2026-09-23",
+      "direction": "IN",
+      "amount": 3333.0,
+      "amount_paise": 333300,
+      "reference": "624899901122",
+      "instrument_no": "",
+      "narration": "UPI/CR/624899901122/UNKNOWN SENDER/9988xxxx@okaxis",
+      "counterparty": "",
+      "voucher_type": null,
+      "voucher_no": null,
+      "value_date": "2026-09-23",
+      "running_balance": 2689180.5,
+      "expected": {
+        "status": "UNRECONCILED",
+        "category": "unidentified_transaction",
+        "pass_": null,
+        "match_id": null,
+        "linked_ids": [],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "B051",
+      "scenario": "M3",
+      "date": "2026-09-24",
+      "direction": "IN",
+      "amount": 60000.0,
+      "amount_paise": 6000000,
+      "reference": "",
+      "instrument_no": "",
+      "narration": "CASH DEP-SELF-BRANCH 0042 SLIP 77123",
+      "counterparty": "",
+      "voucher_type": null,
+      "voucher_no": null,
+      "value_date": "2026-09-24",
+      "running_balance": 2749180.5,
+      "expected": {
+        "status": "MATCHED",
+        "category": null,
+        "pass_": "P2_AMT_DATE",
+        "match_id": "MS25-1",
+        "linked_ids": [
+          "L046"
+        ],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "B052",
+      "scenario": "R-IN",
+      "date": "2026-09-24",
+      "direction": "IN",
+      "amount": 225955.0,
+      "amount_paise": 22595500,
+      "reference": "DBIR26092400149",
+      "instrument_no": "",
+      "narration": "RTGS CR-DBIR26092400149-MALABAR CASHEW CO-INV 5210",
+      "counterparty": "",
+      "voucher_type": null,
+      "voucher_no": null,
+      "value_date": "2026-09-24",
+      "running_balance": 2975135.5,
+      "expected": {
+        "status": "MATCHED",
+        "category": null,
+        "pass_": "P1_REF",
+        "match_id": "MR11-1",
+        "linked_ids": [
+          "L047"
+        ],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "B053",
+      "scenario": "M1",
+      "date": "2026-09-25",
+      "direction": "OUT",
+      "amount": 342600.0,
+      "amount_paise": 34260000,
+      "reference": "SAL0925",
+      "instrument_no": "",
+      "narration": "NEFT DR-BULK SALARY SEP 2026-BATCH SAL0925",
+      "counterparty": "",
+      "voucher_type": null,
+      "voucher_no": null,
+      "value_date": "2026-09-25",
+      "running_balance": 2632535.5,
+      "expected": {
+        "status": "MATCHED",
+        "category": null,
+        "pass_": "P1_REF",
+        "match_id": "MS23-1",
+        "linked_ids": [
+          "L048"
+        ],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "B054",
+      "scenario": "R-OUT",
+      "date": "2026-09-25",
+      "direction": "OUT",
+      "amount": 68890.25,
+      "amount_paise": 6889025,
+      "reference": "DBIN26092500156",
+      "instrument_no": "",
+      "narration": "NEFT DR-DBIN26092500156-STATE POWER UTILITY-INV 5212",
+      "counterparty": "",
+      "voucher_type": null,
+      "voucher_no": null,
+      "value_date": "2026-09-25",
+      "running_balance": 2563645.25,
+      "expected": {
+        "status": "MATCHED",
+        "category": null,
+        "pass_": "P1_REF",
+        "match_id": "MP01-1",
+        "linked_ids": [
+          "L049"
+        ],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "B055",
+      "scenario": "R-CHQ-OUT",
+      "date": "2026-09-28",
+      "direction": "OUT",
+      "amount": 66495.0,
+      "amount_paise": 6649500,
+      "reference": "004796",
+      "instrument_no": "",
+      "narration": "CHQ PAID-004796-NILA LOGISTICS",
+      "counterparty": "",
+      "voucher_type": null,
+      "voucher_no": null,
+      "value_date": "2026-09-28",
+      "running_balance": 2497150.25,
+      "expected": {
+        "status": "MATCHED",
+        "category": null,
+        "pass_": "P1_REF",
+        "match_id": "MP04-1",
+        "linked_ids": [
+          "L050"
+        ],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "B056",
+      "scenario": "D-DATE",
+      "date": "2026-09-29",
+      "direction": "IN",
+      "amount": 38000.0,
+      "amount_paise": 3800000,
+      "reference": "DBIN26092900777",
+      "instrument_no": "",
+      "narration": "NEFT CR-DBIN26092900777-VASANTH SUPER MART-INV 5090",
+      "counterparty": "",
+      "voucher_type": null,
+      "voucher_no": null,
+      "value_date": "2026-09-29",
+      "running_balance": 2535150.25,
+      "expected": {
+        "status": "UNRECONCILED",
+        "category": "date_mismatch_outside_window",
+        "pass_": null,
+        "match_id": null,
+        "linked_ids": [],
+        "related_id": "L001",
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "B057",
+      "scenario": "R-IN",
+      "date": "2026-09-29",
+      "direction": "IN",
+      "amount": 31170.25,
+      "amount_paise": 3117025,
+      "reference": "DBIN26092900121",
+      "instrument_no": "",
+      "narration": "NEFT CR-DBIN26092900121-GREENLEAF ORGANICS-INV 5204",
+      "counterparty": "",
+      "voucher_type": null,
+      "voucher_no": null,
+      "value_date": "2026-09-29",
+      "running_balance": 2566320.5,
+      "expected": {
+        "status": "MATCHED",
+        "category": null,
+        "pass_": "P1_REF",
+        "match_id": "MR05-1",
+        "linked_ids": [
+          "L053"
+        ],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "B058",
+      "scenario": "R-OUT",
+      "date": "2026-09-29",
+      "direction": "OUT",
+      "amount": 14565.5,
+      "amount_paise": 1456550,
+      "reference": "DBIN26092900170",
+      "instrument_no": "",
+      "narration": "NEFT DR-DBIN26092900170-SURYA MACHINERY SPARES-INV 5214",
+      "counterparty": "",
+      "voucher_type": null,
+      "voucher_no": null,
+      "value_date": "2026-09-29",
+      "running_balance": 2551755.0,
+      "expected": {
+        "status": "MATCHED",
+        "category": null,
+        "pass_": "P1_REF",
+        "match_id": "MP03-1",
+        "linked_ids": [
+          "L054"
+        ],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "B059",
+      "scenario": "R-OUT",
+      "date": "2026-09-29",
+      "direction": "OUT",
+      "amount": 73735.25,
+      "amount_paise": 7373525,
+      "reference": "DBIN26092900191",
+      "instrument_no": "",
+      "narration": "NEFT DR-DBIN26092900191-SUNDARAM STATIONERS-INV 5220",
+      "counterparty": "",
+      "voucher_type": null,
+      "voucher_no": null,
+      "value_date": "2026-09-29",
+      "running_balance": 2478019.75,
+      "expected": {
+        "status": "MATCHED",
+        "category": null,
+        "pass_": "P1_REF",
+        "match_id": "MP09-1",
+        "linked_ids": [
+          "L055"
+        ],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "B060",
+      "scenario": "B-INTEREST",
+      "date": "2026-09-30",
+      "direction": "IN",
+      "amount": 1874.0,
+      "amount_paise": 187400,
+      "reference": "",
+      "instrument_no": "",
+      "narration": "INT.PD:01-07-2026 TO 30-09-2026",
+      "counterparty": "",
+      "voucher_type": null,
+      "voucher_no": null,
+      "value_date": "2026-09-30",
+      "running_balance": 2479893.75,
+      "expected": {
+        "status": "UNRECONCILED",
+        "category": "interest_credited_not_booked",
+        "pass_": "P6_BANK_ORIGINATED",
+        "match_id": null,
+        "linked_ids": [],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "B061",
+      "scenario": "B-TDS-INT",
+      "date": "2026-09-30",
+      "direction": "OUT",
+      "amount": 187.0,
+      "amount_paise": 18700,
+      "reference": "",
+      "instrument_no": "",
+      "narration": "TDS ON INT-FY27 Q2",
+      "counterparty": "",
+      "voucher_type": null,
+      "voucher_no": null,
+      "value_date": "2026-09-30",
+      "running_balance": 2479706.75,
+      "expected": {
+        "status": "UNRECONCILED",
+        "category": "tds_on_interest_not_booked",
+        "pass_": "P6_BANK_ORIGINATED",
+        "match_id": null,
+        "linked_ids": [],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "B062",
+      "scenario": "B-CHARGES",
+      "date": "2026-09-30",
+      "direction": "OUT",
+      "amount": 590.0,
+      "amount_paise": 59000,
+      "reference": "",
+      "instrument_no": "",
+      "narration": "ACCT MAINT CHG QTR JUL-SEP 2026",
+      "counterparty": "",
+      "voucher_type": null,
+      "voucher_no": null,
+      "value_date": "2026-09-30",
+      "running_balance": 2479116.75,
+      "expected": {
+        "status": "UNRECONCILED",
+        "category": "bank_charges_not_booked",
+        "pass_": "P6_BANK_ORIGINATED",
+        "match_id": null,
+        "linked_ids": [],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "B063",
+      "scenario": "B-CHARGES",
+      "date": "2026-09-30",
+      "direction": "OUT",
+      "amount": 106.2,
+      "amount_paise": 10620,
+      "reference": "",
+      "instrument_no": "",
+      "narration": "GST @18% ON ACCT MAINT CHG",
+      "counterparty": "",
+      "voucher_type": null,
+      "voucher_no": null,
+      "value_date": "2026-09-30",
+      "running_balance": 2479010.55,
+      "expected": {
+        "status": "UNRECONCILED",
+        "category": "bank_charges_not_booked",
+        "pass_": "P6_BANK_ORIGINATED",
+        "match_id": null,
+        "linked_ids": [],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "B064",
+      "scenario": "B-CHARGES",
+      "date": "2026-09-30",
+      "direction": "OUT",
+      "amount": 25.0,
+      "amount_paise": 2500,
+      "reference": "",
+      "instrument_no": "",
+      "narration": "SMS ALERT CHG JUL-SEP 2026",
+      "counterparty": "",
+      "voucher_type": null,
+      "voucher_no": null,
+      "value_date": "2026-09-30",
+      "running_balance": 2478985.55,
+      "expected": {
+        "status": "UNRECONCILED",
+        "category": "bank_charges_not_booked",
+        "pass_": "P6_BANK_ORIGINATED",
+        "match_id": null,
+        "linked_ids": [],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    },
+    {
+      "id": "B065",
+      "scenario": "B-CHARGES",
+      "date": "2026-09-30",
+      "direction": "OUT",
+      "amount": 4.5,
+      "amount_paise": 450,
+      "reference": "",
+      "instrument_no": "",
+      "narration": "GST @18% ON SMS ALERT CHG",
+      "counterparty": "",
+      "voucher_type": null,
+      "voucher_no": null,
+      "value_date": "2026-09-30",
+      "running_balance": 2478981.05,
+      "expected": {
+        "status": "UNRECONCILED",
+        "category": "bank_charges_not_booked",
+        "pass_": "P6_BANK_ORIGINATED",
+        "match_id": null,
+        "linked_ids": [],
+        "related_id": null,
+        "carry_forward_id": null,
+        "note": ""
+      }
+    }
+  ],
+  "extension_bank": [
+    {
+      "date": "2026-10-01",
+      "narration": "CHQ DEP-330412-KAVERI PLASTICS",
+      "reference": "330412",
+      "direction": "IN",
+      "amount": 110000.0
+    },
+    {
+      "date": "2026-10-03",
+      "narration": "CHQ PAID-004812-ORCHID PRINTERS",
+      "reference": "004812",
+      "direction": "OUT",
+      "amount": 27450.0
+    },
+    {
+      "date": "2026-10-05",
+      "narration": "NEFT CR-DBIN26100500044-SOUTHERN SPICES EXPORTS-INV 4466",
+      "reference": "DBIN26100500044",
+      "direction": "IN",
+      "amount": 64300.0
+    },
+    {
+      "date": "2026-10-06",
+      "narration": "CHQ DEP-330998-CHOLA COLD STORAGE",
+      "reference": "330998",
+      "direction": "IN",
+      "amount": 220000.0
+    },
+    {
+      "date": "2026-10-07",
+      "narration": "NEFT DR-DBIN26100700051-TAMIL AGRO INPUTS-INV 5233",
+      "reference": "DBIN26100700051",
+      "direction": "OUT",
+      "amount": 41500.0
+    }
+  ],
+  "matches": [
+    {
+      "match_id": "MS01-1",
+      "kind": "MATCH",
+      "pass_": "P1_REF",
+      "scenario": "M1",
+      "books_ids": [
+        "L004"
+      ],
+      "bank_ids": [
+        "B004"
+      ]
+    },
+    {
+      "match_id": "MS02-1",
+      "kind": "MATCH",
+      "pass_": "P1_REF",
+      "scenario": "M1",
+      "books_ids": [
+        "L007"
+      ],
+      "bank_ids": [
+        "B007"
+      ]
+    },
+    {
+      "match_id": "MS03-1",
+      "kind": "MATCH",
+      "pass_": "P1_REF",
+      "scenario": "M2",
+      "books_ids": [
+        "L012"
+      ],
+      "bank_ids": [
+        "B015"
+      ]
+    },
+    {
+      "match_id": "MS04-1",
+      "kind": "MATCH",
+      "pass_": "P1_REF",
+      "scenario": "D-DUP-BOOKS",
+      "books_ids": [
+        "L014"
+      ],
+      "bank_ids": [
+        "B016"
+      ]
+    },
+    {
+      "match_id": "MS05-1",
+      "kind": "MATCH",
+      "pass_": "P3_NARR|P4_TIEBREAK",
+      "scenario": "M4",
+      "books_ids": [
+        "L017"
+      ],
+      "bank_ids": [
+        "B018"
+      ]
+    },
+    {
+      "match_id": "MS05-2",
+      "kind": "MATCH",
+      "pass_": "P3_NARR|P4_TIEBREAK",
+      "scenario": "M4",
+      "books_ids": [
+        "L018"
+      ],
+      "bank_ids": [
+        "B017"
+      ]
+    },
+    {
+      "match_id": "MS06-1",
+      "kind": "MATCH",
+      "pass_": "P1_REF",
+      "scenario": "B-BOUNCE",
+      "books_ids": [
+        "L011"
+      ],
+      "bank_ids": [
+        "B012"
+      ]
+    },
+    {
+      "match_id": "MS10-1",
+      "kind": "GROUP",
+      "pass_": "P5_GROUP",
+      "scenario": "M5-MANY-TO-ONE",
+      "books_ids": [
+        "L037",
+        "L039",
+        "L041",
+        "L043"
+      ],
+      "bank_ids": [
+        "B045"
+      ]
+    },
+    {
+      "match_id": "MS15-1",
+      "kind": "MATCH",
+      "pass_": "P1_REF",
+      "scenario": "M1",
+      "books_ids": [
+        "L008"
+      ],
+      "bank_ids": [
+        "B008"
+      ]
+    },
+    {
+      "match_id": "MS16-1",
+      "kind": "GROUP",
+      "pass_": "P5_GROUP",
+      "scenario": "M5-ONE-TO-MANY",
+      "books_ids": [
+        "L019",
+        "L020",
+        "L021"
+      ],
+      "bank_ids": [
+        "B021"
+      ]
+    },
+    {
+      "match_id": "MS17a-1",
+      "kind": "MATCH",
+      "pass_": "P1_REF",
+      "scenario": "M2",
+      "books_ids": [
+        "L002"
+      ],
+      "bank_ids": [
+        "B013"
+      ]
+    },
+    {
+      "match_id": "MS17b-1",
+      "kind": "MATCH",
+      "pass_": "P1_REF",
+      "scenario": "M2",
+      "books_ids": [
+        "L009"
+      ],
+      "bank_ids": [
+        "B022"
+      ]
+    },
+    {
+      "match_id": "MS19a-1",
+      "kind": "MATCH",
+      "pass_": "P1_REF",
+      "scenario": "M7-RETURN",
+      "books_ids": [
+        "L038"
+      ],
+      "bank_ids": [
+        "B038"
+      ]
+    },
+    {
+      "match_id": "MS19b-1",
+      "kind": "MATCH",
+      "pass_": "P1_REF",
+      "scenario": "M1",
+      "books_ids": [
+        "L042"
+      ],
+      "bank_ids": [
+        "B044"
+      ]
+    },
+    {
+      "match_id": "MS21-1",
+      "kind": "MATCH",
+      "pass_": "P2_AMT_DATE",
+      "scenario": "B-DUP-BANK",
+      "books_ids": [
+        "L034"
+      ],
+      "bank_ids": [
+        "B035"
+      ]
+    },
+    {
+      "match_id": "MS23-1",
+      "kind": "MATCH",
+      "pass_": "P1_REF",
+      "scenario": "M1",
+      "books_ids": [
+        "L048"
+      ],
+      "bank_ids": [
+        "B053"
+      ]
+    },
+    {
+      "match_id": "MS24-1",
+      "kind": "MATCH",
+      "pass_": "P1_REF",
+      "scenario": "M2",
+      "books_ids": [
+        "L030"
+      ],
+      "bank_ids": [
+        "B032"
+      ]
+    },
+    {
+      "match_id": "MS25-1",
+      "kind": "MATCH",
+      "pass_": "P2_AMT_DATE",
+      "scenario": "M3",
+      "books_ids": [
+        "L046"
+      ],
+      "bank_ids": [
+        "B051"
+      ]
+    },
+    {
+      "match_id": "MS26-1",
+      "kind": "MATCH",
+      "pass_": "P2_AMT_DATE",
+      "scenario": "M3",
+      "books_ids": [
+        "L044"
+      ],
+      "bank_ids": [
+        "B047"
+      ]
+    },
+    {
+      "match_id": "MR01-1",
+      "kind": "MATCH",
+      "pass_": "P1_REF",
+      "scenario": "R-IN",
+      "books_ids": [
+        "L005"
+      ],
+      "bank_ids": [
+        "B005"
+      ]
+    },
+    {
+      "match_id": "MR02-1",
+      "kind": "MATCH",
+      "pass_": "P1_REF",
+      "scenario": "R-IN",
+      "books_ids": [
+        "L022"
+      ],
+      "bank_ids": [
+        "B023"
+      ]
+    },
+    {
+      "match_id": "MR03-1",
+      "kind": "MATCH",
+      "pass_": "P2_AMT_DATE",
+      "scenario": "R-IN",
+      "books_ids": [
+        "L023"
+      ],
+      "bank_ids": [
+        "B024"
+      ]
+    },
+    {
+      "match_id": "MR04-1",
+      "kind": "MATCH",
+      "pass_": "P1_REF",
+      "scenario": "R-IN",
+      "books_ids": [
+        "L003"
+      ],
+      "bank_ids": [
+        "B002"
+      ]
+    },
+    {
+      "match_id": "MR05-1",
+      "kind": "MATCH",
+      "pass_": "P1_REF",
+      "scenario": "R-IN",
+      "books_ids": [
+        "L053"
+      ],
+      "bank_ids": [
+        "B057"
+      ]
+    },
+    {
+      "match_id": "MR06-1",
+      "kind": "MATCH",
+      "pass_": "P1_REF",
+      "scenario": "R-IN",
+      "books_ids": [
+        "L024"
+      ],
+      "bank_ids": [
+        "B025"
+      ]
+    },
+    {
+      "match_id": "MR07-1",
+      "kind": "MATCH",
+      "pass_": "P1_REF",
+      "scenario": "R-CHQ-IN",
+      "books_ids": [
+        "L027"
+      ],
+      "bank_ids": [
+        "B039"
+      ]
+    },
+    {
+      "match_id": "MR08-1",
+      "kind": "MATCH",
+      "pass_": "P1_REF",
+      "scenario": "R-CHQ-IN",
+      "books_ids": [
+        "L035"
+      ],
+      "bank_ids": [
+        "B040"
+      ]
+    },
+    {
+      "match_id": "MR09-1",
+      "kind": "MATCH",
+      "pass_": "P1_REF",
+      "scenario": "R-IN",
+      "books_ids": [
+        "L025"
+      ],
+      "bank_ids": [
+        "B026"
+      ]
+    },
+    {
+      "match_id": "MR10-1",
+      "kind": "MATCH",
+      "pass_": "P1_REF",
+      "scenario": "R-IN",
+      "books_ids": [
+        "L031"
+      ],
+      "bank_ids": [
+        "B033"
+      ]
+    },
+    {
+      "match_id": "MR11-1",
+      "kind": "MATCH",
+      "pass_": "P1_REF",
+      "scenario": "R-IN",
+      "books_ids": [
+        "L047"
+      ],
+      "bank_ids": [
+        "B052"
+      ]
+    },
+    {
+      "match_id": "MR12-1",
+      "kind": "MATCH",
+      "pass_": "P1_REF",
+      "scenario": "R-IN",
+      "books_ids": [
+        "L006"
+      ],
+      "bank_ids": [
+        "B006"
+      ]
+    },
+    {
+      "match_id": "MP01-1",
+      "kind": "MATCH",
+      "pass_": "P1_REF",
+      "scenario": "R-OUT",
+      "books_ids": [
+        "L049"
+      ],
+      "bank_ids": [
+        "B054"
+      ]
+    },
+    {
+      "match_id": "MP02-1",
+      "kind": "MATCH",
+      "pass_": "P1_REF",
+      "scenario": "R-OUT",
+      "books_ids": [
+        "L032"
+      ],
+      "bank_ids": [
+        "B034"
+      ]
+    },
+    {
+      "match_id": "MP03-1",
+      "kind": "MATCH",
+      "pass_": "P1_REF",
+      "scenario": "R-OUT",
+      "books_ids": [
+        "L054"
+      ],
+      "bank_ids": [
+        "B058"
+      ]
+    },
+    {
+      "match_id": "MP04-1",
+      "kind": "MATCH",
+      "pass_": "P1_REF",
+      "scenario": "R-CHQ-OUT",
+      "books_ids": [
+        "L050"
+      ],
+      "bank_ids": [
+        "B055"
+      ]
+    },
+    {
+      "match_id": "MP05-1",
+      "kind": "MATCH",
+      "pass_": "P1_REF",
+      "scenario": "R-OUT",
+      "books_ids": [
+        "L045"
+      ],
+      "bank_ids": [
+        "B048"
+      ]
+    },
+    {
+      "match_id": "MP06-1",
+      "kind": "MATCH",
+      "pass_": "P1_REF",
+      "scenario": "R-OUT",
+      "books_ids": [
+        "L036"
+      ],
+      "bank_ids": [
+        "B037"
+      ]
+    },
+    {
+      "match_id": "MP07-1",
+      "kind": "MATCH",
+      "pass_": "P1_REF",
+      "scenario": "R-CHQ-OUT",
+      "books_ids": [
+        "L033"
+      ],
+      "bank_ids": [
+        "B043"
+      ]
+    },
+    {
+      "match_id": "MP08-1",
+      "kind": "MATCH",
+      "pass_": "P1_REF",
+      "scenario": "R-CHQ-OUT",
+      "books_ids": [
+        "L028"
+      ],
+      "bank_ids": [
+        "B049"
+      ]
+    },
+    {
+      "match_id": "MP09-1",
+      "kind": "MATCH",
+      "pass_": "P1_REF",
+      "scenario": "R-OUT",
+      "books_ids": [
+        "L055"
+      ],
+      "bank_ids": [
+        "B059"
+      ]
+    },
+    {
+      "match_id": "MP10-1",
+      "kind": "MATCH",
+      "pass_": "P1_REF",
+      "scenario": "R-CHQ-OUT",
+      "books_ids": [
+        "L010"
+      ],
+      "bank_ids": [
+        "B020"
+      ]
+    },
+    {
+      "match_id": "MP11-1",
+      "kind": "MATCH",
+      "pass_": "P1_REF",
+      "scenario": "R-OUT",
+      "books_ids": [
+        "L013"
+      ],
+      "bank_ids": [
+        "B014"
+      ]
+    },
+    {
+      "match_id": "MP12-1",
+      "kind": "MATCH",
+      "pass_": "P1_REF",
+      "scenario": "R-CHQ-OUT",
+      "books_ids": [
+        "L016"
+      ],
+      "bank_ids": [
+        "B041"
+      ]
+    }
+  ],
+  "unreconciled_items": [
+    {
+      "side": "BOOKS",
+      "id": "L001",
+      "date": "2026-09-02",
+      "direction": "IN",
+      "amount": 38000.0,
+      "category": "date_mismatch_outside_window",
+      "brs_section": "BOOKS_LESS_ERR_IN",
+      "note": "",
+      "related_id": "B056"
+    },
+    {
+      "side": "BOOKS",
+      "id": "L015",
+      "date": "2026-09-09",
+      "direction": "IN",
+      "amount": 12500.0,
+      "category": "duplicate_in_books",
+      "brs_section": "BOOKS_LESS_ERR_IN",
+      "note": "",
+      "related_id": "L014"
+    },
+    {
+      "side": "BOOKS",
+      "id": "L026",
+      "date": "2026-09-14",
+      "direction": "OUT",
+      "amount": 9320.0,
+      "category": "genuinely_missing",
+      "brs_section": "BOOKS_ADD_ERR_OUT",
+      "note": "",
+      "related_id": null
+    },
+    {
+      "side": "BOOKS",
+      "id": "L029",
+      "date": "2026-09-15",
+      "direction": "IN",
+      "amount": 58900.0,
+      "category": "amount_mismatch",
+      "brs_section": "BOOKS_LESS_ERR_IN",
+      "note": "",
+      "related_id": "B031"
+    },
+    {
+      "side": "BOOKS",
+      "id": "L040",
+      "date": "2026-09-18",
+      "direction": "IN",
+      "amount": 17640.0,
+      "category": "genuinely_missing",
+      "brs_section": "BOOKS_LESS_ERR_IN",
+      "note": "",
+      "related_id": null
+    },
+    {
+      "side": "BOOKS",
+      "id": "L051",
+      "date": "2026-09-28",
+      "direction": "OUT",
+      "amount": 27450.0,
+      "category": "cheque_issued_not_cleared",
+      "brs_section": "BANK_LESS_OC",
+      "note": "presented 03-Oct-2026 per extension statement",
+      "related_id": null
+    },
+    {
+      "side": "BOOKS",
+      "id": "L052",
+      "date": "2026-09-29",
+      "direction": "IN",
+      "amount": 110000.0,
+      "category": "deposit_in_transit",
+      "brs_section": "BANK_ADD_DIT",
+      "note": "credited 01-Oct-2026 per extension statement",
+      "related_id": null
+    },
+    {
+      "side": "BOOKS",
+      "id": "L056",
+      "date": "2026-09-30",
+      "direction": "IN",
+      "amount": 220000.0,
+      "category": "deposit_in_transit",
+      "brs_section": "BANK_ADD_DIT",
+      "note": "credited 06-Oct-2026 per extension statement",
+      "related_id": null
+    },
+    {
+      "side": "BOOKS",
+      "id": "L057",
+      "date": "2026-09-30",
+      "direction": "OUT",
+      "amount": 33900.0,
+      "category": "cheque_issued_not_cleared",
+      "brs_section": "BANK_LESS_OC",
+      "note": "not presented even by 10-Oct-2026",
+      "related_id": null
+    },
+    {
+      "side": "PRIOR_BRS",
+      "id": "CF3",
+      "date": "2026-05-12",
+      "direction": "OUT",
+      "amount": 15750.0,
+      "category": "stale_cheque",
+      "brs_section": "BANK_LESS_OC",
+      "note": "STALE: issued 12-May-2026 (>3 months), still not presented",
+      "related_id": null
+    },
+    {
+      "side": "BANK",
+      "id": "B009",
+      "date": "2026-09-04",
+      "direction": "OUT",
+      "amount": 250.0,
+      "category": "bank_charges_not_booked",
+      "brs_section": "BOOKS_LESS_BANKOUT",
+      "note": "",
+      "related_id": null
+    },
+    {
+      "side": "BANK",
+      "id": "B010",
+      "date": "2026-09-04",
+      "direction": "OUT",
+      "amount": 45.0,
+      "category": "bank_charges_not_booked",
+      "brs_section": "BOOKS_LESS_BANKOUT",
+      "note": "",
+      "related_id": null
+    },
+    {
+      "side": "BANK",
+      "id": "B011",
+      "date": "2026-09-05",
+      "direction": "OUT",
+      "amount": 38250.0,
+      "category": "direct_debit_not_booked",
+      "brs_section": "BOOKS_LESS_BANKOUT",
+      "note": "",
+      "related_id": null
+    },
+    {
+      "side": "BANK",
+      "id": "B019",
+      "date": "2026-09-10",
+      "direction": "OUT",
+      "amount": 12400.0,
+      "category": "direct_debit_not_booked",
+      "brs_section": "BOOKS_LESS_BANKOUT",
+      "note": "",
+      "related_id": null
+    },
+    {
+      "side": "BANK",
+      "id": "B027",
+      "date": "2026-09-14",
+      "direction": "OUT",
+      "amount": 64000.0,
+      "category": "cheque_bounce_not_booked",
+      "brs_section": "BOOKS_LESS_BANKOUT",
+      "note": "",
+      "related_id": "B012"
+    },
+    {
+      "side": "BANK",
+      "id": "B028",
+      "date": "2026-09-14",
+      "direction": "OUT",
+      "amount": 500.0,
+      "category": "bank_charges_not_booked",
+      "brs_section": "BOOKS_LESS_BANKOUT",
+      "note": "",
+      "related_id": "B027"
+    },
+    {
+      "side": "BANK",
+      "id": "B029",
+      "date": "2026-09-14",
+      "direction": "OUT",
+      "amount": 90.0,
+      "category": "bank_charges_not_booked",
+      "brs_section": "BOOKS_LESS_BANKOUT",
+      "note": "",
+      "related_id": "B027"
+    },
+    {
+      "side": "BANK",
+      "id": "B030",
+      "date": "2026-09-14",
+      "direction": "IN",
+      "amount": 86450.0,
+      "category": "direct_credit_not_booked",
+      "brs_section": "BOOKS_ADD_BANKIN",
+      "note": "",
+      "related_id": null
+    },
+    {
+      "side": "BANK",
+      "id": "B031",
+      "date": "2026-09-15",
+      "direction": "IN",
+      "amount": 58090.0,
+      "category": "amount_mismatch",
+      "brs_section": "BOOKS_ADD_BANKIN",
+      "note": "",
+      "related_id": "L029"
+    },
+    {
+      "side": "BANK",
+      "id": "B036",
+      "date": "2026-09-16",
+      "direction": "OUT",
+      "amount": 2150.0,
+      "category": "possible_duplicate_in_bank",
+      "brs_section": "BOOKS_LESS_BANKOUT",
+      "note": "",
+      "related_id": "B035"
+    },
+    {
+      "side": "BANK",
+      "id": "B042",
+      "date": "2026-09-18",
+      "direction": "IN",
+      "amount": 22000.0,
+      "category": "return_credit_not_booked",
+      "brs_section": "BOOKS_ADD_BANKIN",
+      "note": "category not in plan v1 - proposed addition",
+      "related_id": "B038"
+    },
+    {
+      "side": "BANK",
+      "id": "B046",
+      "date": "2026-09-21",
+      "direction": "OUT",
+      "amount": 52000.0,
+      "category": "direct_debit_not_booked",
+      "brs_section": "BOOKS_LESS_BANKOUT",
+      "note": "",
+      "related_id": null
+    },
+    {
+      "side": "BANK",
+      "id": "B050",
+      "date": "2026-09-23",
+      "direction": "IN",
+      "amount": 3333.0,
+      "category": "unidentified_transaction",
+      "brs_section": "BOOKS_ADD_BANKIN",
+      "note": "",
+      "related_id": null
+    },
+    {
+      "side": "BANK",
+      "id": "B056",
+      "date": "2026-09-29",
+      "direction": "IN",
+      "amount": 38000.0,
+      "category": "date_mismatch_outside_window",
+      "brs_section": "BOOKS_ADD_BANKIN",
+      "note": "",
+      "related_id": "L001"
+    },
+    {
+      "side": "BANK",
+      "id": "B060",
+      "date": "2026-09-30",
+      "direction": "IN",
+      "amount": 1874.0,
+      "category": "interest_credited_not_booked",
+      "brs_section": "BOOKS_ADD_BANKIN",
+      "note": "",
+      "related_id": null
+    },
+    {
+      "side": "BANK",
+      "id": "B061",
+      "date": "2026-09-30",
+      "direction": "OUT",
+      "amount": 187.0,
+      "category": "tds_on_interest_not_booked",
+      "brs_section": "BOOKS_LESS_BANKOUT",
+      "note": "",
+      "related_id": null
+    },
+    {
+      "side": "BANK",
+      "id": "B062",
+      "date": "2026-09-30",
+      "direction": "OUT",
+      "amount": 590.0,
+      "category": "bank_charges_not_booked",
+      "brs_section": "BOOKS_LESS_BANKOUT",
+      "note": "",
+      "related_id": null
+    },
+    {
+      "side": "BANK",
+      "id": "B063",
+      "date": "2026-09-30",
+      "direction": "OUT",
+      "amount": 106.2,
+      "category": "bank_charges_not_booked",
+      "brs_section": "BOOKS_LESS_BANKOUT",
+      "note": "",
+      "related_id": null
+    },
+    {
+      "side": "BANK",
+      "id": "B064",
+      "date": "2026-09-30",
+      "direction": "OUT",
+      "amount": 25.0,
+      "category": "bank_charges_not_booked",
+      "brs_section": "BOOKS_LESS_BANKOUT",
+      "note": "",
+      "related_id": null
+    },
+    {
+      "side": "BANK",
+      "id": "B065",
+      "date": "2026-09-30",
+      "direction": "OUT",
+      "amount": 4.5,
+      "category": "bank_charges_not_booked",
+      "brs_section": "BOOKS_LESS_BANKOUT",
+      "note": "",
+      "related_id": null
+    }
+  ],
+  "expected_brs": {
+    "adj_bank": 2731881.05,
+    "adj_books": 2731881.05,
+    "diff": 0.0,
+    "BANK_ADD_DIT": 330000.0,
+    "BANK_LESS_OC": 77100.0,
+    "BOOKS_ADD_BANKIN": 209747.0,
+    "BOOKS_LESS_BANKOUT": 170597.7,
+    "BOOKS_LESS_ERR_IN": 127040.0,
+    "BOOKS_ADD_ERR_OUT": 9320.0
+  }
+}

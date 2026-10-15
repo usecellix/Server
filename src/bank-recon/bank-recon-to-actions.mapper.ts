@@ -35,6 +35,8 @@ export const BANK_REASON_LABEL: Record<BankReason, string> = {
   cheque_bounce_not_booked: 'Cheque bounces / returns, not booked',
   unidentified_transaction: 'Unidentified bank entries (CA review)',
   possible_duplicate_in_bank: 'Possible duplicates on the statement',
+  amount_mismatch: 'Amount differs from books',
+  date_mismatch_outside_window: 'Date differs from books beyond clearing window',
 };
 
 const BOOKS_ORDER: BooksReason[] = [
@@ -48,6 +50,8 @@ const BOOKS_ORDER: BooksReason[] = [
   'post_dated_cheque',
 ];
 const BANK_ORDER: BankReason[] = [
+  'amount_mismatch',
+  'date_mismatch_outside_window',
   'unidentified_transaction',
   'direct_credit_not_booked',
   'direct_debit_not_booked',
@@ -107,7 +111,10 @@ function refCell(t: BankTxn): string {
 }
 
 function sourceCell(t: BankTxn): string {
-  return `${t.sourceLocation.sheet}!${t.sourceLocation.row}`;
+  const loc = t.sourceLocation;
+  // A row from an attached file has no cell in the workbook — point at its place in the file.
+  if (loc.external) return `${loc.sheet} · ${loc.ref ?? `row ${loc.row}`}`;
+  return `${loc.sheet}!${loc.row}`;
 }
 
 function txnRow(t: BankTxn, reason: string, explanation: string): unknown[] {
@@ -163,6 +170,9 @@ function finish(
   ];
 }
 
+/** Blank rows between the tables of the summary sheet, so each one reads as its own block. */
+const SECTION_GAP_ROWS = 3;
+
 const FOOTER = 'CELLIX | Reconciliation aid. CA to verify.';
 
 export function mapCategorizedToActions(model: BankSheetModel, sheetName: string): SheetActionPayload[] {
@@ -188,9 +198,17 @@ export function mapCategorizedToActions(model: BankSheetModel, sheetName: string
   const matched = result.matches.filter((m) => m.kind !== 'REVERSAL');
   builder.pushRow(['SUMMARY']);
   builder.pushRow(['Matched (one-to-one)', matched.filter((m) => m.kind === 'ONE_TO_ONE').length]);
-  builder.pushRow(['Matched (group)', matched.filter((m) => m.kind === 'GROUP').length]);
   const carried = matched.filter((m) => m.books.some((b) => b.voucherType === 'Carry-forward')).length;
   if (carried) builder.pushRow(['  of which prior-period items cleared this month', carried]);
+  const groups = matched.filter((m) => m.kind === 'GROUP');
+  builder.pushRow(['Matched (group)', groups.length]);
+  if (groups.length) {
+    const gb = groups.reduce((n, m) => n + m.books.length, 0);
+    const gk = groups.reduce((n, m) => n + m.bank.length, 0);
+    builder.pushRow([`  covering ${gb} ledger entries and ${gk} bank rows (use the 'matched' layout to list them)`, '']);
+  }
+  const lowMatched = result.matches.flatMap((m) => [...m.books, ...m.bank]).filter((t) => t.parseConfidence < 0.9).length;
+  if (lowMatched) builder.pushRow(['Matched rows read with lower confidence', lowMatched]);
   builder.pushRow(['Reversal / bounce pairs', result.matches.filter((m) => m.kind === 'REVERSAL').length]);
   builder.pushRow(['In books, not in bank', result.unmatchedBooks.length]);
   builder.pushRow(['In bank, not in books', reportableBank(model).length]);
@@ -201,6 +219,7 @@ export function mapCategorizedToActions(model: BankSheetModel, sheetName: string
       `${BOOKS_REASON_LABEL[g.reason]} (${g.items.length})`,
       HEADERS,
       g.items.map((i) => txnRow(i.txn, BOOKS_REASON_LABEL[g.reason], i.explanation)),
+      SECTION_GAP_ROWS,
     );
   }
   for (const g of groupBank(reportableBank(model))) {
@@ -208,29 +227,20 @@ export function mapCategorizedToActions(model: BankSheetModel, sheetName: string
       `${BANK_REASON_LABEL[g.reason]} (${g.items.length})`,
       HEADERS,
       g.items.map((i) => txnRow(i.txn, BANK_REASON_LABEL[g.reason], i.explanation)),
+      SECTION_GAP_ROWS,
     );
-  }
-
-  const groupMatches = result.matches.filter((m) => m.kind === 'GROUP');
-  if (groupMatches.length) {
-    const rows: unknown[][] = [];
-    for (const m of groupMatches) {
-      const total = m.bank.reduce((s, k) => s + k.amount, 0) || m.books.reduce((s, b) => s + b.amount, 0);
-      rows.push(...groupRows(m, total));
-    }
-    builder.pushSection(`Group matches — confirm (${groupMatches.length})`, HEADERS, rows);
   }
 
   const verify = [...result.unmatchedBooks.map((u) => u.txn), ...reportableBank(model).map((u) => u.txn)].filter(
     (t) => t.parseConfidence < 0.9,
   );
-  const verifyMatched = result.matches.flatMap((m) => [...m.books, ...m.bank]).filter((t) => t.parseConfidence < 0.9);
-  const verifyAll = [...verify, ...verifyMatched];
+  const verifyAll = verify;
   if (verifyAll.length) {
     builder.pushSection(
       `Please verify — low-confidence rows (${verifyAll.length})`,
       HEADERS,
       verifyAll.map((t) => txnRow(t, 'Low confidence', 'Direction inferred or date borrowed — check against the source sheet.')),
+      SECTION_GAP_ROWS,
     );
   }
 
@@ -243,13 +253,6 @@ export function mapCategorizedToActions(model: BankSheetModel, sheetName: string
     format: { numberFormat: '#,##0.00' },
   };
   return finish(sheetName, builder, titleRow, model.relativeTo, [amountFmt]);
-}
-
-function groupRows(m: BankMatch, total: number): unknown[][] {
-  const rows: unknown[][] = [];
-  const label = `Group match: ${m.books.length} ledger entr${m.books.length > 1 ? 'ies' : 'y'} ↔ ${m.bank.length} bank row${m.bank.length > 1 ? 's' : ''} = ${total.toLocaleString('en-IN', { minimumFractionDigits: 2 })}`;
-  for (const t of [...m.books, ...m.bank]) rows.push(txnRow(t, 'Group match', label));
-  return rows;
 }
 
 export function mapBooksFlatToActions(model: BankSheetModel, sheetName: string): SheetActionPayload[] {

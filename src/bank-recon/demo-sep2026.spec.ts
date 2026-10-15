@@ -71,14 +71,16 @@ describe('demo workbook (Sep 2026)', () => {
     expect(bank).toMatchObject({
       possible_duplicate_in_bank: 1,
       return_credit_not_booked: 1,
-      cheque_bounce_not_booked: 3,
+      cheque_bounce_not_booked: 1, // only the returned cheque itself; the return charge + GST are bank charges
       unidentified_transaction: 1,
       interest_credited_not_booked: 1,
       tds_on_interest_not_booked: 1,
     });
     expect(bank.direct_debit_not_booked).toBe(3); // EMI, insurance, GST challan
-    expect(bank.direct_credit_not_booked).toBe(3);
-    expect(bank.bank_charges_not_booked).toBe(6);
+    expect(bank.direct_credit_not_booked).toBe(1); // Greenleaf — the other two are the mismatch pairs
+    expect(bank.bank_charges_not_booked).toBe(8);
+    expect(bank.amount_mismatch).toBe(1);
+    expect(bank.date_mismatch_outside_window).toBe(1);
   });
 });
 
@@ -99,5 +101,47 @@ describe('service: "not cleared" view', () => {
     expect(timing.rows.filter((r: any) => r.side === 'BOOKS')).toHaveLength(5); // 2 cheques, 2 deposits in transit, 1 stale cheque
     expect(timing.output_sheet_name).toBe('Bank Recon - Not Cleared');
     expect(timing.brs.tiedOut).toBe(true);
+  });
+});
+
+describe('Summary sheet content', () => {
+  it('lists only unreconciled rows — matched entries appear as counts, never as rows', async () => {
+    const { mapBankReconToActions } = await import('./bank-recon-to-actions.mapper');
+    const o = run(true);
+    const model = {
+      result: o.result, brs: o.brs, periodLabel: 'September 2026', periodStart: o.periodStart, periodEnd: o.periodEnd,
+      runAt: 'now', booksSheet: 'Bank Ledger', bankSheet: 'Bank Statement',
+    };
+    const table = mapBankReconToActions('categorized', model, 'Bank Recon Summary')[1] as { rows: unknown[][] };
+    const dataRows = table.rows.filter((r) => typeof r[0] === 'string' ? /^\d{4}-\d{2}-\d{2}$/.test(r[0] as string) : false);
+    expect(dataRows).toHaveLength(30); // exactly the 30 unreconciled items
+    const text = JSON.stringify(table.rows);
+    expect(text).not.toContain('Group match:');
+    expect(text).toContain('Matched (group)');
+    expect(text).toContain('covering 7 ledger entries and 2 bank rows');
+  });
+});
+
+describe('Summary sheet spacing', () => {
+  it('leaves 3 blank rows between consecutive tables', async () => {
+    const { mapBankReconToActions } = await import('./bank-recon-to-actions.mapper');
+    const o = run(true);
+    const model = {
+      result: o.result, brs: o.brs, periodLabel: 'September 2026', periodStart: o.periodStart, periodEnd: o.periodEnd,
+      runAt: 'now', booksSheet: 'Bank Ledger', bankSheet: 'Bank Statement',
+    };
+    const table = mapBankReconToActions('categorized', model, 'Bank Recon Summary')[1] as { rows: unknown[][] };
+    const blank = (r: unknown[]) => r.every((c) => c === '' || c === null || c === undefined);
+    // A table title row looks like "<label> (<n>)" followed by the header row starting with "Date".
+    const titleIdx = table.rows
+      .map((r, i) => (typeof r[0] === 'string' && /\(\d+\)$/.test(r[0] as string) && table.rows[i + 1]?.[0] === 'Date' ? i : -1))
+      .filter((i) => i >= 0);
+    expect(titleIdx.length).toBeGreaterThan(10);
+    for (let n = 1; n < titleIdx.length; n++) {
+      let end = titleIdx[n] - 1;
+      let gap = 0;
+      while (end >= 0 && blank(table.rows[end])) { gap++; end--; }
+      expect(gap).toBe(3);
+    }
   });
 });
