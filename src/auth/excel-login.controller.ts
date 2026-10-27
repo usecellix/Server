@@ -6,7 +6,6 @@ import {
   Query,
   Res,
   Sse,
-  UnauthorizedException,
   UseGuards,
   type MessageEvent,
 } from '@nestjs/common';
@@ -82,7 +81,11 @@ export class ExcelLoginController {
     }
     const claim = this.excelLoginBridge.consumeClaim(token);
     if (!claim?.sessionToken) {
-      throw new UnauthorizedException('Login claim expired or already used');
+      // Not an error: the task pane polls this while the user is still
+      // registering/signing in on the browser tab. 202 keeps those polls out
+      // of the console as failures; the client treats it as "not ready yet".
+      reply.status(202);
+      return { pending: true };
     }
 
     const setCookie = await buildSessionSetCookie(claim.sessionToken);
