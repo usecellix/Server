@@ -1,3 +1,4 @@
+import { sourceNoteText } from '../excel-ai/utils/output-sheet.util';
 import { SheetActionPayload } from '../excel-ai/types/sheet-actions.types';
 import {
   buildReconSheetStylingActions,
@@ -275,7 +276,7 @@ export function mapToSheetActions(params: {
     dataRowRange: tableRows.length ? [detailDataStart, detailDataEnd] : null,
   });
   builder.pushRow(['']);
-  builder.pushRow(['CELLIX | Reconciliation aid. CA to verify.']);
+  builder.pushRow([`CELLIX | Reconciliation aid. CA to verify. ${sourceNoteText(relativeTo, runAt)}`]);
 
   const writeHeaders = builder.rows[0].map((c, i) => (i === 0 ? String(c) : `C${i + 1}`));
   const writeRows = builder.rows.slice(1);
@@ -293,6 +294,7 @@ export function mapToSheetActions(params: {
       type: 'CREATE_SHEET',
       sheetName,
       name: sheetName,
+      uniqueName: true,
       relativeTo,
       position: 'after',
     },
@@ -649,7 +651,7 @@ export function mapMissedBooksToSheetActions(params: {
     booksHeaders,
     unclassifiedRows.map(toBooksSectionRow),
   );
-  builder.pushRow(['CELLIX | Reconciliation aid. CA to verify.']);
+  builder.pushRow([`CELLIX | Reconciliation aid. CA to verify. ${sourceNoteText(relativeTo, runAt)}`]);
 
   const writeHeaders = builder.rows[0].map((c, i) => (i === 0 ? String(c) : `C${i + 1}`));
   const writeRows = builder.rows.slice(1);
@@ -667,6 +669,7 @@ export function mapMissedBooksToSheetActions(params: {
       type: 'CREATE_SHEET',
       sheetName,
       name: sheetName,
+      uniqueName: true,
       relativeTo,
       position: 'after',
     },
@@ -714,7 +717,7 @@ export function mapMissedBooksFlatToSheetActions(params: {
   builder.pushRow([`Run: ${runAt}`, `Rows: ${missed.length}`]);
   builder.pushRow(['']);
   builder.pushSection('Missing Rows', headers, missed.map(toBooksSectionRow));
-  builder.pushRow(['CELLIX | Reconciliation aid. CA to verify.']);
+  builder.pushRow([`CELLIX | Reconciliation aid. CA to verify. ${sourceNoteText(relativeTo, runAt)}`]);
 
   const writeHeaders = builder.rows[0].map((c, i) => (i === 0 ? String(c) : `C${i + 1}`));
   const writeRows = builder.rows.slice(1);
@@ -727,7 +730,7 @@ export function mapMissedBooksFlatToSheetActions(params: {
   });
 
   return [
-    { type: 'CREATE_SHEET', sheetName, name: sheetName, relativeTo, position: 'after' },
+    { type: 'CREATE_SHEET', sheetName, name: sheetName, uniqueName: true, relativeTo, position: 'after' },
     { type: 'WRITE_TABLE', sheetName, headers: writeHeaders as string[], rows: writeRows },
     ...stylingActions,
   ];
@@ -760,7 +763,7 @@ export function mapPortalOnlyFlatToSheetActions(params: {
   builder.pushRow([`Run: ${runAt}`, `Rows: ${portalOnly.length}`]);
   builder.pushRow(['']);
   builder.pushSection('Missing Rows', headers, portalOnly.map(toPortalSectionRow));
-  builder.pushRow(['CELLIX | Reconciliation aid. CA to verify.']);
+  builder.pushRow([`CELLIX | Reconciliation aid. CA to verify. ${sourceNoteText(relativeTo, runAt)}`]);
 
   const writeHeaders = builder.rows[0].map((c, i) => (i === 0 ? String(c) : `C${i + 1}`));
   const writeRows = builder.rows.slice(1);
@@ -773,7 +776,7 @@ export function mapPortalOnlyFlatToSheetActions(params: {
   });
 
   return [
-    { type: 'CREATE_SHEET', sheetName, name: sheetName, relativeTo, position: 'after' },
+    { type: 'CREATE_SHEET', sheetName, name: sheetName, uniqueName: true, relativeTo, position: 'after' },
     { type: 'WRITE_TABLE', sheetName, headers: writeHeaders as string[], rows: writeRows },
     ...stylingActions,
   ];
@@ -801,7 +804,7 @@ export function map3bVs2bToActions(params: {
     ['Excess claim', '', '', '', result.excessClaim, result.drc01cRisk ? 'DRC-01C RISK' : ''],
     ['Short claim', '', '', '', result.shortClaim, ''],
     ...result.messages.map((m) => ['Note', '', '', '', '', m]),
-    ['', '', '', '', '', 'CELLIX | Reconciliation aid. CA to verify.'],
+    ['', '', '', '', '', `CELLIX | Reconciliation aid. CA to verify. ${sourceNoteText(relativeTo, runAt)}`],
   ];
 
   return [
@@ -809,6 +812,7 @@ export function map3bVs2bToActions(params: {
       type: 'CREATE_SHEET',
       sheetName,
       name: sheetName,
+      uniqueName: true,
       relativeTo,
       position: 'after',
     },

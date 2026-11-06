@@ -4,8 +4,12 @@ import {
   ReconType,
 } from './types';
 
-const GSTIN_REGEX =
-  /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}[Z]{1}[0-9A-Z]{1}$/;
+import { GSTIN_FORMAT_REGEX } from '../excel-ai/utils/india-validators.util';
+
+// Single source of truth for GSTIN format lives in india-validators.util (B10).
+// This gate stays FORMAT-ONLY on purpose: the recon must still run on registers
+// whose GSTINs fail the checksum — those are flagged, not blocked (see P2.3).
+const GSTIN_REGEX = GSTIN_FORMAT_REGEX;
 
 export function normalizeGstin(raw: string): string {
   return String(raw ?? '')

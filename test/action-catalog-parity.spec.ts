@@ -95,10 +95,24 @@ describe('action catalog parity', () => {
    * emit but the add-in does not list is rejected there as an unsupported
    * action, so check the two agree whenever both are checked out together.
    */
+  it('finds the add-in sources in this repo (so the check below can never silently skip)', () => {
+    // P1.1: this repo ships ../client, so a null here means the path logic broke.
+    // Only a standalone Server checkout (no client/) may skip.
+    const present = (() => {
+      try {
+        readFileSync(join(__dirname, '../../client/src/types/sheet-actions.ts'), 'utf8');
+        return true;
+      } catch {
+        return false;
+      }
+    })();
+    if (present) expect(frontendActionUnion()).not.toBeNull();
+  });
+
   it('emits no action type the add-in would reject as unsupported', () => {
     const frontendUnion = frontendActionUnion();
     if (!frontendUnion) {
-      console.warn('Skipping add-in catalog parity — frontend/ is not checked out alongside.');
+      console.warn('Skipping add-in catalog parity — client/ is not checked out alongside.');
       return;
     }
     const unknownToFrontend = ALL_SHEET_ACTION_TYPES.filter(
@@ -108,15 +122,20 @@ describe('action catalog parity', () => {
   });
 });
 
-/** The add-in's action union, or null when the sibling repo is absent. */
+/** The add-in's action union, or null when the add-in sources are absent. */
 function frontendActionUnion(): string[] | null {
-  const path = join(__dirname, '../../frontend/src/types/sheet-actions.ts');
-  let source: string;
-  try {
-    source = readFileSync(path, 'utf8');
-  } catch {
-    return null;
+  // The add-in lives in ../client (older checkouts: ../frontend). Before P1.1 this only
+  // looked in ../frontend, so the check silently skipped and drift went unnoticed.
+  let source: string | null = null;
+  for (const dir of ['client', 'frontend']) {
+    try {
+      source = readFileSync(join(__dirname, `../../${dir}/src/types/sheet-actions.ts`), 'utf8');
+      break;
+    } catch {
+      /* try the next location */
+    }
   }
+  if (source === null) return null;
   const block = source.match(/export type SheetActionType =([\s\S]*?);/);
   if (!block) return null;
   return [...block[1].matchAll(/'([A-Z_]+)'/g)].map((m) => m[1]);

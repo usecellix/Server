@@ -1,3 +1,10 @@
+import { buildCleanTextPlan, detectCleanTextIntent } from '../utils/clean-text-lane.util';
+import {
+  buildProfileReport,
+  detectProfileIntent,
+  profileColumns,
+  profileOnlyColumnsFromMessage,
+} from '../utils/column-profiler.util';
 import {
   BadRequestException,
   GoneException,
@@ -144,6 +151,11 @@ import {
   type LlmFailure,
 } from '../utils/llm-failure-message.util';
 import { annotateAnswerConsistency } from '../utils/answer-consistency.util';
+import { applyAdviceGuardrail } from '../utils/advice-guardrail.util';
+import {
+  buildGstinValidationPlan,
+  detectValidateGstinIntent,
+} from '../utils/gstin-validation-lane.util';
 import { deriveConversationTitle, truncateTitle } from '../utils/conversation-title.util';
 import { WorkflowTraceService } from '../../common/logging/workflow-trace.service';
 import type { WorkflowTraceStatus } from '../../common/logging/schemas/workflow-trace.schema';
@@ -619,8 +631,14 @@ export class ConversationService {
     initSseResponse(reply);
 
     const conversationId = conversation.conversationId;
-    const emit = (event: string, data: Record<string, unknown>) =>
+    // P0.2: every final answer passes the deterministic advice guardrail
+    // (verdict wording softened; fixed disclaimer on advice-shaped questions).
+    const emit = (event: string, data: Record<string, unknown>) => {
+      if (event === 'answer' && typeof data.answer === 'string') {
+        data = { ...data, answer: applyAdviceGuardrail(data.answer, activeRequest.message).answer };
+      }
       writeSseEvent(reply, event, { ...data, conversationId });
+    };
     let localReason = this.engine.hasOpenAi() ? 'llm_not_used' : 'no_llm_provider';
     /** Set when an LLM call failed, so local copy can name the real cause (F11). */
     let llmFailure: LlmFailure | undefined;
@@ -683,6 +701,118 @@ export class ConversationService {
           route: 'write',
           tier: 0,
         });
+        endSseResponse(reply);
+        return;
+      }
+
+      // P1.5 — "Check the data quality of this sheet": read-only column profile,
+      // deterministic (no LLM), answers in any mode and never writes.
+      if (detectProfileIntent(activeRequest.message)) {
+        const profileSheetName = this.resolveActiveSheetName(activeRequest);
+        const profileSheetData = await this.resolveActiveSheetData(
+          activeRequest,
+          analysis,
+          profileSheetName,
+          conversationId,
+          emit,
+        );
+        const profileSnapshot = (
+          activeRequest.workbookContext as
+            | { sheets?: Array<{ sheetName?: string; columnMeta?: Array<{ formatCounts?: Array<{ format: string; count: number }> }> }> }
+            | undefined
+        )?.sheets?.find?.((sheet) => sheet && typeof sheet === 'object' && sheet.sheetName === profileSheetName);
+        const profiles = profileColumns(profileSheetData, {
+          headerRowIndex: analysis.headerRowIndex ?? 0,
+          formatCounts: profileSnapshot?.columnMeta?.map((meta) => meta?.formatCounts),
+          onlyColumns: profileOnlyColumnsFromMessage(activeRequest.message),
+        });
+        const report = buildProfileReport(profileSheetName, profiles);
+        this.logger.log(
+          `Column profile (deterministic) trace=${traceId} conversation=${conversationId} columns=${profiles.length} flagged=${report.flaggedColumns}`,
+        );
+        await this.emitLocalDecision(
+          conversation.conversationId,
+          { kind: 'answer' as const, answer: report.answer },
+          emit,
+          { traceId, route: 'ask', tier: 0 },
+        );
+        endSseResponse(reply);
+        return;
+      }
+
+      // P1.9 — "Clean the spaces and hidden characters in column A": deterministic (no LLM).
+      // Proposes the cleaned text as a normal BATCH_SET, so it previews first and can be reverted.
+      if (writeAllowed && detectCleanTextIntent(activeRequest.message)) {
+        const cleanSheetName = this.resolveActiveSheetName(activeRequest);
+        const cleanSheetData = await this.resolveActiveSheetData(
+          activeRequest,
+          analysis,
+          cleanSheetName,
+          conversationId,
+          emit,
+        );
+        const cleanSnapshot = (
+          activeRequest.workbookContext as
+            | { sheets?: Array<{ sheetName?: string; columnMeta?: Array<{ formulaRows?: number[] }> }> }
+            | undefined
+        )?.sheets?.find?.((sheet) => sheet && typeof sheet === 'object' && sheet.sheetName === cleanSheetName);
+        const cleanPlan = buildCleanTextPlan(cleanSheetData, cleanSheetName, activeRequest.message, {
+          headerRowIndex: analysis.headerRowIndex ?? 0,
+          formulaRows: cleanSnapshot?.columnMeta?.map((meta) => meta?.formulaRows),
+        });
+        this.logger.log(
+          `Clean text (deterministic) trace=${traceId} conversation=${conversationId} kind=${cleanPlan.kind} toClean=${cleanPlan.counts?.toClean ?? 0} formulaSkipped=${cleanPlan.counts?.formulaSkipped ?? 0}`,
+        );
+        await this.emitLocalDecision(
+          conversation.conversationId,
+          cleanPlan.kind === 'actions'
+            ? {
+                kind: 'actions' as const,
+                answer: cleanPlan.answer,
+                explanation: cleanPlan.explanation ?? 'Clean text.',
+                actions: cleanPlan.actions ?? [],
+              }
+            : { kind: 'answer' as const, answer: cleanPlan.answer },
+          emit,
+          { traceId, route: 'write', tier: 0 },
+        );
+        endSseResponse(reply);
+        return;
+      }
+
+      // P1.4 — "Validate the GSTINs in column B": deterministic (no LLM). Proposes
+      // Status/State columns as a normal BATCH_SET, so it still previews first.
+      if (writeAllowed && detectValidateGstinIntent(activeRequest.message)) {
+        const gstinSheetName = this.resolveActiveSheetName(activeRequest);
+        const gstinSheetData = await this.resolveActiveSheetData(
+          activeRequest,
+          analysis,
+          gstinSheetName,
+          conversationId,
+          emit,
+        );
+        const gstinPlan = buildGstinValidationPlan(
+          gstinSheetData,
+          analysis.headerRowIndex ?? 0,
+          gstinSheetName,
+          activeRequest.message,
+        );
+        this.logger.log(
+          `GSTIN validation (deterministic) trace=${traceId} conversation=${conversationId} kind=${gstinPlan.kind} checked=${gstinPlan.counts?.checked ?? 0}`,
+        );
+        await this.emitLocalDecision(
+          conversation.conversationId,
+          gstinPlan.kind === 'actions'
+            ? {
+                kind: 'actions' as const,
+                answer: gstinPlan.answer,
+                explanation: gstinPlan.explanation ?? 'Validate GSTINs.',
+                actions: gstinPlan.actions ?? [],
+              }
+            : { kind: 'answer' as const, answer: gstinPlan.answer },
+          emit,
+          { traceId, route: 'write', tier: 0 },
+        );
         endSseResponse(reply);
         return;
       }

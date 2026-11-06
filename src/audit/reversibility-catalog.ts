@@ -39,6 +39,9 @@ export const REVERSIBILITY_CATALOG: Record<SheetActionType, ReversibilityCatalog
   BATCH_SET: { reversible: true },
   CLEAR_CONTENT: { reversible: true },
   CLEAR_ALL: { reversible: true },
+  // P1.6/P1.8: server-side revert stays impossible (the shadow never saw every row), so these two
+  // remain `reversible: false` HERE on purpose. The add-in snapshots the affected cells in memory
+  // just before applying and restores them itself - see SESSION_UNDOABLE_ACTION_TYPES below.
   SET_MATCHING_ROWS: {
     reversible: false,
     reason:
@@ -184,6 +187,14 @@ export const REVERSIBILITY_CATALOG: Record<SheetActionType, ReversibilityCatalog
   CLARIFY: { reversible: false, reason: NOT_A_MUTATION },
   CHECKPOINT: { reversible: false, reason: NOT_A_MUTATION },
 };
+
+/**
+ * Action types the ADD-IN undoes from an in-memory, session-only snapshot (client/src/engine/rowSnapshot.ts,
+ * P1.6). The server cannot revert them, but the user can - so the add-in strips these from the
+ * "can't be undone" notice and offers Revert. The client keeps its own copy of this list; a parity
+ * spec (test/reversibility-catalog.spec.ts) fails if the two differ.
+ */
+export const SESSION_UNDOABLE_ACTION_TYPES: SheetActionType[] = ['DELETE_MATCHING_ROWS', 'SET_MATCHING_ROWS'];
 
 /** Every action type this catalog classifies, derived from the map above. */
 export const ALL_REVERSIBILITY_CATALOG_TYPES = Object.keys(

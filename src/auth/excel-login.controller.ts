@@ -133,13 +133,18 @@ async function buildSessionSetCookie(sessionToken: string): Promise<string> {
     ) => Promise<string>;
   }>('better-call');
 
+  // Must mirror auth.ts defaultCookieAttributes. In production the task pane
+  // may be an iframe inside Excel on the web (third-party context), where a
+  // Lax cookie is silently dropped — so use None + Secure + Partitioned.
+  const isProd = process.env.NODE_ENV === 'production';
   const cookies = getCookies({
     baseURL: betterAuthUrl,
     advanced: {
-      useSecureCookies: process.env.NODE_ENV === 'production',
+      useSecureCookies: isProd,
       defaultCookieAttributes: {
-        sameSite: 'lax',
-        secure: process.env.NODE_ENV === 'production',
+        sameSite: isProd ? 'none' : 'lax',
+        ...(isProd ? { partitioned: true } : {}),
+        secure: isProd,
         httpOnly: true,
         path: '/',
       },

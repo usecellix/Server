@@ -185,12 +185,24 @@ export type RangeFilterOperator =
   | 'lengthEquals'
   | 'lengthNotEquals'
   | 'matchesRegex'
-  | 'notMatchesRegex';
+  | 'notMatchesRegex'
+  | 'isBlank'
+  | 'isNotBlank'
+  | 'isTextNumber'
+  | 'isInvalidGstin'
+  | 'olderThan'
+  | 'isDuplicate';
 
 export interface RangeFilterSpec {
   column: string;
   operator: RangeFilterOperator;
   value: string | number;
+  /** isDuplicate: columns that together form the key (defaults to `column`). */
+  keyColumns?: string[];
+  /** isDuplicate: which row of a duplicate group to keep - the others match. Default 'first'. */
+  keep?: 'first' | 'last';
+  /** olderThan: reference date (ISO yyyy-mm-dd); defaults to today. */
+  asOn?: string;
 }
 
 export interface BatchSetOperation {
@@ -279,6 +291,12 @@ export interface SheetActionPayload {
   sourceName?: string;
   newName?: string;
   name?: string;
+  /**
+   * ADD_SHEET / CREATE_SHEET produced by an output writer (recon, reports, cleaning
+   * results): if a sheet with this name already exists, pick "Name (2)", "Name (3)"…
+   * instead of reusing — and overwriting — the earlier run. See output-sheet.util.ts (P1.2).
+   */
+  uniqueName?: boolean;
   tableName?: string;
   hasHeaders?: boolean;
   /** CREATE_TABLE: false hides the per-header filter dropdowns — TASKS.md #268. */
