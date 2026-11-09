@@ -1,3 +1,4 @@
+import { expiryFromNow, RETENTION } from '../../common/retention/retention.config';
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { HydratedDocument, SchemaTypes, Types } from 'mongoose';
 
@@ -164,6 +165,11 @@ export class ChangeSet {
    */
   @Prop({ type: [SchemaTypes.Mixed], default: [] })
   formatSnapshots?: Record<string, unknown>[];
+
+  /** P0.3: before/after cell values are kept only this long (CHANGESET_TTL_HOURS, default 7 days). */
+  @Prop({ type: Date, default: () => expiryFromNow(RETENTION.changeSetHours()) })
+  expiresAt?: Date;
 }
 
 export const ChangeSetSchema = SchemaFactory.createForClass(ChangeSet);
+ChangeSetSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });

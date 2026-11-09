@@ -134,7 +134,14 @@ async function createAuth(): Promise<BetterAuthInstance> {
       useSecureCookies: process.env.NODE_ENV === 'production',
       defaultCookieAttributes: {
         // Same-site cookies work for same-origin Vite proxy callbacks.
-        sameSite: 'lax',
+        // In production the task pane can be an iframe inside Excel on the web
+        // (officeapps.live.com), i.e. a THIRD-PARTY context: SameSite=Lax
+        // cookies are dropped there, so the session claimed by
+        // /excel-login/claim never sticks and the login screen reappears.
+        // SameSite=None + Secure + Partitioned (CHIPS) is accepted in that
+        // context. Dev stays Lax/non-Secure (plain HTTP behind the Vite proxy).
+        sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
+        ...(process.env.NODE_ENV === 'production' ? { partitioned: true } : {}),
         // The Server backend itself only ever serves plain HTTP in local dev
         // (Server/.env's PORT, no TLS) — HTTPS only exists on the Excel
         // add-in's own Vite dev server, which terminates TLS in front of it.

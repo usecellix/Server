@@ -4,6 +4,7 @@ import {
   NormalizedInvoiceRow,
   SourceRef,
 } from '../types/domain-tool.types';
+import { GSTIN_FORMAT_REGEX } from '../../excel-ai/utils/india-validators.util';
 
 /** Strip separators and lowercase for fuzzy compare; keep alphanumerics. */
 export function normalizeInvoiceNumber(raw: string): string {
@@ -283,7 +284,8 @@ export function parseImsAction(raw: unknown): ImsActionStatus {
 
 export function isValidGstinFormat(gstin: string): boolean {
   if (!gstin) return false;
-  return /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][A-Z0-9]Z[A-Z0-9]$/.test(gstin);
+  // Same regex as gst-recon/gstin-validator.ts — one definition (B10).
+  return GSTIN_FORMAT_REGEX.test(gstin);
 }
 
 export function buildNormalizedRow(parts: {

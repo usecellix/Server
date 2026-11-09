@@ -1,3 +1,4 @@
+import { RETENTION } from '../retention/retention.config';
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
@@ -59,8 +60,9 @@ export class RequestFileLoggerService implements OnModuleInit, OnModuleDestroy {
       responseTimeMs: input.responseTimeMs,
       ...(input.reqId ? { reqId: input.reqId } : {}),
       ...(input.traceId ? { traceId: input.traceId } : {}),
-      ...(input.message ? { message: input.message } : {}),
-      ...(input.response !== undefined ? { response: input.response } : {}),
+      // P0.3: the typed message and the response contain client cell values — metadata only by default.
+      ...(RETENTION.requestLogBodiesEnabled() && input.message ? { message: input.message } : {}),
+      ...(RETENTION.requestLogBodiesEnabled() && input.response !== undefined ? { response: input.response } : {}),
     };
 
     this.writeChain = this.writeChain

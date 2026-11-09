@@ -1,3 +1,4 @@
+import { runPassIrn } from './irn-pass';
 import {
   DEFAULT_GST_MATCH_SETTINGS,
   DomainTool,
@@ -80,6 +81,7 @@ export const gstMatch: DomainTool<GstMatchInput, GstMatchOutput> = (input) => {
     input.mode ?? 'purchase',
   );
 
+  runPassIrn(ws); // P3.7: same IRN = same e-invoice, even if the invoice no. was keyed differently
   runPassExact(ws);
   // Row-level eligibility (blank invoice number) lives inside runPass1bFallback itself
   // now, so this always runs — a books sheet that generally HAS invoice numbers can still

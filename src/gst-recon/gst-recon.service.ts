@@ -179,6 +179,7 @@ export class GstReconService {
     const toolResult = gstr3bVs2b({
       gstr3bItc: request.gstr3b_itc,
       gstr2bItc: request.gstr2b_itc,
+      tables: request.gstr3b_tables,
     });
     const sheetName = sanitizeExcelSheetName(
       request.output_sheet_name ?? `Recon 3B-vs-2B ${request.period ?? ''}`,

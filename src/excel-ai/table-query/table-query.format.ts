@@ -160,6 +160,9 @@ function formatResult(table: TableModel, result: TableQueryResult): string[] {
       const value = query.column ? formatValue(query.column, last.cells[query.column.index]) : '';
       lines.push(`${rowsWord(result.tiedBeyondLimit)} more ${result.tiedBeyondLimit === 1 ? 'has' : 'have'} the same ${query.column?.name ?? 'value'} (${value}) as the last one listed.`);
     }
+    if (query.requestedLimit) {
+      lines.push(`You asked for ${query.requestedLimit}; CELLIX lists at most 50 rows in chat — ask for a sheet output for more.`);
+    }
     if (query.op === 'list' && result.matchedRows > shown) {
       lines.push(`Showing the first ${shown} of ${rowsWord(result.matchedRows)} that match.`);
     }

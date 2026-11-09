@@ -1,7 +1,9 @@
 import { Injectable, Logger, type MessageEvent } from '@nestjs/common';
 import { Subject } from 'rxjs';
 
-const TOKEN_TTL_MS = 5 * 60 * 1000;
+// Covers a new user registering and then logging in on the browser tab. Keep in
+// sync with waitForEmailLogin's TIMEOUT_MS (client/src/auth/useAuth.ts).
+const TOKEN_TTL_MS = 15 * 60 * 1000;
 /** How long Excel may call /excel-login/claim after the browser tab finishes sign-in. */
 const CLAIM_TTL_MS = 2 * 60 * 1000;
 

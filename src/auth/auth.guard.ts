@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import { AppConfigService } from '../config/app-config.service';
 import { getAuth } from './auth';
+import { hashSheetsKey, looksLikeSheetsKey, SHEETS_KEY_HEADER, SheetsKeyResolver } from '../sheets-link/sheets-link.key';
 
 export type AuthUserSession = NonNullable<
   Awaited<ReturnType<Awaited<ReturnType<typeof getAuth>>['api']['getSession']>>
@@ -37,6 +38,22 @@ export class AuthGuard implements CanActivate {
       if (presented && presented === bypassToken) {
         return true;
       }
+    }
+
+    // Google Sheets add-in: a link key created by the signed-in user stands in for the
+    // browser session cookie Apps Script can never hold. See sheets-link.key.ts.
+    const sheetsKeyHeader = request.headers[SHEETS_KEY_HEADER];
+    const sheetsKey = Array.isArray(sheetsKeyHeader) ? sheetsKeyHeader[0] : sheetsKeyHeader;
+    if (sheetsKey !== undefined) {
+      const linked = looksLikeSheetsKey(sheetsKey) && SheetsKeyResolver.resolve
+        ? await SheetsKeyResolver.resolve(hashSheetsKey(sheetsKey))
+        : null;
+      if (!linked) throw new UnauthorizedException('Invalid or expired Google Sheets link key');
+      request.userSession = {
+        user: { id: linked.userId, email: linked.email, name: linked.name },
+        session: { id: 'sheets-link', userId: linked.userId, token: 'sheets-link' },
+      } as unknown as AuthUserSession;
+      return true;
     }
 
     const auth = await getAuth();

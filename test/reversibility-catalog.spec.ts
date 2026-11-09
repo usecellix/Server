@@ -1,4 +1,7 @@
+import { readFileSync } from 'fs';
+import { join } from 'path';
 import {
+  SESSION_UNDOABLE_ACTION_TYPES,
   REVERSIBILITY_CATALOG,
   ALL_REVERSIBILITY_CATALOG_TYPES,
   computeIrreversibleActionTypes,
@@ -62,6 +65,29 @@ describe('reversibility-catalog (TASKS.md #18)', () => {
     expect(ALL_REVERSIBILITY_CATALOG_TYPES.length).toBe(
       Object.keys(REVERSIBILITY_CATALOG).length,
     );
+  });
+
+
+  describe('session-only undo for matching-row actions (P1.6 / P1.8)', () => {
+    it('keeps DELETE_MATCHING_ROWS / SET_MATCHING_ROWS non-reversible on the server (no stale-shadow revert)', () => {
+      for (const type of SESSION_UNDOABLE_ACTION_TYPES) {
+        expect(REVERSIBILITY_CATALOG[type].reversible).toBe(false);
+      }
+    });
+
+    it('lists exactly the same session-undoable types as the add-in', () => {
+      const path = join(__dirname, '../../client/src/engine/rowSnapshot.ts');
+      let source: string;
+      try {
+        source = readFileSync(path, 'utf8');
+      } catch {
+        return; // standalone Server checkout
+      }
+      const block = source.match(/SESSION_UNDOABLE_ACTION_TYPES\s*=\s*\[([^\]]*)\]/);
+      expect(block).not.toBeNull();
+      const clientTypes = [...block![1].matchAll(/'([A-Z_]+)'/g)].map((m) => m[1]).sort();
+      expect(clientTypes).toEqual([...SESSION_UNDOABLE_ACTION_TYPES].sort());
+    });
   });
 
   describe('computeIrreversibleActionTypes', () => {

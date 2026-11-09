@@ -1,3 +1,4 @@
+import { RETENTION } from '../retention/retention.config';
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
@@ -54,6 +55,8 @@ export class PlannerFileLoggerService implements OnModuleInit, OnModuleDestroy {
 
   /** Append one planner call (input + output) as NDJSON. */
   logPlanner(input: PlannerFileLogInput): void {
+    // P0.3: the planner log holds full LLM input/output (cell values). Off unless explicitly enabled.
+    if (!RETENTION.plannerFileLogEnabled()) return;
     const entry: PlannerLogEntry = {
       ts: input.ts ?? new Date().toISOString(),
       correlationId: input.correlationId,

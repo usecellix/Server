@@ -1,3 +1,5 @@
+import { gstinCheckLabel, invoiceKey, sec164Status, SEC_16_4_CITATION } from './recon-flags';
+import { sourceNoteText } from '../excel-ai/utils/output-sheet.util';
 import { SheetActionPayload } from '../excel-ai/types/sheet-actions.types';
 import {
   buildReconSheetStylingActions,
@@ -66,6 +68,12 @@ export interface ReconRowDto {
    * register). Null when this row has no books-side counterpart (e.g. a pure portal-only row). */
   books_sheet_name: string | null;
   books_row: number | null;
+  /** P2.3 — B10 GSTIN check of this row's GSTIN ("Valid", "Checksum fail", …); null when blank. */
+  gstin_check?: string | null;
+  /** P4.3 — shared invoice-number key ("INV/24-25/0233" → "233"). */
+  invoice_key?: string | null;
+  /** P4.3 — Sec 16(4) time-limit flag for books rows (Within / Near / Beyond), rule-table driven. */
+  sec_16_4?: string | null;
 }
 
 function refLabel(ref?: SourceRef): string | null {
@@ -120,7 +128,7 @@ export function buildSummary(
   };
 }
 
-export function mapResultRows(resultRows: GstResultRow[]): ReconRowDto[] {
+export function mapResultRows(resultRows: GstResultRow[], asOn: Date = new Date()): ReconRowDto[] {
   return resultRows.map((r) => {
     const row = r.registerRow ?? r.portalRow ?? r.imsRow;
     const booksRef = r.registerRow?.sourceRowRef;
@@ -145,6 +153,12 @@ export function mapResultRows(resultRows: GstResultRow[]): ReconRowDto[] {
       // which pass `documentId: booksSheet.sheet_name` straight from the request.
       books_sheet_name: booksRef ? String(booksRef.documentId) : null,
       books_row: booksRef ? Number(booksRef.rowOrLine) || null : null,
+      gstin_check: gstinCheckLabel(row?.gstin),
+      invoice_key: invoiceKey(row?.invoiceNumber),
+      sec_16_4: (() => {
+        const flag = r.registerRow ? sec164Status(r.registerRow.invoiceDate, asOn) : null;
+        return flag ? `${flag.status} (by ${flag.deadline})` : null;
+      })(),
     };
   });
 }
@@ -202,6 +216,9 @@ export function mapToSheetActions(params: {
     'RCM',
     'Books Ref',
     'Portal Ref',
+    'GSTIN Check',
+    'Invoice Key',
+    'Sec 16(4)',
   ];
 
   const tableRows: unknown[][] = rows.map((r) => [
@@ -218,6 +235,9 @@ export function mapToSheetActions(params: {
     r.rcm_flag ? 'Y' : '',
     r.pr_ref ?? '',
     r.portal_ref ?? '',
+    r.gstin_check ?? '',
+    r.invoice_key ?? '',
+    r.sec_16_4 ?? '',
   ]);
 
   const width = headers.length;
@@ -255,6 +275,10 @@ export function mapToSheetActions(params: {
     summary.gstin_mismatch_count,
   ]);
   builder.pushRow(['Portal Only', summary.portal_only]);
+  builder.pushRow([
+    'Invalid GSTIN (format / state / checksum)',
+    rows.filter((r) => r.gstin_check && r.gstin_check !== 'Valid').length,
+  ]);
   builder.pushRow(['Cross-GSTIN Exceptions', summary.cross_gstin_exception_count ?? 0]);
   builder.pushRow(['IMS Rejected', summary.ims_rejected, 'ITC lost', summary.itc_ims_rejected]);
   builder.pushRow(['IMS Pending', summary.ims_pending, 'ITC deferred', summary.itc_ims_pending]);
@@ -275,7 +299,30 @@ export function mapToSheetActions(params: {
     dataRowRange: tableRows.length ? [detailDataStart, detailDataEnd] : null,
   });
   builder.pushRow(['']);
-  builder.pushRow(['CELLIX | Reconciliation aid. CA to verify.']);
+  if (isSales) {
+    // P3.7 — GSTR-1A correction list: only the rows that need a correction.
+    const corrections = rows.filter((r) => r.status !== 'MATCHED' && ['PARTIAL', 'PR_ONLY', 'PORTAL_ONLY'].includes(r.status));
+    builder.pushRow(['']);
+    builder.pushSection(
+      `GSTR-1A CORRECTION LIST (${corrections.length})`,
+      ['Action', 'Status', 'Recipient GSTIN', 'Customer Name', 'Invoice No', 'Tax Amount', 'Difference'],
+      corrections.map((r) => [
+        r.status === 'PARTIAL'
+          ? 'Amend in GSTR-1A (values differ from books)'
+          : r.status === 'PR_ONLY'
+            ? 'Report missing invoice in GSTR-1A'
+            : 'Check: in GSTR-1 but not in books',
+        r.status,
+        r.gstin ?? '',
+        r.vendor_name ?? '',
+        r.invoice_number ?? '',
+        r.itc_amount,
+        r.difference ?? '',
+      ]),
+    );
+  }
+  builder.pushRow([`Sec 16(4) flags: ${SEC_16_4_CITATION()}. Flags only — the decision rests with you as the professional.`]);
+  builder.pushRow([`CELLIX | Reconciliation aid. CA to verify. ${sourceNoteText(relativeTo, runAt)}`]);
 
   const writeHeaders = builder.rows[0].map((c, i) => (i === 0 ? String(c) : `C${i + 1}`));
   const writeRows = builder.rows.slice(1);
@@ -293,6 +340,7 @@ export function mapToSheetActions(params: {
       type: 'CREATE_SHEET',
       sheetName,
       name: sheetName,
+      uniqueName: true,
       relativeTo,
       position: 'after',
     },
@@ -649,7 +697,7 @@ export function mapMissedBooksToSheetActions(params: {
     booksHeaders,
     unclassifiedRows.map(toBooksSectionRow),
   );
-  builder.pushRow(['CELLIX | Reconciliation aid. CA to verify.']);
+  builder.pushRow([`CELLIX | Reconciliation aid. CA to verify. ${sourceNoteText(relativeTo, runAt)}`]);
 
   const writeHeaders = builder.rows[0].map((c, i) => (i === 0 ? String(c) : `C${i + 1}`));
   const writeRows = builder.rows.slice(1);
@@ -667,6 +715,7 @@ export function mapMissedBooksToSheetActions(params: {
       type: 'CREATE_SHEET',
       sheetName,
       name: sheetName,
+      uniqueName: true,
       relativeTo,
       position: 'after',
     },
@@ -714,7 +763,7 @@ export function mapMissedBooksFlatToSheetActions(params: {
   builder.pushRow([`Run: ${runAt}`, `Rows: ${missed.length}`]);
   builder.pushRow(['']);
   builder.pushSection('Missing Rows', headers, missed.map(toBooksSectionRow));
-  builder.pushRow(['CELLIX | Reconciliation aid. CA to verify.']);
+  builder.pushRow([`CELLIX | Reconciliation aid. CA to verify. ${sourceNoteText(relativeTo, runAt)}`]);
 
   const writeHeaders = builder.rows[0].map((c, i) => (i === 0 ? String(c) : `C${i + 1}`));
   const writeRows = builder.rows.slice(1);
@@ -727,7 +776,7 @@ export function mapMissedBooksFlatToSheetActions(params: {
   });
 
   return [
-    { type: 'CREATE_SHEET', sheetName, name: sheetName, relativeTo, position: 'after' },
+    { type: 'CREATE_SHEET', sheetName, name: sheetName, uniqueName: true, relativeTo, position: 'after' },
     { type: 'WRITE_TABLE', sheetName, headers: writeHeaders as string[], rows: writeRows },
     ...stylingActions,
   ];
@@ -760,7 +809,7 @@ export function mapPortalOnlyFlatToSheetActions(params: {
   builder.pushRow([`Run: ${runAt}`, `Rows: ${portalOnly.length}`]);
   builder.pushRow(['']);
   builder.pushSection('Missing Rows', headers, portalOnly.map(toPortalSectionRow));
-  builder.pushRow(['CELLIX | Reconciliation aid. CA to verify.']);
+  builder.pushRow([`CELLIX | Reconciliation aid. CA to verify. ${sourceNoteText(relativeTo, runAt)}`]);
 
   const writeHeaders = builder.rows[0].map((c, i) => (i === 0 ? String(c) : `C${i + 1}`));
   const writeRows = builder.rows.slice(1);
@@ -773,7 +822,7 @@ export function mapPortalOnlyFlatToSheetActions(params: {
   });
 
   return [
-    { type: 'CREATE_SHEET', sheetName, name: sheetName, relativeTo, position: 'after' },
+    { type: 'CREATE_SHEET', sheetName, name: sheetName, uniqueName: true, relativeTo, position: 'after' },
     { type: 'WRITE_TABLE', sheetName, headers: writeHeaders as string[], rows: writeRows },
     ...stylingActions,
   ];
@@ -798,10 +847,14 @@ export function map3bVs2bToActions(params: {
       result.variances.total,
       result.status,
     ],
-    ['Excess claim', '', '', '', result.excessClaim, result.drc01cRisk ? 'DRC-01C RISK' : ''],
+    ...(result.tableVariances ?? []).map((t) => [`Table ${t.table}`, t.igst, t.cgst, t.sgst, t.total, '']),
+    ...(result.tieOut
+      ? [['Tie-out', '', '', '', result.tieOut.tablesTotal, result.tieOut.ties ? `= overall ${result.tieOut.overallTotal}` : `≠ overall ${result.tieOut.overallTotal}`]]
+      : []),
+    ['Excess claim', '', '', '', result.excessClaim, result.drc01cRisk ? `DRC-01C flag — ${result.drc01cRule ?? ''}` : ''],
     ['Short claim', '', '', '', result.shortClaim, ''],
     ...result.messages.map((m) => ['Note', '', '', '', '', m]),
-    ['', '', '', '', '', 'CELLIX | Reconciliation aid. CA to verify.'],
+    ['', '', '', '', '', `CELLIX | Reconciliation aid. CA to verify. ${sourceNoteText(relativeTo, runAt)}`],
   ];
 
   return [
@@ -809,6 +862,7 @@ export function map3bVs2bToActions(params: {
       type: 'CREATE_SHEET',
       sheetName,
       name: sheetName,
+      uniqueName: true,
       relativeTo,
       position: 'after',
     },

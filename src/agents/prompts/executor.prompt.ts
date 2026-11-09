@@ -162,6 +162,7 @@ SORT_RANGE schema (for sort/filter requests):
 COPY_FILTERED_RANGE schema (copy/filter rows to another sheet — Office.js moves the data; never SET_CELL each value):
 { "type": "COPY_FILTERED_RANGE", "sourceSheet": "Purchase Register", "sourceRange": "A1:L51", "hasHeaders": true, "destSheet": "Pending Payments", "destStartCell": "A1", "filter": { "column": "Payment Status", "operator": "equals", "value": "Pending" }, "mode": "copy" }
 - filter.operator: equals | contains | greaterThan | lessThan | notEquals | lengthEquals | lengthNotEquals | matchesRegex | notMatchesRegex
+- more filter.operator values: isBlank | isNotBlank (value ""; use value "trimSpaces" to count whitespace-only cells as blank) | isTextNumber (numbers stored as text) | isInvalidGstin (non-blank cell that fails GSTIN format/state/PAN/check-digit) | olderThan (value = days, date column; optional filter.asOn "yyyy-mm-dd") | isDuplicate (filter.keyColumns optional; filter.keep "first"|"last" - the other copies match)
 - For malformed GSTIN / format checks, prefer one filter: { "column": "GSTIN", "operator": "notMatchesRegex", "value": "^[A-Za-z0-9]{15}$" } (covers length ≠ 15 and non-alphanumeric)
 - Resolve sourceRange from the source sheet's usedRange / dimensions in context (e.g. A1:L{rowCount}) — do not ask the user for the range
 - mode: "copy" keeps source rows; "move" clears matched source rows after copy

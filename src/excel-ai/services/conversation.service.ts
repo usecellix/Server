@@ -1,3 +1,11 @@
+import { matchingLanes, runDeterministicLanes } from '../lanes/lane-registry';
+import { buildCleanTextPlan, detectCleanTextIntent } from '../utils/clean-text-lane.util';
+import {
+  buildProfileReport,
+  detectProfileIntent,
+  profileColumns,
+  profileOnlyColumnsFromMessage,
+} from '../utils/column-profiler.util';
 import {
   BadRequestException,
   GoneException,
@@ -144,6 +152,11 @@ import {
   type LlmFailure,
 } from '../utils/llm-failure-message.util';
 import { annotateAnswerConsistency } from '../utils/answer-consistency.util';
+import { ADVICE_DISCLAIMER, applyAdviceGuardrail, isAdviceShapedQuestion } from '../utils/advice-guardrail.util';
+import {
+  buildGstinValidationPlan,
+  detectValidateGstinIntent,
+} from '../utils/gstin-validation-lane.util';
 import { deriveConversationTitle, truncateTitle } from '../utils/conversation-title.util';
 import { WorkflowTraceService } from '../../common/logging/workflow-trace.service';
 import type { WorkflowTraceStatus } from '../../common/logging/schemas/workflow-trace.schema';
@@ -619,8 +632,14 @@ export class ConversationService {
     initSseResponse(reply);
 
     const conversationId = conversation.conversationId;
-    const emit = (event: string, data: Record<string, unknown>) =>
+    // P0.2: every final answer passes the deterministic advice guardrail
+    // (verdict wording softened; fixed disclaimer on advice-shaped questions).
+    const emit = (event: string, data: Record<string, unknown>) => {
+      if (event === 'answer' && typeof data.answer === 'string') {
+        data = { ...data, answer: applyAdviceGuardrail(data.answer, activeRequest.message).answer };
+      }
       writeSseEvent(reply, event, { ...data, conversationId });
+    };
     let localReason = this.engine.hasOpenAi() ? 'llm_not_used' : 'no_llm_provider';
     /** Set when an LLM call failed, so local copy can name the real cause (F11). */
     let llmFailure: LlmFailure | undefined;
@@ -685,6 +704,171 @@ export class ConversationService {
         });
         endSseResponse(reply);
         return;
+      }
+
+      // P1.5 — "Check the data quality of this sheet": read-only column profile,
+      // deterministic (no LLM), answers in any mode and never writes.
+      if (detectProfileIntent(activeRequest.message)) {
+        const profileSheetName = this.resolveActiveSheetName(activeRequest);
+        const profileSheetData = await this.resolveActiveSheetData(
+          activeRequest,
+          analysis,
+          profileSheetName,
+          conversationId,
+          emit,
+        );
+        const profileSnapshot = (
+          activeRequest.workbookContext as
+            | { sheets?: Array<{ sheetName?: string; columnMeta?: Array<{ formatCounts?: Array<{ format: string; count: number }> }> }> }
+            | undefined
+        )?.sheets?.find?.((sheet) => sheet && typeof sheet === 'object' && sheet.sheetName === profileSheetName);
+        const profiles = profileColumns(profileSheetData, {
+          headerRowIndex: analysis.headerRowIndex ?? 0,
+          formatCounts: profileSnapshot?.columnMeta?.map((meta) => meta?.formatCounts),
+          onlyColumns: profileOnlyColumnsFromMessage(activeRequest.message),
+        });
+        const report = buildProfileReport(profileSheetName, profiles);
+        this.logger.log(
+          `Column profile (deterministic) trace=${traceId} conversation=${conversationId} columns=${profiles.length} flagged=${report.flaggedColumns}`,
+        );
+        await this.emitLocalDecision(
+          conversation.conversationId,
+          { kind: 'answer' as const, answer: report.answer },
+          emit,
+          { traceId, route: 'ask', tier: 0 },
+        );
+        endSseResponse(reply);
+        return;
+      }
+
+      // P1.9 — "Clean the spaces and hidden characters in column A": deterministic (no LLM).
+      // Proposes the cleaned text as a normal BATCH_SET, so it previews first and can be reverted.
+      if (writeAllowed && detectCleanTextIntent(activeRequest.message)) {
+        const cleanSheetName = this.resolveActiveSheetName(activeRequest);
+        const cleanSheetData = await this.resolveActiveSheetData(
+          activeRequest,
+          analysis,
+          cleanSheetName,
+          conversationId,
+          emit,
+        );
+        const cleanSnapshot = (
+          activeRequest.workbookContext as
+            | { sheets?: Array<{ sheetName?: string; columnMeta?: Array<{ formulaRows?: number[] }> }> }
+            | undefined
+        )?.sheets?.find?.((sheet) => sheet && typeof sheet === 'object' && sheet.sheetName === cleanSheetName);
+        const cleanPlan = buildCleanTextPlan(cleanSheetData, cleanSheetName, activeRequest.message, {
+          headerRowIndex: analysis.headerRowIndex ?? 0,
+          formulaRows: cleanSnapshot?.columnMeta?.map((meta) => meta?.formulaRows),
+        });
+        this.logger.log(
+          `Clean text (deterministic) trace=${traceId} conversation=${conversationId} kind=${cleanPlan.kind} toClean=${cleanPlan.counts?.toClean ?? 0} formulaSkipped=${cleanPlan.counts?.formulaSkipped ?? 0}`,
+        );
+        await this.emitLocalDecision(
+          conversation.conversationId,
+          cleanPlan.kind === 'actions'
+            ? {
+                kind: 'actions' as const,
+                answer: cleanPlan.answer,
+                explanation: cleanPlan.explanation ?? 'Clean text.',
+                actions: cleanPlan.actions ?? [],
+              }
+            : { kind: 'answer' as const, answer: cleanPlan.answer },
+          emit,
+          { traceId, route: 'write', tier: 0 },
+        );
+        endSseResponse(reply);
+        return;
+      }
+
+      // P1.4 — "Validate the GSTINs in column B": deterministic (no LLM). Proposes
+      // Status/State columns as a normal BATCH_SET, so it still previews first.
+      if (writeAllowed && detectValidateGstinIntent(activeRequest.message)) {
+        const gstinSheetName = this.resolveActiveSheetName(activeRequest);
+        const gstinSheetData = await this.resolveActiveSheetData(
+          activeRequest,
+          analysis,
+          gstinSheetName,
+          conversationId,
+          emit,
+        );
+        const gstinPlan = buildGstinValidationPlan(
+          gstinSheetData,
+          analysis.headerRowIndex ?? 0,
+          gstinSheetName,
+          activeRequest.message,
+        );
+        this.logger.log(
+          `GSTIN validation (deterministic) trace=${traceId} conversation=${conversationId} kind=${gstinPlan.kind} checked=${gstinPlan.counts?.checked ?? 0}`,
+        );
+        await this.emitLocalDecision(
+          conversation.conversationId,
+          gstinPlan.kind === 'actions'
+            ? {
+                kind: 'actions' as const,
+                answer: gstinPlan.answer,
+                explanation: gstinPlan.explanation ?? 'Validate GSTINs.',
+                actions: gstinPlan.actions ?? [],
+              }
+            : { kind: 'answer' as const, answer: gstinPlan.answer },
+          emit,
+          { traceId, route: 'write', tier: 0 },
+        );
+        endSseResponse(reply);
+        return;
+      }
+
+      // Stage 2–4 deterministic lanes (Server/src/excel-ai/lanes). Read-only lanes answer in
+      // any mode; writing lanes only in Action mode, and still preview → Accept → revert.
+      if (matchingLanes(activeRequest.message, writeAllowed).length > 0) {
+        const laneSheetName = this.resolveActiveSheetName(activeRequest);
+        const laneSheetData = await this.resolveActiveSheetData(
+          activeRequest,
+          analysis,
+          laneSheetName,
+          conversationId,
+          emit,
+        );
+        const laneSnapshots = (
+          (activeRequest.workbookContext as { sheets?: unknown[] } | undefined)?.sheets ?? []
+        ).filter((sheet): sheet is SheetSnapshot => Boolean(sheet && typeof sheet === 'object' && 'sheetName' in sheet));
+        const activeSnapshot = laneSnapshots.find((sheet) => sheet.sheetName === laneSheetName);
+        const laneOutcome = await runDeterministicLanes({
+          message: activeRequest.message,
+          writeAllowed,
+          sheetName: laneSheetName,
+          values: laneSheetData,
+          headerRowIndex: analysis.headerRowIndex ?? activeSnapshot?.headerRowIndex ?? 0,
+          columnMeta: (activeSnapshot?.columnMeta ?? []).map((meta) => meta as never),
+          sheetNames: laneSnapshots.length ? laneSnapshots.map((sheet) => sheet.sheetName) : [laneSheetName],
+          hiddenSheets: laneSnapshots.filter((sheet) => sheet.isHidden).map((sheet) => sheet.sheetName),
+          getSheetValues: async (name: string) => {
+            if (name === laneSheetName) return laneSheetData;
+            const snap = laneSnapshots.find((sheet) => sheet.sheetName.toLowerCase() === name.toLowerCase());
+            if (!snap) return null;
+            const fetched = await this.resolveSnapshotData(snap, conversationId, emit);
+            // A fetched range includes the header row; an un-truncated snapshot sample does not.
+            return snap.compressionMeta?.truncated ? fetched : [snap.headers, ...fetched];
+          },
+          dynamicArrays: activeRequest.excelCapabilities?.dynamicArrays,
+          now: new Date(),
+        });
+        if (laneOutcome) {
+          const { lane, result } = laneOutcome;
+          this.logger.log(
+            `Deterministic lane ${lane.step} (${lane.id}) trace=${traceId} conversation=${conversationId} kind=${result.kind}`,
+          );
+          await this.emitLocalDecision(
+            conversation.conversationId,
+            result.kind === 'actions'
+              ? { kind: 'actions' as const, answer: result.answer, explanation: result.explanation, actions: result.actions }
+              : { kind: 'answer' as const, answer: result.answer },
+            emit,
+            { traceId, route: result.kind === 'actions' ? 'write' : 'ask', tier: 0 },
+          );
+          endSseResponse(reply);
+          return;
+        }
       }
 
       const recentHistory = history
@@ -4537,15 +4721,28 @@ export class ConversationService {
     });
 
     let fullText = '';
+    // P0.2: an advice-shaped question ("should I file…") is buffered, guarded, then sent whole,
+    // so verdict wording is softened BEFORE the user sees it and the disclaimer is always added.
+    const adviceShaped = isAdviceShapedQuestion(activeRequest.message);
     try {
       for await (const token of this.chitchat.streamReply(activeRequest.message)) {
         fullText += token;
-        emit('chunk', { text: token });
+        if (!adviceShaped) emit('chunk', { text: token });
       }
     } catch (err) {
       this.logger.error(`Chitchat reply failed trace=${traceId} conversation=${conversationId}`, err);
       fullText = fullText.trim() || "Hi! I'm having trouble responding right now — try again in a moment.";
+      if (!adviceShaped) emit('chunk', { text: fullText });
+    }
+    const guarded = applyAdviceGuardrail(fullText, activeRequest.message);
+    if (adviceShaped) {
+      fullText = guarded.answer;
       emit('chunk', { text: fullText });
+    } else if (guarded.guarded) {
+      // Already streamed: verdict text can't be recalled, but the disclaimer is still appended.
+      const tail = `\n\n_${ADVICE_DISCLAIMER}_`;
+      fullText += tail;
+      emit('chunk', { text: tail });
     }
 
     await this.saveMessage(conversationId, {

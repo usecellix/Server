@@ -6,7 +6,6 @@ import {
   Query,
   Res,
   Sse,
-  UnauthorizedException,
   UseGuards,
   type MessageEvent,
 } from '@nestjs/common';
@@ -82,16 +81,26 @@ export class ExcelLoginController {
     }
     const claim = this.excelLoginBridge.consumeClaim(token);
     if (!claim?.sessionToken) {
-      throw new UnauthorizedException('Login claim expired or already used');
+      // Not an error: the task pane polls this while the user is still
+      // registering/signing in on the browser tab. 202 keeps those polls out
+      // of the console as failures; the client treats it as "not ready yet".
+      reply.status(202);
+      return { pending: true };
     }
 
     const setCookie = await buildSessionSetCookie(claim.sessionToken);
+    const cookies = [setCookie];
+    // In dev the session cookie is unprefixed, so clear a stale __Secure- copy
+    // left by earlier configs. In production (useSecureCookies) the session
+    // cookie IS the __Secure- name — clearing it would delete the session we
+    // just set, so only clear when the names differ.
+    if (!setCookie.startsWith('__Secure-')) {
+      cookies.push(
+        '__Secure-better-auth.session_token=; Max-Age=0; Path=/; HttpOnly; Secure; SameSite=Lax',
+      );
+    }
     // Array form — Fastify would overwrite if header() was called twice.
-    reply.header('set-cookie', [
-      setCookie,
-      // Clear legacy __Secure- name from earlier cookie configs.
-      '__Secure-better-auth.session_token=; Max-Age=0; Path=/; HttpOnly; Secure; SameSite=Lax',
-    ]);
+    reply.header('set-cookie', cookies);
     return { ok: true, email: claim.email };
   }
 }
@@ -124,13 +133,18 @@ async function buildSessionSetCookie(sessionToken: string): Promise<string> {
     ) => Promise<string>;
   }>('better-call');
 
+  // Must mirror auth.ts defaultCookieAttributes. In production the task pane
+  // may be an iframe inside Excel on the web (third-party context), where a
+  // Lax cookie is silently dropped — so use None + Secure + Partitioned.
+  const isProd = process.env.NODE_ENV === 'production';
   const cookies = getCookies({
     baseURL: betterAuthUrl,
     advanced: {
-      useSecureCookies: process.env.NODE_ENV === 'production',
+      useSecureCookies: isProd,
       defaultCookieAttributes: {
-        sameSite: 'lax',
-        secure: process.env.NODE_ENV === 'production',
+        sameSite: isProd ? 'none' : 'lax',
+        ...(isProd ? { partitioned: true } : {}),
+        secure: isProd,
         httpOnly: true,
         path: '/',
       },

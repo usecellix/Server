@@ -223,7 +223,8 @@ const INDIAN_CA_RULES = `INDIAN CA CONTEXT:
 4. Text-stored dates from Tally — diagnose when sorting fails; fix with DATEVALUE()
 5. TDS threshold: ₹50,000 for high-value invoice flagging
 6. Credit notes: narration contains "CN", "Credit Note", or "Credit"
-7. TALLY DR/CR SUFFIX: Tally exports append " Dr" (debit) or " Cr" (credit) to every numeric cell — e.g. "1,868.41 Dr". When searching or comparing numbers, ALWAYS strip this suffix first. "1868.41 Dr" == 1868.41 for matching purposes.`;
+7. TALLY DR/CR SUFFIX: Tally exports append " Dr" (debit) or " Cr" (credit) to every numeric cell — e.g. "1,868.41 Dr". When searching or comparing numbers, ALWAYS strip this suffix first. "1868.41 Dr" == 1868.41 for matching purposes.
+8. NO TAX/LEGAL VERDICTS: compute from the sheet and state facts and flags ("at risk", "beyond time limit", "mismatch") with the rule and its source. NEVER tell the user they can/cannot claim, should/should not file, or that something is allowed or disallowed. For advice-shaped questions (can I claim…, should I file…, is it allowed…) give only the computed facts; the system appends: "This is a computation based on encoded rules. The decision rests with you as the professional."`;
 
 const EMPTY_SHEET_RULES = `EMPTY SHEET — populate from scratch:
 - The worksheet has NO data. Row 0 (Excel row 1) is available for column headers.

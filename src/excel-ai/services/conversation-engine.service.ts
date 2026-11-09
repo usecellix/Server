@@ -1,3 +1,4 @@
+import { uniquifyOutputSheets } from '../utils/output-sheet.util';
 import { Injectable, Logger } from '@nestjs/common';
 import { validateCrossSheetActions } from '../../sheets/multi-sheet.service';
 import { AppConfigService } from '../../config/app-config.service';
@@ -524,6 +525,11 @@ Sheet has ${analysis.rowCount} rows, ${analysis.columnCount} columns. Next appen
     excelCapabilities?: { dynamicArrays?: boolean },
   ): SheetActionPayload[] {
     let finalActions = pruneSpuriousAddSheetActions(actions as never[]) as SheetActionPayload[];
+    // P1.2: output sheets (recon etc.) never overwrite an earlier run — "Name (2)".
+    finalActions = uniquifyOutputSheets(
+      finalActions,
+      (richWorkbookContext?.sheets ?? []).map((sheet) => sheet.sheetName),
+    );
     if (userMessage) {
       finalActions = annotateClearIntentOverwrite(finalActions, userMessage);
       // Spec 21: confirm overwrite for explicit change-language or prior-turn overlap.
@@ -994,6 +1000,12 @@ Sheet has ${analysis.rowCount} rows, ${analysis.columnCount} columns. Next appen
               'lengthNotEquals',
               'matchesRegex',
               'notMatchesRegex',
+              'isBlank',
+              'isNotBlank',
+              'isTextNumber',
+              'isInvalidGstin',
+              'olderThan',
+              'isDuplicate',
             ]);
             if (
               !action.filter.column ||

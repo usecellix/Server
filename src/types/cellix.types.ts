@@ -68,6 +68,18 @@ export interface ColumnMeta {
   detectedType?: ColumnDetectedType | string;
   numberFormat?: string;
   /**
+   * How many data cells use each number format (≤8 entries, General/@ omitted),
+   * read per cell — lets the column profiler see Dr/Cr kept in the format
+   * (`#,##0.00 "Cr"`) that the first-row `numberFormat` above would miss. P1.5.
+   */
+  formatCounts?: Array<{ format: string; count: number }>;
+  /**
+   * 0-based sheet row indexes (same indexing as the sheet values) of this column's
+   * formula cells, capped at 500. Lets deterministic writers (clean text) skip
+   * formulas exactly instead of guessing from values. P1.9.
+   */
+  formulaRows?: number[];
+  /**
    * Bold/italic/fontColor/fillColor read from the column's first data row
    * (TASKS.md #64) — column-level granularity, same as `numberFormat` above,
    * not a genuine per-cell snapshot. Feeds revert's format restoration.

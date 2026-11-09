@@ -1,3 +1,4 @@
+import { sourceNoteText } from '../excel-ai/utils/output-sheet.util';
 import { SheetActionPayload } from '../excel-ai/types/sheet-actions.types';
 import {
   buildReconSheetStylingActions,
@@ -163,7 +164,7 @@ function finish(
     summaryValueRange: builder.summaryValueRange,
   });
   return [
-    { type: 'CREATE_SHEET', sheetName, name: sheetName, relativeTo, position: 'after' },
+    { type: 'CREATE_SHEET', sheetName, name: sheetName, uniqueName: true, relativeTo, position: 'after' },
     { type: 'WRITE_TABLE', sheetName, headers: writeHeaders as string[], rows: writeRows },
     ...styling,
     ...extra,
@@ -173,7 +174,8 @@ function finish(
 /** Blank rows between the tables of the summary sheet, so each one reads as its own block. */
 const SECTION_GAP_ROWS = 3;
 
-const FOOTER = 'CELLIX | Reconciliation aid. CA to verify.';
+const footerFor = (model: BankSheetModel): string =>
+  `CELLIX | Reconciliation aid. CA to verify. ${sourceNoteText(model.relativeTo ?? model.booksSheet, model.runAt)}`;
 
 export function mapCategorizedToActions(model: BankSheetModel, sheetName: string): SheetActionPayload[] {
   const { result, brs } = model;
@@ -244,7 +246,7 @@ export function mapCategorizedToActions(model: BankSheetModel, sheetName: string
     );
   }
 
-  builder.pushRow([FOOTER]);
+  builder.pushRow([footerFor(model)]);
 
   const amountFmt: SheetActionPayload = {
     type: 'FORMAT_RANGE',
@@ -273,7 +275,7 @@ export function mapBooksFlatToActions(model: BankSheetModel, sheetName: string):
       .sort((a, b) => BOOKS_ORDER.indexOf(a.reason) - BOOKS_ORDER.indexOf(b.reason))
       .map((i) => txnRow(i.txn, BOOKS_REASON_LABEL[i.reason], i.explanation)),
   );
-  builder.pushRow([FOOTER]);
+  builder.pushRow([footerFor(model)]);
   return finish(sheetName, builder, titleRow, model.relativeTo);
 }
 
@@ -291,7 +293,7 @@ export function mapBankFlatToActions(model: BankSheetModel, sheetName: string): 
       .sort((a, b) => BANK_ORDER.indexOf(a.reason) - BANK_ORDER.indexOf(b.reason))
       .map((i) => txnRow(i.txn, BANK_REASON_LABEL[i.reason], i.explanation)),
   );
-  builder.pushRow([FOOTER]);
+  builder.pushRow([footerFor(model)]);
   return finish(sheetName, builder, titleRow, model.relativeTo);
 }
 
@@ -327,7 +329,7 @@ export function mapMatchedToActions(model: BankSheetModel, sheetName: string): S
     ];
   });
   builder.pushSection('Matched', headers, rows);
-  builder.pushRow([FOOTER]);
+  builder.pushRow([footerFor(model)]);
   const writeHeaders = builder.rows[0].map((c, i) => (i === 0 ? String(c) : `C${i + 1}`));
   const styling = buildReconSheetStylingActions({
     sheetName,
@@ -336,7 +338,7 @@ export function mapMatchedToActions(model: BankSheetModel, sheetName: string): S
     sections: builder.sections,
   });
   return [
-    { type: 'CREATE_SHEET', sheetName, name: sheetName, relativeTo: model.relativeTo, position: 'after' },
+    { type: 'CREATE_SHEET', sheetName, name: sheetName, uniqueName: true, relativeTo: model.relativeTo, position: 'after' },
     { type: 'WRITE_TABLE', sheetName, headers: writeHeaders as string[], rows: builder.rows.slice(1) },
     ...styling,
   ];
