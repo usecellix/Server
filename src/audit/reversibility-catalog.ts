@@ -194,7 +194,7 @@ export const REVERSIBILITY_CATALOG: Record<SheetActionType, ReversibilityCatalog
  * "can't be undone" notice and offers Revert. The client keeps its own copy of this list; a parity
  * spec (test/reversibility-catalog.spec.ts) fails if the two differ.
  */
-export const SESSION_UNDOABLE_ACTION_TYPES: SheetActionType[] = ['DELETE_MATCHING_ROWS', 'SET_MATCHING_ROWS'];
+export const SESSION_UNDOABLE_ACTION_TYPES: SheetActionType[] = ['DELETE_MATCHING_ROWS', 'SET_MATCHING_ROWS', 'DEFINE_NAMED_RANGE'];
 
 /** Every action type this catalog classifies, derived from the map above. */
 export const ALL_REVERSIBILITY_CATALOG_TYPES = Object.keys(

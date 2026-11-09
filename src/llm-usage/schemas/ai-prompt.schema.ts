@@ -1,3 +1,4 @@
+import { expiryFromNow, RETENTION } from '../../common/retention/retention.config';
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { HydratedDocument, Types } from 'mongoose';
 
@@ -41,6 +42,10 @@ export class AiPrompt {
 
   @Prop({ type: Date, required: true, default: () => new Date() })
   lastActivityAt!: Date;
+
+  /** P0.3: the typed prompt can contain client values — kept AI_PROMPT_TTL_HOURS (default 24 h). */
+  @Prop({ type: Date, default: () => expiryFromNow(RETENTION.aiPromptHours()) })
+  expiresAt?: Date;
 
   /** HTTP requests that worked on this prompt: the first one plus each /continue. */
   @Prop({ type: Number, default: 0 })
@@ -89,5 +94,6 @@ export class AiPrompt {
 }
 
 export const AiPromptSchema = SchemaFactory.createForClass(AiPrompt);
+AiPromptSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
 AiPromptSchema.index({ userId: 1, createdAt: -1 });
 AiPromptSchema.index({ costUsd: -1 });

@@ -14,6 +14,7 @@ import { BankReconModule } from './bank-recon/bank-recon.module';
 import { HealthModule } from './health/health.module';
 import { LlmUsageModule } from './llm-usage/llm-usage.module';
 import { SheetsModule } from './sheets/sheets.module';
+import { SheetsLinkModule } from './sheets-link/sheets-link.module';
 import { WebChatModule } from './web-chat/web-chat.module';
 
 @Module({
@@ -28,6 +29,7 @@ import { WebChatModule } from './web-chat/web-chat.module';
     HealthModule,
     ExcelAiModule,
     SheetsModule,
+    SheetsLinkModule,
     DomainToolsModule,
     GstReconModule,
     BankReconModule,

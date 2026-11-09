@@ -163,6 +163,21 @@ export class Gstr3bComponentDto {
   sgst!: number;
 }
 
+/** P3.8 — one GSTR-3B Table 4 line (4A incl. RCM, 4B reversals) vs its 2B value. */
+export class Gstr3bTableLineDto {
+  @IsString()
+  @MaxLength(80)
+  table!: string;
+
+  @ValidateNested()
+  @Type(() => Gstr3bComponentDto)
+  gstr3b!: Gstr3bComponentDto;
+
+  @ValidateNested()
+  @Type(() => Gstr3bComponentDto)
+  gstr2b!: Gstr3bComponentDto;
+}
+
 export class GstReconcileRequestDto {
   @IsIn([...GST_RECON_TYPES])
   reconciliation_type!: GstReconTypeDto;
@@ -261,6 +276,13 @@ export class GstReconcileRequestDto {
   @ValidateNested()
   @Type(() => Gstr3bComponentDto)
   gstr2b_itc?: Gstr3bComponentDto;
+
+  /** P3.8 — optional table-wise lines; totals become their sum. */
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => Gstr3bTableLineDto)
+  gstr3b_tables?: Gstr3bTableLineDto[];
 
   @IsOptional()
   @IsString()

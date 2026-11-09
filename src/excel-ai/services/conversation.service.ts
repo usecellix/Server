@@ -1,3 +1,4 @@
+import { matchingLanes, runDeterministicLanes } from '../lanes/lane-registry';
 import { buildCleanTextPlan, detectCleanTextIntent } from '../utils/clean-text-lane.util';
 import {
   buildProfileReport,
@@ -151,7 +152,7 @@ import {
   type LlmFailure,
 } from '../utils/llm-failure-message.util';
 import { annotateAnswerConsistency } from '../utils/answer-consistency.util';
-import { applyAdviceGuardrail } from '../utils/advice-guardrail.util';
+import { ADVICE_DISCLAIMER, applyAdviceGuardrail, isAdviceShapedQuestion } from '../utils/advice-guardrail.util';
 import {
   buildGstinValidationPlan,
   detectValidateGstinIntent,
@@ -815,6 +816,59 @@ export class ConversationService {
         );
         endSseResponse(reply);
         return;
+      }
+
+      // Stage 2–4 deterministic lanes (Server/src/excel-ai/lanes). Read-only lanes answer in
+      // any mode; writing lanes only in Action mode, and still preview → Accept → revert.
+      if (matchingLanes(activeRequest.message, writeAllowed).length > 0) {
+        const laneSheetName = this.resolveActiveSheetName(activeRequest);
+        const laneSheetData = await this.resolveActiveSheetData(
+          activeRequest,
+          analysis,
+          laneSheetName,
+          conversationId,
+          emit,
+        );
+        const laneSnapshots = (
+          (activeRequest.workbookContext as { sheets?: unknown[] } | undefined)?.sheets ?? []
+        ).filter((sheet): sheet is SheetSnapshot => Boolean(sheet && typeof sheet === 'object' && 'sheetName' in sheet));
+        const activeSnapshot = laneSnapshots.find((sheet) => sheet.sheetName === laneSheetName);
+        const laneOutcome = await runDeterministicLanes({
+          message: activeRequest.message,
+          writeAllowed,
+          sheetName: laneSheetName,
+          values: laneSheetData,
+          headerRowIndex: analysis.headerRowIndex ?? activeSnapshot?.headerRowIndex ?? 0,
+          columnMeta: (activeSnapshot?.columnMeta ?? []).map((meta) => meta as never),
+          sheetNames: laneSnapshots.length ? laneSnapshots.map((sheet) => sheet.sheetName) : [laneSheetName],
+          hiddenSheets: laneSnapshots.filter((sheet) => sheet.isHidden).map((sheet) => sheet.sheetName),
+          getSheetValues: async (name: string) => {
+            if (name === laneSheetName) return laneSheetData;
+            const snap = laneSnapshots.find((sheet) => sheet.sheetName.toLowerCase() === name.toLowerCase());
+            if (!snap) return null;
+            const fetched = await this.resolveSnapshotData(snap, conversationId, emit);
+            // A fetched range includes the header row; an un-truncated snapshot sample does not.
+            return snap.compressionMeta?.truncated ? fetched : [snap.headers, ...fetched];
+          },
+          dynamicArrays: activeRequest.excelCapabilities?.dynamicArrays,
+          now: new Date(),
+        });
+        if (laneOutcome) {
+          const { lane, result } = laneOutcome;
+          this.logger.log(
+            `Deterministic lane ${lane.step} (${lane.id}) trace=${traceId} conversation=${conversationId} kind=${result.kind}`,
+          );
+          await this.emitLocalDecision(
+            conversation.conversationId,
+            result.kind === 'actions'
+              ? { kind: 'actions' as const, answer: result.answer, explanation: result.explanation, actions: result.actions }
+              : { kind: 'answer' as const, answer: result.answer },
+            emit,
+            { traceId, route: result.kind === 'actions' ? 'write' : 'ask', tier: 0 },
+          );
+          endSseResponse(reply);
+          return;
+        }
       }
 
       const recentHistory = history
@@ -4667,15 +4721,28 @@ export class ConversationService {
     });
 
     let fullText = '';
+    // P0.2: an advice-shaped question ("should I file…") is buffered, guarded, then sent whole,
+    // so verdict wording is softened BEFORE the user sees it and the disclaimer is always added.
+    const adviceShaped = isAdviceShapedQuestion(activeRequest.message);
     try {
       for await (const token of this.chitchat.streamReply(activeRequest.message)) {
         fullText += token;
-        emit('chunk', { text: token });
+        if (!adviceShaped) emit('chunk', { text: token });
       }
     } catch (err) {
       this.logger.error(`Chitchat reply failed trace=${traceId} conversation=${conversationId}`, err);
       fullText = fullText.trim() || "Hi! I'm having trouble responding right now — try again in a moment.";
+      if (!adviceShaped) emit('chunk', { text: fullText });
+    }
+    const guarded = applyAdviceGuardrail(fullText, activeRequest.message);
+    if (adviceShaped) {
+      fullText = guarded.answer;
       emit('chunk', { text: fullText });
+    } else if (guarded.guarded) {
+      // Already streamed: verdict text can't be recalled, but the disclaimer is still appended.
+      const tail = `\n\n_${ADVICE_DISCLAIMER}_`;
+      fullText += tail;
+      emit('chunk', { text: tail });
     }
 
     await this.saveMessage(conversationId, {

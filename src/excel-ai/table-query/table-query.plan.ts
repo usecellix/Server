@@ -95,6 +95,7 @@ function parseQuery(table: TableModel, raw: unknown): TableQuery {
     const limit = Number(q.limit);
     if (!Number.isInteger(limit) || limit < 1) throw new TableQueryPlanError(`limit "${String(q.limit)}" is not a positive whole number`);
     query.limit = Math.min(limit, MAX_LIMIT);
+    if (limit > MAX_LIMIT) query.requestedLimit = limit;
   }
   return query;
 }

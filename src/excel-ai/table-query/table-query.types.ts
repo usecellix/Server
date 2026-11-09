@@ -33,6 +33,8 @@ export interface TableQuery {
   filters: TableFilter[];
   groupBy?: { column: TableColumn; by: TableGroupBy };
   limit?: number;
+  /** P3.20 — what the user asked for when it was above the 50-row cap. */
+  requestedLimit?: number;
 }
 
 export interface ScalarResult {
