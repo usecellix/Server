@@ -68,6 +68,10 @@ export const envValidationSchema = Joi.object({
   // is validated as a plain string, not `.uri()` — a comma-joined value is
   // not itself a single valid URI even though each part is.
   MARKETING_SITE_ORIGIN: Joi.string().allow('').optional(),
+  // Comma-separated public hostnames (no scheme) Better Auth may build OAuth
+  // callback URLs from — see auth.ts. Production only; unset keeps the single
+  // BETTER_AUTH_URL.
+  BETTER_AUTH_ALLOWED_HOSTS: Joi.string().allow('').optional(),
   GOOGLE_CLIENT_ID: Joi.string().allow('').optional(),
   GOOGLE_CLIENT_SECRET: Joi.string().allow('').optional(),
   MICROSOFT_CLIENT_ID: Joi.string().allow('').optional(),

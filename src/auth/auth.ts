@@ -87,13 +87,32 @@ async function createAuth(): Promise<BetterAuthInstance> {
   }
   const trustedOrigins = Array.from(new Set(origins));
 
+  // Production serves auth from more than one public host (task pane
+  // app.usecellix.com, website www.usecellix.com — each reaches this API
+  // through its own Vercel /api/auth rewrite). With a single fixed baseURL,
+  // Google's redirect_uri is always that one host, so the OAuth callback —
+  // and the session cookie it sets — lands on a host other than the one the
+  // user started from (the website then sees no session and shows /login
+  // again). Listing the hosts here makes Better Auth build redirect_uri from
+  // the host the request came in on (the registrar forwards x-forwarded-host),
+  // so the cookie is set where it's needed. Each host's callback URL must be
+  // registered in the Google console. Unset = the single fixed baseURL, which
+  // is what local dev relies on (localhost cookies are shared across ports).
+  const allowedHosts = (process.env.BETTER_AUTH_ALLOWED_HOSTS || '')
+    .split(',')
+    .map((host) => host.trim())
+    .filter(Boolean);
+  const baseURL = allowedHosts.length
+    ? { allowedHosts, fallback: betterAuthUrl, protocol: 'https' as const }
+    : betterAuthUrl;
+
   const client = new MongoClient(mongoUrl);
   await client.connect();
   const db = client.db(dbName);
 
   return betterAuth({
     database: mongodbAdapter(db),
-    baseURL: betterAuthUrl,
+    baseURL,
     secret: process.env.BETTER_AUTH_SECRET,
     trustedOrigins,
     emailAndPassword: {
