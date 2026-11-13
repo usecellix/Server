@@ -13,6 +13,7 @@ import { HttpExceptionFilter } from './common/filters/http-exception.filter';
 import { applyRouteBodyLimits } from './common/http/route-body-limits';
 import { RequestResponseCaptureInterceptor } from './common/interceptors/request-response-capture.interceptor';
 import { ResponseEnvelopeInterceptor } from './common/interceptors/response-envelope.interceptor';
+import { ActivityLoggerService } from './common/logging/activity-logger.service';
 import { RequestFileLoggerService } from './common/logging/request-file-logger.service';
 import {
   getCapturedResponse,
@@ -87,6 +88,7 @@ async function bootstrap(): Promise<void> {
   const port = config.port;
   const logger = app.get(Logger);
   const requestFileLogger = app.get(RequestFileLoggerService);
+  const activityLogger = app.get(ActivityLoggerService);
 
   const fastify = app.getHttpAdapter().getInstance();
 
@@ -137,6 +139,13 @@ async function bootstrap(): Promise<void> {
           : undefined;
 
     const response = summarizeResponseForLog(getCapturedResponse(reply, request));
+
+    // User actions only (login, register, AI requests, billing…) → activity-YYYY-MM-DD.log
+    activityLogger.record(
+      request as unknown as Parameters<ActivityLoggerService['record']>[0],
+      reply.statusCode,
+      Math.round(reply.elapsedTime ?? 0),
+    );
 
     requestFileLogger.logRequest({
       method: request.method,
