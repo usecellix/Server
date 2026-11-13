@@ -69,6 +69,24 @@ export class AuthRouteRegistrar implements OnModuleInit {
 
         const response = await auth.handler(webRequest);
 
+        // OAuth only works when the callback lands on the same host the user
+        // signed in from (that's where the session cookie is set). Log the
+        // host this request was seen on and where it redirects, so a host
+        // mismatch is visible in production logs.
+        if (/\/(sign-in\/social|callback\/)/.test(request.url)) {
+          const location =
+            response.headers.get('location') ??
+            (response.headers.get('content-type')?.includes('json')
+              ? ((await response.clone().json().catch(() => null)) as { url?: string } | null)?.url
+              : undefined);
+          this.logger.log(
+            `OAuth ${request.url.split('?')[0]} host=${request.headers.host} ` +
+              `x-forwarded-host=${request.headers['x-forwarded-host'] ?? '-'} ` +
+              `status=${response.status} redirect=${location ?? '-'} ` +
+              `set-cookie=${response.headers.has('set-cookie')}`,
+          );
+        }
+
         reply.status(response.status);
         response.headers.forEach((value, key) => {
           // Fastify manages content-length itself when sending a body.
