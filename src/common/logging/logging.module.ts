@@ -4,6 +4,7 @@ import { LoggerModule } from 'nestjs-pino';
 import { AppConfigModule } from '../../config/app-config.module';
 import { AppConfigService } from '../../config/app-config.service';
 import { buildPinoParams } from './pino-config';
+import { ActivityLoggerService } from './activity-logger.service';
 import { FrontendFileLoggerService } from './frontend-file-logger.service';
 import { FrontendLogController } from './frontend-log.controller';
 import { LogTtlIndexService } from './log-ttl-index.service';
@@ -26,6 +27,7 @@ import { WorkflowTraceService } from './workflow-trace.service';
   ],
   controllers: [FrontendLogController],
   providers: [
+    ActivityLoggerService,
     RequestFileLoggerService,
     PlannerFileLoggerService,
     FrontendFileLoggerService,
@@ -34,6 +36,7 @@ import { WorkflowTraceService } from './workflow-trace.service';
   ],
   exports: [
     LoggerModule,
+    ActivityLoggerService,
     RequestFileLoggerService,
     PlannerFileLoggerService,
     FrontendFileLoggerService,
